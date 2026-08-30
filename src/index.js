@@ -65,6 +65,7 @@ try {
 let apnsProvider = null;
 let apnsReady = false;
 let fcmApp = null;
+let fcmMessaging = null;
 let fcmReady = false;
 
 async function initApns() {
@@ -116,16 +117,17 @@ async function initApns() {
 async function initFcm() {
     try {
         if (process.env.FCM_ENABLED !== 'true') return;
-        const admin = require('firebase-admin');
+        const { initializeApp, cert } = require('firebase-admin/app');
+        const { getMessaging } = require('firebase-admin/messaging');
         const serviceAccount = process.env.GOOGLE_APPLICATION_CREDENTIALS;
         if (!serviceAccount) throw new Error('GOOGLE_APPLICATION_CREDENTIALS not set');
 
-        if (!admin.apps.length) {
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
+        if (!fcmApp) {
+            fcmApp = initializeApp({
+                credential: cert(serviceAccount)
             });
         }
-        fcmApp = admin;
+        fcmMessaging = getMessaging(fcmApp);
         fcmReady = true;
         console.log('[push-gateway] FCM provider ready');
     } catch (err) {
@@ -138,8 +140,8 @@ async function buildCtx() {
     ctx.sendToDevice = async function (dev, call) {
         if (dev.platform === 'ios' && apnsReady && apnsProvider) {
             await apnsProvider.send(dev.voip_token, call);
-        } else if (dev.platform === 'android' && fcmReady && fcmApp) {
-            await fcmApp.messaging().send({
+        } else if (dev.platform === 'android' && fcmReady && fcmMessaging) {
+            await fcmMessaging.send({
                 token: dev.token,
                 android: { priority: 'high' },
                 data: {

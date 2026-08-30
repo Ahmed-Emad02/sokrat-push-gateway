@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=sokrat-softphone
-Group=sokrat-softphone
-WorkingDirectory=/opt/sokrat-voice/sokrat-push-gateway
+User=sokrat-push
+Group=sokrat-push
+WorkingDirectory=/opt/sokrat-push-gateway
 ExecStart=/usr/bin/node src/index.js
 Restart=on-failure
 RestartSec=3
@@ -17,7 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/opt/sokrat-voice
+ReadWritePaths=/opt/sokrat-push-gateway
 
 [Install]
 WantedBy=multi-user.target

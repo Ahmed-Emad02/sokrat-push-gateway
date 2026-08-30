@@ -1,0 +1,23 @@
+[Unit]
+Description=Sokrat Push-to-Wake Gateway (APNs + FCM)
+After=network.target mysql.service mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sokrat-softphone
+Group=sokrat-softphone
+WorkingDirectory=/opt/sokrat-voice/sokrat-push-gateway
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=3
+Environment=NODE_ENV=production
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/sokrat-voice
+
+[Install]
+WantedBy=multi-user.target

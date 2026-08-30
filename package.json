@@ -1,0 +1,18 @@
+{
+  "name": "sokrat-push-gateway",
+  "version": "1.0.0",
+  "description": "Sokrat VOICE push-to-wake gateway. Maps PBX extensions to APNs/FCM device tokens and dispatches VoIP push on incoming calls so mobile apps can wake from background and ring natively.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "apns2": "^12.2.0",
+    "dotenv": "^17.4.2",
+    "express": "^4.22.2",
+    "firebase-admin": "^14.3.0",
+    "mysql2": "^3.24.2"
+  }
+}

@@ -372,6 +372,21 @@ app.get('/health', (req, res) => {
     });
 });
 
+// List PBX extensions for 1-click call transfer
+app.get('/api/push/extensions', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        if (dbGuard(res)) return;
+        const [users] = await pool.execute(
+            'SELECT extension, name FROM users ORDER BY CAST(extension AS UNSIGNED) ASC, extension ASC'
+        );
+        res.json({ success: true, extensions: users });
+    } catch (err) {
+        console.error('[push-gateway] get extensions error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // ----------------------------------------------------------------------------
 // Boot
 // ----------------------------------------------------------------------------

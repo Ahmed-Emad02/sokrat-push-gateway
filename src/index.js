@@ -3,8 +3,8 @@
  * ---------------------------------------------------------
  * Maps PBX extensions -> mobile device push tokens and wakes the
  * Sokrat mobile app on incoming calls so it can connect to
- * Asterisk over a fresh WebSocket and display the native
- * CallKit (iOS) / Telecom (Android) incoming call screen.
+ * Asterisk over a fresh WebSocket. iOS uses CallKit; Android uses
+ * the app's native full-screen incoming-call notification.
  *
  * Endpoints
  *   POST /api/push/register-device   Mobile app token registration
@@ -33,6 +33,34 @@ require('dotenv').config();
 
 const express = require('express');
 const mysql = require('mysql2/promise');
+const crypto = require('crypto');
+
+const UUID_PATTERN =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CALL_NAMESPACE = Buffer.from('b32a7f284bcc5a56a51f2ad6f65f746b', 'hex');
+
+function formatUuid(bytes) {
+    const hex = bytes.toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-` +
+        `${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+function normalizeCallId(value) {
+    const input = String(value || '').trim();
+    if (!input || input.length > 128) throw new Error('callId is required');
+    if (UUID_PATTERN.test(input)) return input.toLowerCase();
+    const digest = crypto.createHash('sha1')
+        .update(Buffer.concat([CALL_NAMESPACE, Buffer.from(input, 'utf8')]))
+        .digest()
+        .subarray(0, 16);
+    digest[6] = (digest[6] & 0x0f) | 0x50;
+    digest[8] = (digest[8] & 0x3f) | 0x80;
+    return formatUuid(digest);
+}
+
+function tokenFingerprint(token) {
+    return crypto.createHash('sha256').update(String(token)).digest('hex').slice(0, 12);
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -59,9 +87,7 @@ try {
     console.error('[push-gateway] MySQL pool init failed:', err.message);
 }
 
-// ----------------------------------------------------------------------------
-// Push providers (loaded lazily, fail-open if not configured)
-// ----------------------------------------------------------------------------
+// Push providers (loaded lazily; health reports disabled/failed providers)
 let apnsProvider = null;
 let apnsReady = false;
 let fcmApp = null;
@@ -95,6 +121,7 @@ async function initApns() {
                         extension: payload.extension || '',
                         timestamp: payload.timestamp || Date.now(),
                         msg: 'incoming-call',
+                        callId: payload.callId,
                         sipWss: payload.sipWss || ''
                     },
                     apns: {
@@ -138,9 +165,13 @@ async function initFcm() {
 async function buildCtx() {
     const ctx = { apnsReady, fcmReady, apnsProvider, fcmApp };
     ctx.sendToDevice = async function (dev, call) {
-        if (dev.platform === 'ios' && apnsReady && apnsProvider) {
+        if (dev.platform === 'ios') {
+            if (!apnsReady || !apnsProvider) throw new Error('APNs provider unavailable');
             await apnsProvider.send(dev.voip_token, call);
-        } else if (dev.platform === 'android' && fcmReady && fcmMessaging) {
+            return;
+        }
+        if (dev.platform === 'android') {
+            if (!fcmReady || !fcmMessaging) throw new Error('FCM provider unavailable');
             await fcmMessaging.send({
                 token: dev.token,
                 android: { priority: 'high' },
@@ -150,10 +181,13 @@ async function buildCtx() {
                     callerName: call.callerName || 'Incoming Call',
                     extension: call.extension || '',
                     timestamp: String(call.timestamp || Date.now()),
+                    callId: call.callId,
                     sipWss: call.sipWss || ''
                 }
             });
+            return;
         }
+        throw new Error(`Unsupported platform: ${dev.platform}`);
     };
     return ctx;
 }
@@ -174,56 +208,83 @@ function dbGuard(res) {
 app.post('/api/push/register-device', async (req, res) => {
     try {
         if (dbGuard(res)) return;
-        const {
-            extension, platform, token, voipToken
-        } = req.body || {};
-
-        if (!extension || !platform || !token) {
-            return res.status(400).json({ success: false, error: 'extension, platform and token are required' });
+        const { extension, platform, token, voipToken, deviceUuid, appVersion } = req.body || {};
+        if (!extension || !platform || !token || !deviceUuid) {
+            return res.status(400).json({
+                success: false,
+                error: 'extension, platform, token and deviceUuid are required'
+            });
         }
         if (!['ios', 'android'].includes(platform)) {
             return res.status(400).json({ success: false, error: 'platform must be ios or android' });
         }
+        if (!UUID_PATTERN.test(String(deviceUuid))) {
+            return res.status(400).json({ success: false, error: 'deviceUuid must be a UUID' });
+        }
         if (platform === 'ios' && !voipToken) {
-            return res.status(400).json({ success: false, error: 'voipToken (PushKit) is required for ios' });
+            return res.status(400).json({ success: false, error: 'voipToken is required for ios' });
         }
 
-        const deviceUuid = (req.body.deviceUuid || '').toString().slice(0, 128) || null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                await pool.execute(
+                    'DELETE FROM mobile_devices WHERE token = ? AND NOT (platform = ? AND device_uuid = ?)',
+                    [String(token), platform, String(deviceUuid)]
+                );
+                await pool.execute(
+                    `INSERT INTO mobile_devices
+                        (extension, platform, token, voip_token, device_uuid, app_version, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, NOW())
+                     ON DUPLICATE KEY UPDATE
+                        extension = VALUES(extension),
+                        token = VALUES(token),
+                        voip_token = VALUES(voip_token),
+                        app_version = VALUES(app_version),
+                        updated_at = NOW(),
+                        last_push_error = NULL`,
+                    [
+                        String(extension),
+                        platform,
+                        String(token),
+                        platform === 'ios' ? String(voipToken) : null,
+                        String(deviceUuid),
+                        String(appVersion || '').slice(0, 40) || null
+                    ]
+                );
+                break;
+            } catch (retryErr) {
+                if (retryErr.code === 'ER_LOCK_DEADLOCK' && attempt < 2) {
+                    await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+                    continue;
+                }
+                throw retryErr;
+            }
+        }
 
-        await pool.execute(
-            `INSERT INTO mobile_devices
-                (extension, platform, token, voip_token, device_uuid, app_version, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE
-                token = VALUES(token),
-                voip_token = VALUES(voip_token),
-                device_uuid = VALUES(device_uuid),
-                app_version = VALUES(app_version),
-                updated_at = NOW()`,
-            [
-                String(extension),
-                platform,
-                String(token),
-                platform === 'ios' ? String(voipToken) : null,
-                deviceUuid,
-                (req.body.appVersion || '').toString().slice(0, 40) || null
-            ]
+        console.log(
+            `[device=${deviceUuid} token=${tokenFingerprint(token)}] registered extension=${extension}`
         );
-
         res.json({ success: true });
     } catch (err) {
         console.error('[push-gateway] register-device error:', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 // Logout: remove a single device token (de-register, do not hurt other tokens)
 app.post('/api/push/remove-device', async (req, res) => {
     try {
-        const { token } = req.body || {};
         if (dbGuard(res)) return;
-        if (!token) return res.status(400).json({ success: false, error: 'token is required' });
-        await pool.execute('DELETE FROM mobile_devices WHERE token = ?', [String(token)]);
+        const { platform, deviceUuid } = req.body || {};
+        if (!platform || !UUID_PATTERN.test(String(deviceUuid || ''))) {
+            return res.status(400).json({
+                success: false,
+                error: 'platform and valid deviceUuid are required'
+            });
+        }
+        await pool.execute(
+            'DELETE FROM mobile_devices WHERE platform = ? AND device_uuid = ?',
+            [String(platform), String(deviceUuid)]
+        );
         res.json({ success: true });
     } catch (err) {
         console.error('[push-gateway] remove-device error:', err);
@@ -234,55 +295,66 @@ app.post('/api/push/remove-device', async (req, res) => {
 // Asterisk dialplan triggers this when an incoming call targets a mobile extension
 app.get('/api/push/incoming-call', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    let callee, caller, callerName;
     try {
-        callee = (req.query.callee || '').toString().trim();
-        caller = (req.query.caller || '').toString().trim();
-        callerName = (req.query.callerName || caller || 'Incoming Call').toString().trim();
-        const sipWss = (req.query.sipWss || '').toString().trim();
-
+        const callee = String(req.query.callee || '').trim();
+        const caller = String(req.query.caller || '').trim();
+        const callerName = String(req.query.callerName || caller || 'Incoming Call').trim();
+        const sipWss = String(req.query.sipWss || '').trim();
+        let callId;
+        try {
+            callId = normalizeCallId(req.query.callId);
+        } catch (error) {
+            return res.status(400).json({ success: false, error: error.message });
+        }
         if (!callee) {
             return res.status(400).json({ success: false, error: 'callee is required' });
         }
         if (dbGuard(res)) return;
 
         const [devices] = await pool.execute(
-            'SELECT * FROM mobile_devices WHERE extension = ? AND updated_at > (NOW() - INTERVAL 90 DAY)',
+            `SELECT * FROM mobile_devices
+             WHERE extension = ? AND updated_at > (NOW() - INTERVAL 90 DAY)
+             ORDER BY updated_at DESC`,
             [callee]
         );
-
         const ctx = await buildCtx();
         const callPayload = {
             callerId: caller,
             callerName,
             extension: callee,
             timestamp: Date.now(),
+            callId,
             sipWss
         };
 
+        console.log(`[callId=${callId}] dispatching callee=${callee} devices=${devices.length}`);
         let dispatched = 0;
         const errors = [];
         for (const dev of devices) {
             try {
                 await ctx.sendToDevice(dev, callPayload);
-                // Refresh token staleness marking is handled by provider errors below
                 dispatched++;
+                console.log(
+                    `[callId=${callId} device=${dev.device_uuid || dev.id}] provider accepted`
+                );
             } catch (err) {
-                errors.push({ platform: dev.platform, err: err.message });
-                // Token likely invalid — mark for cleanup so we stop pushing dead tokens
-                console.warn('[push-gateway] push failed for', dev.platform, err.message);
-                try {
-                    if (/bad.*token|unregistered|invalid/i.test(String(err.message))) {
-                        await pool.execute(
-                            'UPDATE mobile_devices SET last_push_error = CURRENT_TIMESTAMP WHERE id = ?',
-                            [dev.id]
-                        );
-                    }
-                } catch (_) {}
+                const message = String(err.message || err);
+                errors.push({ platform: dev.platform, err: message });
+                console.warn(
+                    `[callId=${callId} device=${dev.device_uuid || dev.id}] push failed: ${message}`
+                );
+                if (/bad.*token|registration-token-not-registered|unregistered|invalid/i.test(message)) {
+                    await pool.execute('DELETE FROM mobile_devices WHERE id = ?', [dev.id]);
+                    console.warn(`[callId=${callId} device=${dev.id}] invalid token deleted`);
+                } else {
+                    await pool.execute(
+                        'UPDATE mobile_devices SET last_push_error = CURRENT_TIMESTAMP WHERE id = ?',
+                        [dev.id]
+                    );
+                }
             }
         }
-
-        res.json({ status: 'dispatched', count: dispatched, errors });
+        res.json({ status: 'dispatched', callId, count: dispatched, errors });
     } catch (err) {
         console.error('[push-gateway] incoming-call error:', err);
         res.status(500).json({ success: false, error: err.message });
@@ -318,4 +390,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { app, buildCtx, dbConfig };
+module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint };

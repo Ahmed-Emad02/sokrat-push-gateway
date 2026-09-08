@@ -391,11 +391,18 @@ app.get('/api/push/extensions', async (req, res) => {
 // Asterisk AMI live volume control (mid-call mic gain via VOLUME(RX))
 // ----------------------------------------------------------------------------
 const net = require('net');
+const AMI_HOST = process.env.AMI_HOST || '127.0.0.1';
+const AMI_PORT = parseInt(process.env.AMI_PORT, 10) || 5038;
 
 function amiCommand(actions) {
+    const amiUser = process.env.AMI_USER;
+    const amiPass = process.env.AMI_PASS;
+    if (!amiUser || !amiPass) {
+        return Promise.reject(new Error('AMI_USER and AMI_PASS environment variables are required'));
+    }
     return new Promise((resolve, reject) => {
-        const client = net.createConnection({ host: '127.0.0.1', port: 5038 }, () => {
-            let req = 'Action: Login\r\nUsername: admin\r\nSecret: admin\r\nEvents: off\r\n\r\n';
+        const client = net.createConnection({ host: AMI_HOST, port: AMI_PORT }, () => {
+            let req = `Action: Login\r\nUsername: ${amiUser}\r\nSecret: ${amiPass}\r\nEvents: off\r\n\r\n`;
             for (const act of actions) {
                 for (const [k, v] of Object.entries(act)) {
                     req += `${k}: ${v}\r\n`;
@@ -531,6 +538,9 @@ app.post('/api/call/volume', async (req, res) => {
 // Boot
 // ----------------------------------------------------------------------------
 async function start() {
+    if (!process.env.AMI_USER || !process.env.AMI_PASS) {
+        throw new Error('Fatal: AMI_USER and AMI_PASS environment variables must be configured');
+    }
     await Promise.all([initApns(), initFcm()]);
     app.listen(PORT, () => {
         console.log(`[Sokrat Push Gateway] listening on :${PORT}`);

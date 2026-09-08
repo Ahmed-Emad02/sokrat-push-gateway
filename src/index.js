@@ -388,6 +388,146 @@ app.get('/api/push/extensions', async (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// Asterisk AMI live volume control (mid-call mic gain via VOLUME(RX))
+// ----------------------------------------------------------------------------
+const net = require('net');
+
+function amiCommand(actions) {
+    return new Promise((resolve, reject) => {
+        const client = net.createConnection({ host: '127.0.0.1', port: 5038 }, () => {
+            let req = 'Action: Login\r\nUsername: admin\r\nSecret: admin\r\nEvents: off\r\n\r\n';
+            for (const act of actions) {
+                for (const [k, v] of Object.entries(act)) {
+                    req += `${k}: ${v}\r\n`;
+                }
+                req += '\r\n';
+            }
+            req += 'Action: Logoff\r\n\r\n';
+            client.write(req);
+        });
+
+        let data = '';
+        client.on('data', (chunk) => {
+            data += chunk.toString();
+        });
+
+        client.on('end', () => {
+            resolve(data);
+        });
+
+        client.on('error', (err) => {
+            reject(err);
+        });
+
+        client.setTimeout(3000, () => {
+            client.destroy();
+            resolve(data);
+        });
+    });
+}
+function dbToAsteriskVolume(db) {
+    const num = Math.max(-12, Math.min(6, parseFloat(db) || 0));
+    if (num === 0) return 0;
+    if (num > 0) {
+        return parseFloat(Math.pow(10, num / 20).toFixed(4));
+    } else {
+        return -parseFloat(Math.pow(10, -num / 20).toFixed(4));
+    }
+}
+
+function matchPjsipChannel(lines, ext) {
+    if (!ext || !Array.isArray(lines)) return null;
+    let targetChannel = null;
+    // Pass 1: Strict scan for direct PJSIP channel prefix match (e.g. PJSIP/150-0000000a)
+    for (const line of lines) {
+        const cleanLine = line.replace(/^Output:\s*/, '').trim();
+        if (!cleanLine || !cleanLine.includes('!')) continue;
+        const parts = cleanLine.split('!');
+        const ch = parts[0] || '';
+        if (ch.startsWith(`PJSIP/${ext}-`)) {
+            targetChannel = ch;
+            break;
+        }
+    }
+
+    // Pass 2: Fallback scan strictly among PJSIP channels matching callerid
+    if (!targetChannel) {
+        for (const line of lines) {
+            const cleanLine = line.replace(/^Output:\s*/, '').trim();
+            if (!cleanLine || !cleanLine.includes('!')) continue;
+            const parts = cleanLine.split('!');
+            const ch = parts[0] || '';
+            const cid = parts[7] || '';
+            if (ch.startsWith('PJSIP/') && (cid === ext || cid.includes(`<${ext}>`))) {
+                targetChannel = ch;
+                break;
+            }
+        }
+    }
+
+    return targetChannel;
+}
+
+async function setAsteriskChannelVolume({ extension, callId, gainDb }) {
+    const ext = String(extension || '').trim();
+    if (!/^[0-9]{2,6}$/.test(ext)) {
+        return { success: false, error: 'Invalid extension format' };
+    }
+    const targetGain = dbToAsteriskVolume(gainDb);
+    let targetChannel = null;
+    try {
+        const resp = await amiCommand([{ Action: 'Command', Command: 'core show channels concise' }]);
+        const lines = (resp || '').split('\n');
+        targetChannel = matchPjsipChannel(lines, ext);
+    } catch (amiErr) {
+        console.warn('[push-gateway] AMI core show channels concise notice:', amiErr.message);
+    }
+    if (!targetChannel) {
+        return { success: false, error: 'No active channel found for extension ' + ext };
+    }
+
+    if (!/^PJSIP\/[0-9]{2,6}-[0-9a-f]+$/i.test(targetChannel)) {
+        return { success: false, error: 'Unexpected channel name format: ' + targetChannel };
+    }
+
+    // 2. Set variable VOLUME(RX) on target channel via Asterisk CLI:
+    // Command in Asterisk 18: 'dialplan set chanvar <channel> <varname> <value>'
+    try {
+        const setResp = await amiCommand([{
+            Action: 'Command',
+            Command: `dialplan set chanvar ${targetChannel} VOLUME(RX) ${targetGain}`
+        }]);
+
+        if (/no such command|no such channel|response:\s*error/i.test(setResp)) {
+            console.error(`[push-gateway] dialplan set chanvar rejected on ${targetChannel}:`, setResp);
+            return { success: false, error: 'Asterisk rejected volume command: ' + setResp.trim() };
+        }
+
+        console.log(`[push-gateway] live volume applied on ${targetChannel}: VOLUME(RX)=${targetGain}`);
+        return { success: true, channel: targetChannel, gainDb: targetGain, detail: setResp.trim() };
+    } catch (setErr) {
+        console.error(`[push-gateway] failed to set VOLUME(RX) on ${targetChannel}:`, setErr.message);
+        return { success: false, error: 'AMI command error: ' + setErr.message };
+    }
+}
+
+app.post('/api/call/volume', async (req, res) => {
+    try {
+        const { extension, callId, micGainDb } = req.body || {};
+        if (!extension && !callId) {
+            return res.status(400).json({ success: false, error: 'extension or callId is required' });
+        }
+        const gain = Math.max(-12, Math.min(12, parseInt(micGainDb, 10) || 0));
+        const result = await setAsteriskChannelVolume({ extension, callId, gainDb: gain });
+        if (!result.success) {
+            return res.status(404).json(result);
+        }
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+// ----------------------------------------------------------------------------
 // Boot
 // ----------------------------------------------------------------------------
 async function start() {
@@ -397,12 +537,10 @@ async function start() {
         console.log(`[Sokrat Push Gateway] APNs=${apnsReady ? 'ON' : 'OFF'}  FCM=${fcmReady ? 'ON' : 'OFF'}`);
     });
 }
+module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume };
 
 if (require.main === module) {
     start().catch((err) => {
-        console.error('[push-gateway] fatal:', err);
         process.exit(1);
     });
 }
-
-module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint };

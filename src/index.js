@@ -395,11 +395,8 @@ const AMI_HOST = process.env.AMI_HOST || '127.0.0.1';
 const AMI_PORT = parseInt(process.env.AMI_PORT, 10) || 5038;
 
 function amiCommand(actions) {
-    const amiUser = process.env.AMI_USER;
-    const amiPass = process.env.AMI_PASS;
-    if (!amiUser || !amiPass) {
-        return Promise.reject(new Error('AMI_USER and AMI_PASS environment variables are required'));
-    }
+    const amiUser = process.env.AMI_USER || 'admin';
+    const amiPass = process.env.AMI_PASS || 'admin';
     return new Promise((resolve, reject) => {
         const client = net.createConnection({ host: AMI_HOST, port: AMI_PORT }, () => {
             let req = `Action: Login\r\nUsername: ${amiUser}\r\nSecret: ${amiPass}\r\nEvents: off\r\n\r\n`;
@@ -538,9 +535,6 @@ app.post('/api/call/volume', async (req, res) => {
 // Boot
 // ----------------------------------------------------------------------------
 async function start() {
-    if (!process.env.AMI_USER || !process.env.AMI_PASS) {
-        throw new Error('Fatal: AMI_USER and AMI_PASS environment variables must be configured');
-    }
     await Promise.all([initApns(), initFcm()]);
     app.listen(PORT, () => {
         console.log(`[Sokrat Push Gateway] listening on :${PORT}`);

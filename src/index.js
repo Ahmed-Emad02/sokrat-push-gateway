@@ -74,7 +74,7 @@ const PORT = parseInt(process.env.PORT, 10) || 8095;
 const dbConfig = {
     host: process.env.DB_HOST || '127.0.0.1',
     user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASS || 'admin',
+    password: process.env.DB_PASS !== undefined ? process.env.DB_PASS : '',
     database: process.env.DB_NAME || 'asterisk',
     connectionLimit: 10,
     waitForConnections: true

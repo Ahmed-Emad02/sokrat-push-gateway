@@ -517,11 +517,14 @@ async function setAsteriskChannelVolume({ extension, callId, gainDb }) {
 
 app.post('/api/call/volume', async (req, res) => {
     try {
-        const { extension, callId, micGainDb } = req.body || {};
+        const { extension, callId } = req.body || {};
         if (!extension && !callId) {
             return res.status(400).json({ success: false, error: 'extension or callId is required' });
         }
-        const gain = Math.max(-12, Math.min(12, parseInt(micGainDb, 10) || 0));
+        const rawGain = req.body?.micGainDb !== undefined
+            ? req.body.micGainDb
+            : (req.body?.gainDb !== undefined ? req.body.gainDb : req.body?.gain);
+        const gain = Math.max(-12, Math.min(12, parseInt(rawGain, 10) || 0));
         const result = await setAsteriskChannelVolume({ extension, callId, gainDb: gain });
         if (!result.success) {
             return res.status(404).json(result);

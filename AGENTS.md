@@ -94,10 +94,13 @@ npm test       # node --test   → test/index.test.js, test/channel-matching.tes
 ## 6. Gotchas
 
 - **`.env` must be created** from `.env.example` — it is not committed.
-- **Pushes are disabled by default:** `APNS_ENABLED=false`, `FCM_ENABLED=false`.
-  Without an APNs `.p8` (key/team/topic) and an FCM service-account JSON, `/health`
-  will report providers disabled and **nothing is actually pushed**. These files are
-  referenced at `/etc/sokrat/{apns,firebase}/…` — absolute paths, outside the repo.
+- **FCM is enabled by default, APNs is not:** `FCM_ENABLED=true`, `APNS_ENABLED=false`.
+  FCM credentials are resolved from the first match of `GOOGLE_APPLICATION_CREDENTIALS`,
+  `/etc/sokrat/firebase/service-account.json`, or the bundled
+  `config/firebase-service-account.{json,b64}`. If none are found `/health` reports
+  `fcm:false` and the gateway logs a warning but keeps serving (calls still work,
+  only wake pushes are skipped). iOS pushes stay off until an APNs `.p8`
+  (key/team/topic) is installed.
 - **`DB_PASS=admin` / `root` in `.env.example`** — credentials for the PBX's own
   `asterisk` DB, shared with `sokrat-voice-main`. Change them together.
 - **AMI must be reachable** or the incoming-call webhook silently does nothing

@@ -59,13 +59,13 @@ test('PBX management controls exist with the store field names', async () => {
     assert.deepEqual(approvalOptions, ['pending', 'approved', 'suspended', 'retired']);
 });
 
-test('PBX management is opt-in and a new managed PBX starts pending', async () => {
+test('every dashboard PBX is managed and starts pending until automatic SSH setup', async () => {
     const script = await read('app.js');
 
     assert.match(
         script,
-        /if \(refs\.pbxManaged\.checked\) \{\s*payload\.management = \{/,
-        'management must only be added to the payload when the operator opts in'
+        /Every server uses managed provisioning; no legacy setup mode/,
+        'management is automatic rather than an operator choice'
     );
     assert.match(
         script,
@@ -78,19 +78,17 @@ test('PBX management is opt-in and a new managed PBX starts pending', async () =
     assert.doesNotMatch(script, /\binstallationId\b/, 'the store field is reviewedInstallationId');
 });
 
-test('management wording distinguishes manual ownership review and supported Chrome version', async () => {
+test('management wording explains automatic approval and supported Chrome version', async () => {
     const html = await read('index.html');
     const approvalHint = html.slice(html.indexOf('id="pbx-approval-hint"'), html.indexOf('</span>', html.indexOf('id="pbx-approval-hint"')));
-    assert.match(approvalHint, /does not verify ownership/i);
-    assert.match(approvalHint, /starts as pending/i);
-    assert.match(approvalHint, /Successful SSH setup approves it automatically/i);
+    assert.match(approvalHint, /Successful SSH setup approves the server automatically/i);
 
     const platformHint = html.slice(html.indexOf('id="ext-platforms-hint"'), html.indexOf('</span>', html.indexOf('id="ext-platforms-hint"')));
     assert.match(platformHint, /Chrome enrollment requires extension version 1\.15\.0/i);
     assert.match(platformHint, /at least one/i);
 
-    // "Approved (manual)" is the strongest label the UI may show.
-    assert.match(html, /<option value="approved">Approved \(manual\)<\/option>/);
+    // Approval follows successful SSH verification, not a manual setup choice.
+    assert.match(html, /<option value="approved">Approved<\/option>/);
     assert.doesNotMatch(html, /verified ownership/i);
 });
 

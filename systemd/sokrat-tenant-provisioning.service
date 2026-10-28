@@ -24,7 +24,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# UFW/iptables-nft queries and updates the kernel firewall through netlink.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
 TimeoutStartSec=900
 Nice=10

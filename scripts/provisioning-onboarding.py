@@ -41,7 +41,7 @@ def validate_request(req):
     if req['action'] == 'enroll':
         if not re.fullmatch(r'pbx_[A-Za-z0-9_-]{1,76}', req.get('pbxId', '')):
             raise ValueError('id')
-        if not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', req.get('fingerprint', '')):
+        if req.get('fingerprint') is not None and not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', req['fingerprint']):
             raise ValueError('fingerprint')
         if not isinstance(req.get('password'), str) or not 1 <= len(req['password']) <= 1024:
             raise ValueError('password')
@@ -132,7 +132,7 @@ def refusal_code(error):
 def handle(req, worker):
     import paramiko
     host = validate_request(req)
-    # Handshake without authentication: show fingerprint before sending password.
+    # Handshake without authentication: pin/check the key before sending a password.
     try:
         with socket.create_connection((host, 22), timeout=10) as raw:
             transport = paramiko.Transport(raw)
@@ -146,7 +146,7 @@ def handle(req, worker):
         raise stage_error('ssh_handshake', error)
     if req['action'] == 'probe':
         return {'ok': True, 'fingerprint': actual}
-    if req['fingerprint'] != actual:
+    if req.get('fingerprint') is not None and req['fingerprint'] != actual:
         raise ValueError('host key changed')
     config = worker.load_config('/etc/sokrat/gateway-provisioning.json', False)
     control = worker.read_regular(config['controlFile'], 'control')
@@ -162,6 +162,13 @@ def handle(req, worker):
     worker.ensure_dir('/etc/sokrat/ssh', 0o700)
     identity = Path('/etc/sokrat/ssh') / (pbx + '.key')
     known = Path('/etc/sokrat/ssh') / (pbx + '.known_hosts')
+    # Trust on first use removes the manual fingerprint ceremony. Once enrolled,
+    # the persisted host key must match BEFORE sending any root password.
+    if known.exists():
+        worker.check_file(known, 'known hosts', {0}, private=True)
+        expected = host + ' ' + key.get_name() + ' ' + key.get_base64()
+        if known.read_text().strip() != expected:
+            raise ValueError('host key changed')
     if not identity.exists():
         subprocess.run(['/usr/bin/ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'sokrat-gateway-' + pbx, '-f', str(identity)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
     worker.check_file(identity, 'identity', {0}, private=True)

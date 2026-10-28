@@ -374,6 +374,13 @@ test('enrollment → approval → revoke works end to end over HTTP', async (t) 
     assert.equal(JSON.stringify(pendingState.body).includes(invite.body.token), false);
     assert.equal(JSON.stringify(pendingState.body).includes('tokenHash'), false);
 
+    // PBX ownership and extension access precede device approval. SSH success
+    // is tested independently by the onboarding API suite.
+    assert.equal(pbx.body.pbx.management.approvalStatus, 'pending');
+    await harness.store.updatePbx(pbx.body.pbx.id, { management: { approvalStatus: 'approved' } });
+    await harness.store.addExtension({ pbxId: pbx.body.pbx.id, extension: '150',
+        status: 'enabled', maxDevices: 5, allowedPlatforms: ['android'] });
+
     const approved = await harness.client.request(
         `/control/api/devices/${deviceId}/approve`,
         { method: 'POST', body: { pbxId: pbx.body.pbx.id, extension: '150' }, csrf }

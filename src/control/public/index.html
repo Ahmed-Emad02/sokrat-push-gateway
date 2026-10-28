@@ -82,20 +82,20 @@
       <form id="pbx-form" class="form-grid">
         <input type="hidden" id="pbx-id" value="">
         <div class="field">
-          <label for="pbx-name">Name</label>
-          <input id="pbx-name" name="name" type="text" required maxlength="64"
-                 placeholder="Head office PBX" autocomplete="off">
-        </div>
-        <div class="field">
           <label for="pbx-address">PBX address</label>
           <input id="pbx-address" name="address" type="text" maxlength="253" autocomplete="off" spellcheck="false" aria-describedby="pbx-address-hint">
-          <span id="pbx-address-hint" class="hint">Enter one Tailscale IPv4 or hostname resolving to it. Standard WS :8088, API :8080, media and SSH targets are filled automatically. These defaults do not prove service readiness.</span>
-          <label class="check" for="pbx-auto-address"><input id="pbx-auto-address" name="autoAddress" type="checkbox" checked> Derive standard connection settings</label>
-          <button id="pbx-resolve" class="btn btn-ghost" type="button">Resolve address</button>
+          <span id="pbx-address-hint" class="hint">Enter the server's Tailscale IP or a domain resolving to it. Connection settings are filled automatically.</span>
+          <label class="check" for="pbx-auto-address" hidden><input id="pbx-auto-address" name="autoAddress" type="checkbox" checked> Derive standard connection settings</label>
+          <button id="pbx-resolve" class="btn btn-ghost" type="button" hidden>Resolve address</button>
           <output id="pbx-address-status" role="status" aria-live="polite"></output>
         </div>
         <details id="pbx-advanced" class="field">
           <summary>Advanced connection settings</summary>
+        <div class="field">
+          <label for="pbx-name">Name (optional)</label>
+          <input id="pbx-name" name="name" type="text" maxlength="64"
+                 placeholder="Head office PBX" autocomplete="off">
+        </div>
         <div class="field">
           <label for="pbx-ws">SIP WebSocket URL</label>
           <input id="pbx-ws" name="wsURL" type="text" required maxlength="512"
@@ -120,12 +120,12 @@
           </label>
         </div>
         </details>
-        <div class="field field-inline">
+        <div class="field field-inline" hidden>
           <label class="check" for="pbx-managed">
-            <input id="pbx-managed" name="managed" type="checkbox" aria-describedby="pbx-managed-hint">
+            <input id="pbx-managed" name="managed" type="checkbox" checked aria-describedby="pbx-managed-hint">
             <span>Managed multi-tenant PBX</span>
           </label>
-          <span id="pbx-managed-hint" class="hint">Optional. Leave off for a legacy single-customer PBX.</span>
+          <span id="pbx-managed-hint" class="hint">All servers are managed automatically.</span>
         </div>
         <div class="field" hidden>
           <label for="pbx-customer">Customer</label>
@@ -153,13 +153,12 @@
           <label for="pbx-approval">Approval status</label>
           <select id="pbx-approval" name="approvalStatus" aria-describedby="pbx-approval-hint">
             <option value="pending">Pending</option>
-            <option value="approved">Approved (manual)</option>
+            <option value="approved">Approved</option>
             <option value="suspended">Suspended</option>
             <option value="retired">Retired</option>
           </select>
           <span id="pbx-approval-hint" class="hint">
-            A new managed PBX starts as pending. Successful SSH setup approves it automatically;
-            without SSH setup, manual approval is an operator decision only and does not verify ownership.
+            Successful SSH setup approves the server automatically.
           </span>
         </div>
         <div class="field" hidden>
@@ -173,21 +172,19 @@
           </span>
         </div>
         <fieldset class="field">
-          <legend>Automatic SSH setup (optional)</legend>
-          <label class="check" for="pbx-ssh-enable"><input id="pbx-ssh-enable" name="sshSetup" type="checkbox"> Set up this PBX through SSH</label>
-          <label for="pbx-ssh-host">Tailscale IPv4 address</label>
-          <input id="pbx-ssh-host" name="sshHost" type="text" maxlength="15" readonly autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pbx-ssh-hint">
-          <label for="pbx-ssh-user">SSH username</label>
-          <input id="pbx-ssh-user" name="sshUsername" type="text" value="root" readonly autocomplete="section-pbx username">
-          <label for="pbx-ssh-password">SSH password (used once, not stored)</label>
-          <input id="pbx-ssh-password" name="sshPassword" type="password" maxlength="1024" autocomplete="section-pbx current-password">
-          <span id="pbx-ssh-hint" class="hint">Enter the root SSH password and confirm the host fingerprint. Successful setup automatically approves a pending PBX and configures its relay, firewall and push hook. API/WebSocket/media hosts must match this Tailscale IP, and the existing dialplan push context is required. Devices still need manual approval.</span>
-          <button id="pbx-ssh-probe" class="btn btn-ghost" type="button">Check SSH host key</button>
-          <output id="pbx-ssh-fingerprint" aria-live="polite"></output>
-          <label class="check" for="pbx-ssh-confirm"><input id="pbx-ssh-confirm" name="sshConfirm" type="checkbox"> I verified this fingerprint against the PBX’s SSH host key</label>
+          <legend>Automatic server setup</legend>
+          <label class="check" for="pbx-ssh-enable" hidden><input id="pbx-ssh-enable" name="sshSetup" type="checkbox" checked> Automatic SSH setup</label>
+          <input id="pbx-ssh-host" name="sshHost" type="hidden">
+          <input id="pbx-ssh-user" name="sshUsername" type="hidden" value="root">
+          <label for="pbx-ssh-password">Root SSH password</label>
+          <input id="pbx-ssh-password" name="sshPassword" type="password" required maxlength="1024" autocomplete="section-pbx current-password" aria-describedby="pbx-ssh-hint">
+          <span id="pbx-ssh-hint" class="hint">Enter the server address and root password, then Add server. SSH access, approval, relay, firewall and push hook are configured automatically. The password is used once and never stored. When editing, leave it blank to keep existing SSH access.</span>
+          <button id="pbx-ssh-probe" class="btn btn-ghost" type="button" hidden>Check SSH host key</button>
+          <output id="pbx-ssh-fingerprint" aria-live="polite" hidden></output>
+          <label class="check" for="pbx-ssh-confirm" hidden><input id="pbx-ssh-confirm" name="sshConfirm" type="checkbox"> Automatic host-key pinning</label>
         </fieldset>
         <div class="form-actions">
-          <button id="pbx-submit" class="btn btn-primary" type="submit">Add PBX</button>
+          <button id="pbx-submit" class="btn btn-primary" type="submit">Add server</button>
           <button id="pbx-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
         </div>
       </form>

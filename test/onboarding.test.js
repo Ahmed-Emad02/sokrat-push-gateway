@@ -26,7 +26,60 @@ test('one PBX address derives standard settings and pins hostnames to one Tailsc
 const { createControlRouter } = require('../src/control/router');
 const { ControlStore } = require('../src/control/store');
 
-test('broker rejects non-Tailscale hosts, SSH options, unconfirmed keys and arbitrary payloads', () => {
+test('control startup migrates old unmanaged records without approving them or rewriting approved servers', async t => {
+    const { createControl } = require('../src/control');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sokrat-managed-migration-'));
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    const store = new ControlStore({ filePath: path.join(dir, 'control.json') });
+    await store.init();
+    const base = { name: 'Fixture', wsURL: 'ws://100.64.0.12:8088/ws', apiURL: 'http://100.64.0.12:8080', mediaIps: ['100.64.0.12'], enabled: true };
+    const old = await store.addPbx(base);
+    const approved = await store.addPbx({ ...base, name: 'Already verified', management: { approvalStatus: 'approved', extensionPolicyRequired: true } });
+    const control = createControl({ store, filePath: path.join(dir, 'control.json'), env: {} });
+    t.after(() => control.close());
+    await control.init();
+    assert.equal(store.getPbx(old.id).management.approvalStatus, 'pending');
+    assert.equal(store.getPbx(old.id).management.extensionPolicyRequired, true);
+    assert.deepEqual(store.getPbx(approved.id), approved, 'approved servers retain identity and sessions');
+    const first = await fs.readFile(path.join(dir, 'control.json'), 'utf8');
+    await control.init();
+    assert.equal(await fs.readFile(path.join(dir, 'control.json'), 'utf8'), first, 'migration is idempotent');
+});
+
+test('dashboard API always creates managed pending PBXs and rejects legacy or manual approval overrides', async t => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sokrat-managed-api-'));
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    const store = new ControlStore({ filePath: path.join(dir, 'control.json'), maxEnabledPbx: 5 });
+    await store.init();
+    const app = express();
+    app.use('/control', createControlRouter({ store, credential: { configured: true },
+        sessions: { get: id => id === 'fixture' ? { id, csrfToken: 'csrf' } : null } }));
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    t.after(() => server.close());
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const send = async (url, method, body) => {
+        const response = await fetch(origin + '/control/api/pbx' + url, { method,
+            headers: { 'Content-Type': 'application/json', Cookie: 'sokrat_control_sid=fixture', Origin: origin, 'X-CSRF-Token': 'csrf' },
+            body: JSON.stringify(body) });
+        return { status: response.status, body: await response.json() };
+    };
+    const base = { name: 'Fixture', wsURL: 'ws://100.64.0.12:8088/ws', apiURL: 'http://100.64.0.12:8080', mediaIps: ['100.64.0.12'], enabled: true };
+    for (const management of [undefined, null, { approvalStatus: 'approved', extensionPolicyRequired: false }]) {
+        const created = await send('', 'POST', { ...base, name: `Fixture ${store.listPbx().length}`, management });
+        assert.equal(created.status, 201);
+        assert.equal(created.body.pbx.management.approvalStatus, 'pending');
+        assert.equal(created.body.pbx.management.extensionPolicyRequired, true);
+        const url = '/' + created.body.pbx.id;
+        assert.equal((await send(url, 'PATCH', { management: null })).status, 400);
+        assert.equal((await send(url, 'PATCH', { management: { approvalStatus: 'approved' } })).body.error, 'ssh_setup_required');
+        const updated = await send(url, 'PATCH', { management: { extensionPolicyRequired: false } });
+        assert.equal(updated.status, 200);
+        assert.equal(updated.body.pbx.management.extensionPolicyRequired, true);
+    }
+});
+
+test('broker rejects unsafe targets and arbitrary payloads; fingerprints are optional for automatic setup', () => {
     const file = path.resolve(__dirname, '../scripts/provisioning-onboarding.py');
     const result = spawnSync('python3', ['-c', `
 import importlib.util,types
@@ -34,6 +87,11 @@ spec=importlib.util.spec_from_file_location('broker',${JSON.stringify(file)})
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 valid={'action':'probe','host':'100.64.0.12','username':'root'}
 assert m.validate_request(valid)=='100.64.0.12'
+enroll={**valid,'action':'enroll','pbxId':'pbx_test','password':'one-time'}
+assert m.validate_request(enroll)=='100.64.0.12'
+try:m.validate_request({**enroll,'fingerprint':'invalid'})
+except ValueError:pass
+else:raise AssertionError('invalid optional fingerprint accepted')
 for patch in [{'host':'127.0.0.1'},{'host':'192.0.2.1'},{'host':'example.com'},{'host':'100.64.0.12;id'}, {'username':'-oProxyCommand=id'},{'command':'id'},{'password':'should-not-be-probed'}]:
  try:m.validate_request({**valid,**patch})
  except ValueError:pass
@@ -48,6 +106,65 @@ for patch in [{'mediaIps':['100.64.0.13']},{'apiURL':'http://127.0.0.1/'},{'wsUR
  except ValueError:pass
  else:raise AssertionError(patch)
 compile(m.BOOTSTRAP,'remote-bootstrap','exec')
+`], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+});
+
+test('automatic SSH setup pins first use, accepts the saved key and rejects key changes before password auth', () => {
+    const file = path.resolve(__dirname, '../scripts/provisioning-onboarding.py');
+    const result = spawnSync('python3', ['-c', `
+import importlib.util, tempfile, pathlib, types, sys, io, json
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('broker',${JSON.stringify(file)})
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+key=types.SimpleNamespace(asbytes=lambda:b'actual-key',get_name=lambda:'ssh-ed25519',get_base64=lambda:'AAAA')
+class FakeTransport:
+ def __init__(self,*args):pass
+ def start_client(self,**kwargs):pass
+ def get_remote_server_key(self):return key
+ def close(self):pass
+connections=[]
+class FakeClient:
+ def get_host_keys(self):return types.SimpleNamespace(add=lambda *args:None)
+ def connect(self,*args,**kwargs):connections.append(kwargs)
+ def exec_command(self,*args,**kwargs):
+  stdin=io.StringIO();stdin.channel=types.SimpleNamespace(shutdown_write=lambda:None)
+  stdout=io.BytesIO(json.dumps({'dialplanFile':'/etc/asterisk/extensions_sokrat.conf','calleeVar':'TARGET_EXT','callerVar':'SOKRAT_CALLER_NUM','nameVar':'SOKRAT_CALLER_NAME'}).encode())
+  stdout.channel=types.SimpleNamespace(recv_exit_status=lambda:0)
+  return stdin,stdout,None
+ def close(self):pass
+with tempfile.TemporaryDirectory() as directory:
+ root=pathlib.Path(directory)
+ def mapped(p):return root/str(p).removeprefix('/etc/sokrat/')
+ ssh=mapped('/etc/sokrat/ssh');ssh.mkdir()
+ (ssh/'pbx_test.key').write_text('fixture-private-key')
+ (ssh/'pbx_test.key.pub').write_text('ssh-ed25519 AAAA fixture')
+ known=ssh/'pbx_test.known_hosts'
+ control=root/'control.json';control.write_text(json.dumps({'pbx':[{'id':'pbx_test','wsURL':'ws://100.64.0.12:8088/ws','apiURL':'http://100.64.0.12:8080','mediaIps':['100.64.0.12'],'management':{'approvalStatus':'pending'}}]}))
+ mapped('/etc/sokrat/gateway-provisioning-adapters.json').write_text('{}')
+ mapped('/etc/sokrat/gateway-provisioning.json').write_text(json.dumps({'pbx':{}}))
+ def write(p,text,mode):p.write_text(text);p.chmod(mode)
+ worker=types.SimpleNamespace(load_config=lambda *args:{'controlFile':control,'gatewayUrl':'https://gateway.example'},
+  read_regular=lambda p,*args:p.read_text(),record_approval=lambda r:r['management']['approvalStatus'],
+  ensure_dir=lambda *args:None,check_file=lambda *args,**kwargs:None,
+  acquire_lock=lambda cfg:object(),release_lock=lambda lock:None,atomic_write=write)
+ with patch.object(m,'Path',side_effect=mapped),patch.dict(sys.modules,{'paramiko':types.SimpleNamespace(Transport=FakeTransport,SSHClient=FakeClient)}),patch.object(m.socket,'create_connection'):
+  for existing in [None,'100.64.0.12 ssh-ed25519 AAAA\\n']:
+   if existing is not None:known.write_text(existing)
+   req={'action':'enroll','pbxId':'pbx_test','host':'100.64.0.12','username':'root','password':'transient'}
+   before=len(connections)
+   assert m.handle(req,worker)=={'ok':True}
+   assert len(connections)==before+2
+   assert connections[-2]['password']=='transient'
+   assert 'password' not in connections[-1]
+   assert 'password' not in req
+   assert known.read_text()=='100.64.0.12 ssh-ed25519 AAAA\\n'
+  known.write_text('100.64.0.12 ssh-ed25519 CHANGED\\n')
+  before=len(connections)
+  try:m.handle({'action':'enroll','pbxId':'pbx_test','host':'100.64.0.12','username':'root','password':'never-sent'},worker)
+  except ValueError as e:assert str(e)=='host key changed'
+  else:raise AssertionError('changed key accepted')
+  assert len(connections)==before,'password authentication attempted for changed host'
 `], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
 });

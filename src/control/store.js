@@ -988,6 +988,20 @@ class ControlStore {
         if (clash) throw fail('pbx_name_conflict', `A PBX named "${name}" already exists`, 409);
     }
 
+    manageAllPbx() {
+        return this._mutateLazy(draft => {
+            let changed = false;
+            for (const record of draft.pbx) {
+                if (record.management) continue;
+                // Migration never invents ownership approval for an old server.
+                record.management = this._normalizeManagement({ approvalStatus: 'pending', extensionPolicyRequired: true });
+                record.updatedAt = isoAt(this._now());
+                changed = true;
+            }
+            return { commit: changed };
+        });
+    }
+
     addPbx(input, meta = {}) {
         return this._mutate((draft) => {
             const normalized = normalizePbxInput(input);

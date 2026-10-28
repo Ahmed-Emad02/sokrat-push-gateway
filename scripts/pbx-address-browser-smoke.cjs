@@ -6,17 +6,19 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 (async () => {
     let saved;
-    let enrolled = null;
-    let approvalPatches = 0;
+    let enrolled;
+    let approved = false;
+    let edited;
     let createdCount = 0;
     let refuseEnrollment = true;
+    const requests = [];
     const server = http.createServer(async (req, res) => {
         let data = '';
         for await (const chunk of req) data += chunk;
+        requests.push({ url: req.url, method: req.method });
         res.setHeader('Content-Type', 'application/json');
         if (req.url.includes('/api/session')) return res.end(JSON.stringify({ authenticated: true, csrfToken: 'fixture' }));
         if (req.url.includes('/api/pbx-ssh/resolve')) return res.end(JSON.stringify({ host: '100.64.0.12', wsURL: 'ws://100.64.0.12:8088/ws', apiURL: 'http://100.64.0.12:8080', mediaIps: '100.64.0.12' }));
-        if (req.url.includes('/api/pbx-ssh/probe')) return res.end(JSON.stringify({ fingerprint: 'SHA256:' + 'a'.repeat(43) }));
         if (req.url.includes('/api/pbx-ssh/enroll')) {
             enrolled = JSON.parse(data);
             if (refuseEnrollment) {
@@ -24,93 +26,73 @@ const assert = require('node:assert/strict');
                 res.statusCode = 503;
                 return res.end(JSON.stringify({ success: false, message: 'Fixture SSH password refused' }));
             }
+            approved = true;
             return res.end(JSON.stringify({ success: true }));
         }
-        if (req.url.includes('/api/pbx/') && req.method === 'PATCH' && JSON.parse(data).management?.approvalStatus === 'approved') approvalPatches++;
-        if (req.url.includes('/api/pbx') && req.method === 'POST') {
+        if (req.url === '/control/api/pbx' && req.method === 'POST') {
             createdCount++;
-            saved = JSON.parse(data); return res.end(JSON.stringify({ pbx: { id: 'pbx_fixture' } }));
+            saved = JSON.parse(data);
+            return res.end(JSON.stringify({ pbx: { id: 'pbx_fixture' } }));
         }
-        if (req.url.includes('/api/')) return res.end(JSON.stringify({ pbx: [], devices: [], invites: [], extensions: [], activity: [], limits: {} }));
+        if (req.url === '/control/api/pbx/pbx_fixture' && req.method === 'PATCH') {
+            edited = JSON.parse(data);
+            return res.end(JSON.stringify({ success: true }));
+        }
+        if (req.url.includes('/api/')) return res.end(JSON.stringify({ pbx: approved ? [{ ...saved, id: 'pbx_fixture',
+            mediaIps: [saved.mediaIps], management: { ...saved.management, approvalStatus: 'approved' } }] : [],
+            devices: [], invites: [], extensions: [], activity: [], limits: {} }));
         const name = req.url.endsWith('.js') ? 'app.js' : req.url.endsWith('.css') ? 'app.css' : 'index.html';
         res.setHeader('Content-Type', name.endsWith('.js') ? 'application/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html');
-        res.end(fs.readFileSync(path.join(__dirname, '../src/control/public', name)));
+        const content = fs.readFileSync(path.join(__dirname, '../src/control/public', name), 'utf8');
+        res.end(name === 'index.html' ? content.replaceAll('__CONTROL_BASE__', '/control') : content);
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const browser = await chromium.launch({ headless: true });
     try {
         const page = await browser.newPage();
-        const errors = []; page.on('pageerror', error => errors.push(error.message));
+        const errors = [];
+        page.on('pageerror', error => errors.push(error.message));
         await page.goto(`http://127.0.0.1:${server.address().port}/control/`);
-        await page.locator('#pbx-name').fill('Fixture');
-        await page.locator('#pbx-address').fill('pbx.example');
-        assert.equal(await page.locator('#pbx-advanced').evaluate(el => el.open), false);
-        await page.locator('#pbx-resolve').click();
-        await page.waitForFunction(() => document.querySelector('#pbx-ssh-host').value === '100.64.0.12');
-        assert.equal(await page.locator('#pbx-ws').inputValue(), 'ws://100.64.0.12:8088/ws');
-        await page.locator('#pbx-submit').click();
-        await page.waitForFunction(() => document.querySelector('#pbx-name').value === '');
-        assert.equal(saved.mediaIps, '100.64.0.12');
-        assert.equal(saved.apiURL, 'http://100.64.0.12:8080');
-        await page.locator('#pbx-auto-address').uncheck();
-        assert.equal(await page.locator('#pbx-advanced').evaluate(el => el.open), true);
-        await page.locator('#pbx-ws').fill('wss://custom.example:8443/sip');
-        assert.equal(await page.locator('#pbx-ws').inputValue(), 'wss://custom.example:8443/sip');
-        assert.deepEqual(errors, []);
-        console.log('PASS: single hostname derives settings, submits, resets and exposes custom overrides');
-
-        // SSH setup: enabling it resolves the address, the probe fills the
-        // fingerprint, and the enrollment uses the resolved host.
-        await page.locator('#pbx-auto-address').check();
-        await page.locator('#pbx-name').fill('SSH fixture');
-        await page.locator('#pbx-managed').check();
-        await page.locator('#pbx-address').fill('pbx.example');
-        await page.locator('#pbx-ssh-enable').check();
-        try {
-            await page.waitForFunction(() => document.querySelector('#pbx-ssh-host').value === '100.64.0.12');
-        } catch (error) {
-            const status = await page.locator('#pbx-address-status').textContent();
-            const banner = await page.locator('#form-status').textContent().catch(() => '');
-            throw new Error(`SSH host not resolved. status=${JSON.stringify(status)} banner=${JSON.stringify(banner)} errors=${JSON.stringify(errors)}`);
+        // Only address + password are required. No mode, name, resolve, probe,
+        // manual approval or fingerprint confirmation interaction is performed.
+        for (const id of ['pbx-managed', 'pbx-ssh-enable', 'pbx-resolve', 'pbx-ssh-probe', 'pbx-ssh-confirm', 'pbx-approval']) {
+            assert.equal(await page.locator('#' + id).isVisible(), false, id + ' must not complicate setup');
         }
-        await page.locator('#pbx-ssh-probe').click();
-        try {
-            await page.waitForFunction(() => document.querySelector('#pbx-ssh-fingerprint').textContent.includes('SHA256:'));
-        } catch (error) {
-            const fingerprint = await page.locator('#pbx-ssh-fingerprint').textContent();
-            const banner = await page.locator('#form-status').textContent().catch(() => '');
-            throw new Error(`fingerprint not shown. fingerprint=${JSON.stringify(fingerprint)} banner=${JSON.stringify(banner)} errors=${JSON.stringify(errors)}`);
-        }
-        await page.locator('#pbx-ssh-confirm').check();
+        await page.locator('#pbx-address').fill('pbx.example');
         await page.locator('#pbx-ssh-password').fill('one-time-password');
-        const validity = await page.evaluate(() => {
-            const form = document.querySelector('#pbx-form');
-            const invalid = [...form.querySelectorAll(':invalid')].map(field => field.id + ':' + field.validity.valueMissing + ':' + field.validity.badInput);
-            return { valid: form.checkValidity(), invalid };
-        });
         await page.locator('#pbx-submit').click();
         await page.waitForFunction(() => document.querySelector('#dashboard-alert').textContent.includes('Fixture SSH password refused'));
-        assert.equal(await page.locator('#pbx-ssh-password').inputValue(), '', 'password is cleared on failed setup');
-        assert.equal(await page.locator('#pbx-name').inputValue(), 'SSH fixture', 'retry retains the saved record');
-        assert.equal(createdCount, 2, 'one plain PBX and one SSH PBX');
+        assert.equal(await page.locator('#pbx-ssh-password').inputValue(), '', 'failed setup clears the password');
+        assert.equal(createdCount, 1);
+        assert.equal(saved.name, 'pbx.example');
+        assert.equal(saved.management.approvalStatus, 'pending');
+        assert.equal(saved.management.extensionPolicyRequired, true);
+        assert.equal(saved.wsURL, 'ws://100.64.0.12:8088/ws');
+        assert.equal(saved.apiURL, 'http://100.64.0.12:8080');
+        assert.equal(saved.mediaIps, '100.64.0.12');
+        assert.equal(saved.password, undefined);
         await page.locator('#pbx-ssh-password').fill('one-time-password');
         await page.locator('#pbx-submit').click();
-        try {
-            await page.waitForFunction(() => document.querySelector('#pbx-name').value === '');
-        } catch (error) {
-            const banner = await page.locator('#status-message').textContent().catch(() => '');
-            const errors2 = await page.locator('#dashboard-alert').textContent().catch(() => '');
-            throw new Error(`submit did not complete. validity=${JSON.stringify(validity)} status=${JSON.stringify(banner)} error=${JSON.stringify(errors2)} enrolled=${JSON.stringify(enrolled)}`);
-        }
-        assert.ok(enrolled, 'the SSH enrollment must have been requested');
-        assert.equal(saved.management.approvalStatus, 'pending');
-        assert.equal(approvalPatches, 0, 'approval is part of enrollment, not a second browser request');
-        assert.equal(createdCount, 2, 'retry must not create a duplicate PBX');
+        await page.waitForFunction(() => document.querySelector('#pbx-address').value === '');
+        assert.equal(createdCount, 1, 'retry never duplicates the saved PBX');
         assert.equal(enrolled.host, '100.64.0.12');
         assert.equal(enrolled.username, 'root');
         assert.equal(enrolled.password, 'one-time-password');
-        assert.match(enrolled.fingerprint, /^SHA256:[A-Za-z0-9+/]{43}$/);
+        assert.equal(enrolled.fingerprint, undefined, 'broker automatically pins the first host key');
+        assert.equal(requests.some(r => r.url.includes('/probe')), false, 'no separate fingerprint request');
+        assert.equal(await page.locator('#pbx-ssh-password').inputValue(), '');
+        await page.locator('#pbx-rows').getByRole('button', { name: 'Edit', exact: true }).click();
+        assert.equal(await page.locator('#pbx-advanced').evaluate(el => el.open), false, 'editing keeps setup simple');
+        assert.equal(await page.locator('#pbx-ssh-password').evaluate(el => el.required), false, 'approved server edits need no password');
+        const enrollments = requests.filter(r => r.url.includes('/enroll')).length;
+        await page.locator('#pbx-submit').click();
+        await page.waitForFunction(() => document.querySelector('#pbx-address').value === '');
+        assert.equal(edited.wsURL, saved.wsURL, 'editing preserves connection settings');
+        assert.equal(requests.filter(r => r.url.includes('/enroll')).length, enrollments, 'no SSH bootstrap just to save an existing server');
         assert.deepEqual(errors, []);
-        console.log('PASS: managed SSH setup resolves, probes, confirms, clears failed password and retries without duplicating the PBX');
-    } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
+        console.log('PASS: address + root password only; automatic managed SSH setup, failure/retry without duplicates, password-free existing edits');
+    } finally {
+        await browser.close();
+        await new Promise(resolve => server.close(resolve));
+    }
 })().catch(error => { console.error(error); process.exitCode = 1; });

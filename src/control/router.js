@@ -399,19 +399,19 @@ function createControlRouter(options = {}) {
     // Operator-facing reasons for a refused SSH setup. Only safe codes are
     // mapped; the raw broker error never reaches the dashboard.
     const ONBOARDING_MESSAGES = {
-        pbx_not_approved_or_mismatched: 'This PBX is not approved for SSH setup yet, or its saved endpoints do not match the address. Approve the PBX (or leave "Managed multi-tenant PBX" off) and try again.',
+        pbx_not_approved_or_mismatched: 'The server record does not match the SSH target. Check the address and retry setup.',
         pbx_endpoints_mismatched: 'The saved WS/API hosts and media IP must match the SSH address. Resolve the PBX address and save its connection settings again.',
         pbx_approval_blocked: 'This PBX is suspended or retired. Restore it to Pending or Approved before running SSH setup.',
         pbx_changed_during_setup: 'SSH setup completed, but the PBX record changed during setup. Review its settings and retry before approval.',
         password_auth_failed: 'The PBX rejected the root SSH password. Check the password and try again.',
-        host_key_changed: 'The PBX host key changed since the fingerprint was shown. Check the host key again and confirm the new fingerprint.',
+        host_key_changed: 'The server SSH host key no longer matches its saved key. No password was sent. Verify the server identity before resetting its saved SSH trust.',
         ssh_unreachable: 'The gateway could not reach the PBX on SSH port 22.',
         pbx_bootstrap_failed: 'The PBX refused the gateway key. Check that the shared push context exists and that root SSH is permitted.',
         key_login_failed: 'The gateway key was installed but key-only login failed on the PBX.',
         config_write_failed: 'The gateway could not save its own provisioning configuration.',
         onboarding_busy: 'Another SSH setup is already running. Wait a moment and try again.',
     };
-    const onboardingMessage = code => ONBOARDING_MESSAGES[code] || 'SSH setup refused or unavailable. Verify root credentials, confirmed host key, approved PBX and matching Tailscale endpoints.';
+    const onboardingMessage = code => ONBOARDING_MESSAGES[code] || 'Automatic setup could not complete. Check the server address and root SSH access, then retry.';
     router.post('/api/pbx-ssh/:action', requireSession, requireCsrf, wrap(async (req, res) => {
         // Sensitive credentials are only accepted over TLS or a local SSH tunnel.
         const peer = req.socket.remoteAddress;
@@ -463,11 +463,22 @@ function createControlRouter(options = {}) {
     }));
 
     router.post('/api/pbx', requireSession, requireCsrf, wrap(async (req, res) => {
-        const pbx = await store.addPbx(req.body, { actor: actorFor(req) });
+        const input = { ...req.body, management: { ...(req.body.management || {}), approvalStatus: 'pending', extensionPolicyRequired: true } };
+        const pbx = await store.addPbx(input, { actor: actorFor(req) });
         res.status(201).json({ success: true, pbx, limits: { ...store.limits } });
     }));
 
     router.patch('/api/pbx/:id', requireSession, requireCsrf, wrap(async (req, res) => {
+        if (Object.hasOwn(req.body, 'management')) {
+            if (!req.body.management || typeof req.body.management !== 'object' || Array.isArray(req.body.management)) {
+                return res.status(400).json({ success: false, error: 'managed_pbx_required' });
+            }
+            const current = store.getPbx(String(req.params.id));
+            if (req.body.management.approvalStatus === 'approved' && current?.management?.approvalStatus !== 'approved') {
+                return res.status(400).json({ success: false, error: 'ssh_setup_required', message: 'Complete automatic SSH setup to approve this server.' });
+            }
+            req.body.management.extensionPolicyRequired = true;
+        }
         const pbx = await store.updatePbx(String(req.params.id), req.body, {
             actor: actorFor(req)
         });

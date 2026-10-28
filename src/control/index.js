@@ -99,7 +99,7 @@ function createControl(options = {}) {
         globalLimiter,
         enrollLimiter,
         limits: store.limits,
-        init: () => store.init(),
+        init: async () => { await store.init(); await store.manageAllPbx(); },
         close: () => sessions.close()
     };
 }

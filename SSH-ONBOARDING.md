@@ -1,35 +1,38 @@
 # Dashboard SSH onboarding
 
-## Single-address connection settings
+## Add a server
 
-Enter **PBX address** once (Tailscale IPv4 or a hostname/MagicDNS name resolving
-from the gateway to exactly one Tailscale IPv4). **Resolve address** derives
-`ws://<ip>:8088/ws`, `http://<ip>:8080`, the media IP and SSH target. Saving in
-automatic mode also resolves it if needed. DNS resolution is session/CSRF protected,
-bounded, and rejects public/private non-Tailscale, mixed-family and ambiguous
-answers. The returned numeric IP is pinned for host-key probing and SSH submission;
-the hostname is not re-resolved while sending credentials.
+Enter **PBX address** and **Root SSH password**, then select **Add server**.
+All dashboard servers are managed. No mode switch, SSH opt-in, fingerprint
+confirmation, required name or separate PBX approval is needed. The name defaults
+to the address. Successful SSH verification approves the server automatically;
+the background worker configures its relay, firewall and push hook.
 
-These are standard defaults, not discovery of listening ports or proof of service
-readiness. Check the provisioning result and actual SIP/API connectivity. A domain
-behind a public proxy cannot reveal the PBX's Tailscale/media address: supply its
-Tailscale address instead. No new arbitrary DNS-to-SSH access is permitted.
+The address must be a Tailscale IPv4 or a hostname/MagicDNS name resolving from
+the gateway to exactly one Tailscale IPv4. The gateway derives
+`ws://<ip>:8088/ws`, `http://<ip>:8080`, media and SSH settings. It pins the resolved
+numeric IP while sending credentials. Public/proxied domains cannot reveal a
+server's Tailscale address; use its Tailscale IP instead. Resolution rejects
+non-Tailscale, ambiguous and mixed-family answers.
 
-Uncheck **Derive standard connection settings** to edit **Advanced connection
-settings** for custom ports, TLS or separate hosts. Existing records open with
-automatic derivation disabled so their endpoints are never silently rewritten.
-Custom SSH onboarding still requires all endpoint hosts and the single media peer
-to match the resolved Tailscale IP. Changing the primary address invalidates the
-confirmed fingerprint. New managed PBXs can complete SSH setup while pending;
-successful setup approves them automatically. Device admission remains a separate
-manual decision.
+SSH uses **trust on first use**: the first observed host key is accepted
+automatically and saved after verified enrollment. This does not independently
+authenticate the first connection; use a trusted Tailscale network. Later setup
+attempts on that record must match the saved key before any password is sent.
+An explicitly supplied fingerprint is still checked by the broker. Genuine
+host-key rotations require an administrator to verify the new identity before
+resetting its saved trust; changed keys are never silently overwritten.
 
-In Add/Edit PBX, select **Automatic SSH setup** and enter its Tailscale IPv4,
-root SSH username, and one-time password. Select **Check SSH host key**, compare
-the fingerprint with the PBX host key over a trusted channel, and confirm it.
-The probe does not send the password. Passwords are not saved to dashboard state,
-root configuration, a queue, logs, or command arguments; the browser clears the
-field after submission.
+Passwords are not saved to dashboard state, root configuration, a queue, logs or
+command arguments. The browser clears the field after submission. Failed setup
+keeps the saved server record pending so entering the password again retries
+that same record, rather than creating a duplicate.
+
+Existing approved servers can be edited without re-entering the password;
+their existing connection settings are preserved unless the address is changed.
+Optional connection details remain collapsed under Advanced. Settings alone do
+not prove readiness: check the provisioning result and actual SIP/API connectivity.
+Device admission and per-extension access remain separate from server setup.
 
 ## One-time gateway setup
 
@@ -54,7 +57,8 @@ provisioning status API. No arbitrary command/path/SSH target overrides.
   without activating it; the enrollment API approves it only after host-key,
   password and key-only login verification succeeds and the saved PBX record is
   still unchanged. Failed setup leaves it pending. Suspended/retired PBXs are
-  refused. Unmanaged PBXs can be explicitly opted in too.
+  refused. Old unmanaged records migrate to managed/pending at control startup;
+  migration does not invent ownership approval. They need one verified SSH setup.
 - Existing `[sub-sokrat-push-send]` in `extensions_sokrat.conf` or
   `extensions_custom.conf`; this does not install a fresh PBX stack.
 - Non-root/sudo accounts, arbitrary hostname targets, Tailscale IPv6, and

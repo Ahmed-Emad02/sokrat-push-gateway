@@ -3,6 +3,15 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
+
+test('provisioning systemd sandbox permits netlink for UFW and iptables', () => {
+    const unit = fs.readFileSync(path.resolve(__dirname, '../systemd/sokrat-tenant-provisioning.service'), 'utf8');
+    const families = unit.match(/^RestrictAddressFamilies=(.+)$/m)[1].split(/\s+/);
+    assert.ok(families.includes('AF_NETLINK'), 'firewall reconciliation must work inside the actual service sandbox');
+    assert.ok(families.includes('AF_INET'));
+    assert.ok(families.includes('AF_UNIX'));
+});
 
 test('root bundle promotion refuses mutable ancestors and symlinks', () => {
     const script = path.resolve(__dirname, '../scripts/install-provisioning-worker.py');

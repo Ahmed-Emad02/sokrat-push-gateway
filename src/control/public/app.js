@@ -154,9 +154,13 @@
         refs.pbxApi.readOnly = automatic;
         refs.pbxIps.readOnly = automatic;
         refs.pbxAddress.required = automatic;
-        refs.pbxAdvanced.open = !automatic;
+        refs.pbxAdvanced.open = false;
     }
-    refs.pbxAddress.addEventListener('input', invalidateAddress);
+    refs.pbxAddress.addEventListener('input', () => {
+        invalidateAddress();
+        refs.pbxAutoAddress.checked = true;
+        syncAddressMode();
+    });
     refs.pbxAutoAddress.addEventListener('change', () => { invalidateAddress(); syncAddressMode(); });
     async function resolveAddress() {
         const address = refs.pbxAddress.value.trim();
@@ -170,7 +174,7 @@
         if (refs.pbxAutoAddress.checked) {
             refs.pbxWs.value = result.wsURL; refs.pbxApi.value = result.apiURL; refs.pbxIps.value = result.mediaIps;
         }
-        refs.pbxAddressStatus.textContent = `Resolved to ${result.host}. Defaults are not a service-readiness check.`;
+        refs.pbxAddressStatus.textContent = `Server address: ${result.host}`;
         return resolvedAddress;
     }
     refs.pbxResolve.addEventListener('click', async () => {
@@ -271,7 +275,7 @@
 
     const APPROVAL_LABELS = {
         pending: 'Pending',
-        approved: 'Approved (manual)',
+        approved: 'Approved',
         suspended: 'Suspended',
         retired: 'Retired'
     };
@@ -685,11 +689,8 @@
                         class: 'cell-sub',
                         text: management
                             ? `Approval · ${approvalLabel(management.approvalStatus)}`
-                            : 'Unmanaged (legacy)'
+                            : 'SSH setup required'
                     }),
-                    management && management.extensionPolicyRequired
-                        ? el('span', { class: 'cell-sub', text: 'Extension policy required' })
-                        : null,
                     management && management.reviewedInstallationId
                         ? el('span', {
                             class: 'cell-sub',
@@ -924,17 +925,18 @@
     // ------------------------------------------------------------- PBX CRUD
 
     function syncManagementFields() {
-        const managed = refs.pbxManaged.checked;
+        const managed = true;
+        refs.pbxManaged.checked = true;
         for (const field of MANAGEMENT_FIELDS) {
             const wrapper = field.closest('.field');
-            if (wrapper) wrapper.hidden = !managed;
+            if (wrapper) wrapper.hidden = true;
             field.disabled = !managed;
         }
         if (!managed) return;
         if (editingPbxId) {
             refs.pbxApproval.disabled = false;
         } else {
-            // A managed PBX is created pending; approval is a separate manual step.
+            // SSH verification automatically approves a new server.
             refs.pbxApproval.value = 'pending';
             refs.pbxApproval.disabled = true;
         }
@@ -942,14 +944,14 @@
 
     function readPbxForm() {
         const payload = {
-            name: refs.pbxName.value.trim(),
+            name: refs.pbxName.value.trim() || refs.pbxAddress.value.trim().slice(0, 64),
             wsURL: refs.pbxWs.value.trim(),
             apiURL: refs.pbxApi.value.trim(),
             mediaIps: refs.pbxIps.value.trim(),
             enabled: refs.pbxEnabled.checked
         };
-        // Omitted entirely for legacy PBX records.
-        if (refs.pbxManaged.checked) {
+        // Every server uses managed provisioning; no legacy setup mode.
+        {
             payload.management = {
                 customer: refs.pbxCustomer.value.trim() || null,
                 loginHostname: refs.pbxLoginHostname.value.trim() || null,
@@ -968,13 +970,16 @@
         invalidateAddress(); syncAddressMode();
         refs.pbxEnabled.checked = true;
         refs.pbxPolicyRequired.checked = true;
-        refs.pbxSubmit.textContent = 'Add PBX';
+        refs.sshEnable.checked = true;
+        refs.sshPassword.required = true;
+        refs.pbxSubmit.textContent = 'Add server';
         refs.pbxCancel.hidden = true;
         syncManagementFields();
     }
 
     function startEditPbx(record) {
         refs.sshPassword.value = ''; refs.sshEnable.checked = false;
+        refs.sshPassword.required = record.management?.approvalStatus !== 'approved';
         refs.sshConfirm.checked = false; sshVerifiedHost = null; sshFingerprint = null;
         refs.sshFingerprint.textContent = '';
         editingPbxId = record.id;
@@ -1005,13 +1010,13 @@
         refs.pbxCancel.hidden = false;
         clearMessages();
         refs.pbxForm.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        refs.pbxName.focus({ preventScroll: true });
+        refs.pbxAddress.focus({ preventScroll: true });
     }
 
     async function submitPbx(event) {
         event.preventDefault();
         clearMessages();
-        const sshSetup = refs.sshEnable.checked;
+        const sshSetup = !editingPbxId || refs.sshPassword.required || Boolean(refs.sshPassword.value);
         // The derived endpoints and the SSH target come from the resolved
         // address, so it is resolved before the form is read.
         try {
@@ -1019,23 +1024,6 @@
         } catch (error) { handleError(error); refs.pbxAddress.focus(); return; }
         const payload = readPbxForm();
         if (sshSetup) {
-            // The SSH target is always the resolved address, so a stale or empty
-            // host field can never silently point the enrollment somewhere else.
-            if (!sshFingerprint || sshVerifiedHost !== refs.sshHost.value.trim()) {
-                // The fingerprint is fetched for the operator instead of being
-                // demanded first: it is shown and the confirmation is reset, so
-                // a stale or missing check can never be mistaken for a verified
-                // one.
-                try { await probeSshHost(); } catch (error) { handleError(error); refs.sshProbe.focus(); return; }
-                showError('Compare the SSH host key below with the PBX host key, then tick the confirmation box and save again.');
-                refs.sshFingerprint.focus();
-                return;
-            }
-            if (!refs.sshConfirm.checked) {
-                showError('Compare the SSH host key with the PBX host key and tick the confirmation box.');
-                refs.sshConfirm.focus();
-                return;
-            }
             if (!refs.sshPassword.value) {
                 showError('Enter the one-time root SSH password for this PBX.');
                 refs.sshPassword.focus();
@@ -1061,12 +1049,11 @@
                 const password = refs.sshPassword.value;
                 refs.sshPassword.value = '';
                 await api('/api/pbx-ssh/enroll', { method: 'POST', body: {
-                    pbxId, host: sshVerifiedHost, username: refs.sshUser.value,
-                    fingerprint: sshFingerprint, password
+                    pbxId, host: refs.sshHost.value.trim(), username: 'root', password
                 } });
                 // The enrollment API approves pending managed PBXs only after
                 // successful SSH verification, including non-browser clients.
-                showStatus(`SSH key installed for ${payload.name}. Provisioning will reconcile automatically; device approval remains manual.`);
+                showStatus(`Server access verified for ${payload.name}. Automatic setup is finishing in the background.`);
             }
             resetPbxForm();
             await refresh();

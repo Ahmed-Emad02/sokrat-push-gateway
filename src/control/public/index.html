@@ -158,9 +158,8 @@
             <option value="retired">Retired</option>
           </select>
           <span id="pbx-approval-hint" class="hint">
-            Manual approval records an operator decision only. It does not verify ownership of the
-            PBX, and automated ownership verification is still pending. A new managed PBX starts as
-            pending.
+            A new managed PBX starts as pending. Successful SSH setup approves it automatically;
+            without SSH setup, manual approval is an operator decision only and does not verify ownership.
           </span>
         </div>
         <div class="field" hidden>
@@ -182,7 +181,7 @@
           <input id="pbx-ssh-user" name="sshUsername" type="text" value="root" readonly autocomplete="section-pbx username">
           <label for="pbx-ssh-password">SSH password (used once, not stored)</label>
           <input id="pbx-ssh-password" name="sshPassword" type="password" maxlength="1024" autocomplete="section-pbx current-password">
-          <span id="pbx-ssh-hint" class="hint">Requires root SSH, approved or unmanaged PBX, and API/WebSocket/media addresses matching this Tailscale IP. You must verify the host fingerprint before sending the password. Existing dialplan push context is required. Devices still need manual approval.</span>
+          <span id="pbx-ssh-hint" class="hint">Enter the root SSH password and confirm the host fingerprint. Successful setup automatically approves a pending PBX and configures its relay, firewall and push hook. API/WebSocket/media hosts must match this Tailscale IP, and the existing dialplan push context is required. Devices still need manual approval.</span>
           <button id="pbx-ssh-probe" class="btn btn-ghost" type="button">Check SSH host key</button>
           <output id="pbx-ssh-fingerprint" aria-live="polite"></output>
           <label class="check" for="pbx-ssh-confirm"><input id="pbx-ssh-confirm" name="sshConfirm" type="checkbox"> I verified this fingerprint against the PBX’s SSH host key</label>

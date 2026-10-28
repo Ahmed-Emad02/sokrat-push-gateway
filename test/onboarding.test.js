@@ -41,7 +41,9 @@ for patch in [{'host':'127.0.0.1'},{'host':'192.0.2.1'},{'host':'example.com'},{
 worker=types.SimpleNamespace(record_approval=lambda r:r.get('management',{}).get('approvalStatus','unmanaged'))
 record={'wsURL':'ws://100.64.0.12:8088/ws','apiURL':'http://100.64.0.12:8080/','mediaIps':['100.64.0.12']}
 assert m.record_identity(record,'100.64.0.12',worker)['approval']=='unmanaged'
-for patch in [{'mediaIps':['100.64.0.13']},{'apiURL':'http://127.0.0.1/'},{'management':{'approvalStatus':'pending'}}]:
+for approval in ['pending','approved']:
+ assert m.record_identity({**record,'management':{'approvalStatus':approval}},'100.64.0.12',worker)['approval']==approval
+for patch in [{'mediaIps':['100.64.0.13']},{'apiURL':'http://127.0.0.1/'},{'wsURL':'ws://100.64.0.13:8088/ws'},{'management':{'approvalStatus':'suspended'}},{'management':{'approvalStatus':'retired'}},{'management':{'approvalStatus':''}}]:
  try:m.record_identity({**record,**patch},'100.64.0.12',worker)
  except ValueError:pass
  else:raise AssertionError(patch)
@@ -139,6 +141,64 @@ test('SSH API requires session and CSRF and returns no credentials', async t => 
     assert.equal(r.status, 200);
     assert.equal((await r.json()).fingerprint, 'SHA256:' + 'a'.repeat(43));
     assert.equal(called, true);
+});
+
+test('SSH enrollment approves pending PBXs only after success and rejects concurrent record changes', async t => {
+    for (const scenario of ['success', 'auth failure', 'suspended', 'edited', 'deleted', 'queued edit']) {
+        await t.test(scenario, async t => {
+            const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sokrat-onboard-approval-'));
+            t.after(() => fs.rm(dir, { recursive: true, force: true }));
+            const store = new ControlStore({ filePath: path.join(dir, 'control.json') });
+            await store.init();
+            const pbx = await store.addPbx({ name: 'Pending fixture', wsURL: 'ws://100.64.0.12:8088/ws',
+                apiURL: 'http://100.64.0.12:8080/', mediaIps: ['100.64.0.12'], enabled: true,
+                management: { approvalStatus: 'pending', extensionPolicyRequired: true } });
+            let called = false;
+            const app = express();
+            app.use('/control', createControlRouter({ store, credential: { configured: true },
+                sessions: { get: id => id === 'fixture' ? { id, csrfToken: 'csrf' } : null },
+                onboardingRequest: async payload => {
+                    called = true;
+                    assert.equal(store.getPbx(pbx.id).management.approvalStatus, 'pending');
+                    assert.equal(payload.password, 'transient-fixture-password');
+                    if (scenario === 'auth failure') throw Object.assign(new Error('not exposed'), { code: 'password_auth_failed' });
+                    if (scenario === 'suspended') await store.updatePbx(pbx.id, { management: { approvalStatus: 'suspended' } });
+                    if (scenario === 'edited') await store.updatePbx(pbx.id, { apiURL: 'http://100.64.0.13:8080/' });
+                    if (scenario === 'deleted') await store.removePbx(pbx.id);
+                    if (scenario === 'queued edit') {
+                        const update = store.updatePbx.bind(store);
+                        store.updatePbx = async (id, patch, meta) => {
+                            await update(id, { management: { approvalStatus: 'suspended' } });
+                            return update(id, patch, meta);
+                        };
+                    }
+                    return { configured: true };
+                } }));
+            const server = app.listen(0, '127.0.0.1');
+            await new Promise(resolve => server.once('listening', resolve));
+            t.after(() => server.close());
+            const origin = `http://127.0.0.1:${server.address().port}`;
+            const response = await fetch(origin + '/control/api/pbx-ssh/enroll', { method: 'POST',
+                headers: { 'Content-Type': 'application/json', Cookie: 'sokrat_control_sid=fixture', Origin: origin, 'X-CSRF-Token': 'csrf' },
+                body: JSON.stringify({ pbxId: pbx.id, host: '100.64.0.12', username: 'root',
+                    fingerprint: 'SHA256:' + 'a'.repeat(43), password: 'transient-fixture-password' }) });
+            assert.equal(called, true);
+            const body = await response.json();
+            assert.ok(!JSON.stringify(body).includes('transient-fixture-password'));
+            if (scenario === 'success') {
+                assert.equal(response.status, 200);
+                assert.equal(store.getPbx(pbx.id).management.approvalStatus, 'approved');
+                assert.equal(store.getPbx(pbx.id).management.extensionPolicyRequired, true);
+            } else if (scenario === 'auth failure') {
+                assert.equal(response.status, 503);
+                assert.equal(store.getPbx(pbx.id).management.approvalStatus, 'pending');
+            } else {
+                assert.equal(response.status, 409);
+                assert.equal(body.code || body.error, 'pbx_changed_during_setup');
+                assert.notEqual(store.getPbx(pbx.id)?.management.approvalStatus, 'approved');
+            }
+        });
+    }
 });
 
 test('multiple PBXs keep identical extension numbers and policies isolated', async t => {

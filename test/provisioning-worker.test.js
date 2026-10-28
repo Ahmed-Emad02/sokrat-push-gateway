@@ -570,7 +570,7 @@ test('a retired PBX keeps its slot but never blocks the other PBXs', (t) => {
     const status = fixture.readStatus();
     assert.equal(status.pbx.pbx_alpha.state, 'blocked');
     assert.equal(status.pbx.pbx_alpha.reason, 'not_configured');
-    assert.equal(status.pbx.pbx_alpha.stages.relay, 'blocked');
+    assert.equal(status.pbx.pbx_alpha.stages.relay, 'skipped');
     assert.equal(status.pbx.pbx_beta.state, 'ready');
     assert.equal(fixture.syncCount(), 1, 'the teardown of the retired PBX must still run');
 });
@@ -585,6 +585,57 @@ test('configured PBX missing from the dashboard is blocked, others still run', (
     assert.equal(status.pbx.pbx_ghost.state, 'blocked');
     assert.equal(status.pbx.pbx_ghost.reason, 'not_configured');
     assert.equal(status.pbx.pbx_alpha.state, 'ready');
+});
+
+test('deleting the last PBX clears runtime even with no eligible PBXs and retains its slot', t => {
+    const fixture = makeFixture(t);
+    assert.equal(fixture.run(['--apply']).status, 0);
+    const original = JSON.parse(fs.readFileSync(path.join(fixture.state, 'tenant-plan.json'))).allocations.pbx_alpha;
+    const control = fixture.readControl();
+    control.pbx = [];
+    writeJson(fixture.controlFile, control);
+    assert.equal(fixture.run(['--apply']).status, 0);
+    assert.equal(fixture.syncCount(), 2);
+    assert.deepEqual(fixture.snapshot(2).pbx, []);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fixture.state, 'tenant-runtime.json'))).relays, {});
+    assert.equal(fixture.readStatus().pbx.pbx_alpha.stages.relay, 'skipped');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fixture.state, 'tenant-plan.json'))).allocations.pbx_alpha, original);
+    assert.equal(fixture.requests('hook-adapter').length, 1, 'no SSH hook changes during deletion');
+
+    const replacement = defaultRecord({ id: 'pbx_readded', name: 'Alpha' });
+    control.pbx = [replacement];
+    writeJson(fixture.controlFile, control);
+    const config = JSON.parse(fs.readFileSync(fixture.configFile));
+    config.pbx[replacement.id] = makePin(replacement, { hookAdapter: fixture.hookAdapter });
+    writeJson(fixture.configFile, config);
+    assert.equal(fixture.run(['--apply']).status, 0);
+    assert.equal(fixture.readStatus().pbx.pbx_readded.state, 'ready');
+    const allocations = JSON.parse(fs.readFileSync(path.join(fixture.state, 'tenant-plan.json'))).allocations;
+    assert.notEqual(allocations.pbx_readded.listenerPort, original.listenerPort, 'retired ports are not reused');
+    assert.deepEqual(fixture.requests('hook-adapter').at(-1).retiredPbxIds, ['pbx_alpha']);
+});
+
+test('SSH-enrolled pending pin provisions after approval without re-enrollment', t => {
+    const record = defaultRecord({ management: { approvalStatus: 'approved', extensionPolicyRequired: true } });
+    const fixture = makeFixture(t, { records: [record], approval: 'pending' });
+    const result = fixture.run(['--apply']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fixture.readStatus().pbx.pbx_alpha.state, 'ready');
+});
+
+test('deleting a PBX reconciles teardown even when the remaining PBX was already ready', t => {
+    const alpha = defaultRecord();
+    const beta = defaultRecord({ id: 'pbx_beta', name: 'Beta', mediaIps: ['100.64.0.11'] });
+    const fixture = makeFixture(t, { records: [alpha, beta] });
+    assert.equal(fixture.run(['--apply']).status, 0);
+    const control = fixture.readControl();
+    control.pbx = [beta];
+    writeJson(fixture.controlFile, control);
+    assert.equal(fixture.run(['--apply']).status, 0);
+    assert.equal(fixture.syncCount(), 2);
+    assert.deepEqual(fixture.snapshot(2).pbx.map(p => p.id), ['pbx_beta']);
+    assert.equal(fixture.readStatus().pbx.pbx_beta.state, 'ready');
+    assert.equal(fixture.readStatus().pbx.pbx_alpha.stages.relay, 'skipped');
 });
 
 test('missing firewall adapter blocks the run (cloud firewall required)', (t) => {

@@ -925,7 +925,7 @@ def main():
                  'existing hook config is not recognized; refusing to overwrite it')
         if not isinstance(existing_config, dict) or existing_config.get('pbxId') != pbx:
             previous = existing_config.get('pbxId') if isinstance(existing_config, dict) else None
-            if previous not in retired:
+            if previous not in retired or existing_config.get('gatewayUrl') != gateway:
                 fail('hook_config_conflict',
                      'existing hook config belongs to a different PBX; refusing to overwrite it')
             # The previous owner was removed from the dashboard, so its hook

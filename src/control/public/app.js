@@ -1064,17 +1064,8 @@
                     pbxId, host: sshVerifiedHost, username: refs.sshUser.value,
                     fingerprint: sshFingerprint, password
                 } });
-                // The operator verified the host key and supplied the PBX's own
-                // root credentials: that is the manual approval. A pending
-                // managed PBX becomes approved instead of needing a second pass.
-                if (payload.management && payload.management.approvalStatus === 'pending') {
-                    try {
-                        await api(`/api/pbx/${encodeURIComponent(pbxId)}`, {
-                            method: 'PATCH',
-                            body: { management: { ...payload.management, approvalStatus: 'approved' } },
-                        });
-                    } catch { /* approval can still be set by hand in the form */ }
-                }
+                // The enrollment API approves pending managed PBXs only after
+                // successful SSH verification, including non-browser clients.
                 showStatus(`SSH key installed for ${payload.name}. Provisioning will reconcile automatically; device approval remains manual.`);
             }
             resetPbxForm();

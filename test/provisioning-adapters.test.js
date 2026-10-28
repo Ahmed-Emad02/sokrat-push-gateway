@@ -641,6 +641,49 @@ test('remote body refuses to overwrite a hook config belonging to another PBX', 
     assert.deepEqual(readJson(callsFile), []);
 });
 
+test('remote body migrates only a retired hook owned by this gateway and verifies a custom hook name', () => {
+    for (const sameGateway of [true, false]) {
+        const dir = tempDir('sokrat-retired-hook-');
+        const targets = {
+            dialplanFile: path.join(dir, 'etc/asterisk/extensions_custom.conf'),
+            hookPath: path.join(dir, 'usr/local/bin/sokrat-tenant-push-hook.py'),
+            hookConfigPath: path.join(dir, 'etc/sokrat/gateway-hook.json'),
+        };
+        const oldConfig = JSON.stringify({ gatewayUrl: sameGateway ? GATEWAY : 'https://other.example.com',
+            pbxId: 'pbx_retired', token: 'o'.repeat(64) });
+        for (const target of Object.values(targets)) fs.mkdirSync(path.dirname(target), { recursive: true });
+        const payload = {
+            pbxId: 'pbx_test', gatewayUrl: GATEWAY, ...targets,
+            calleeVar: 'CALLEE', callerVar: 'CALLER', nameVar: 'CALLER_NAME',
+            callIdVar: 'SOKRAT_CALL_ID', hookConfigMode: 0o640,
+            hookConfigGroup: 'asterisk', hookRunnerUser: 'asterisk', reloadDialplan: true,
+            installerB64: fs.readFileSync(INSTALLER).toString('base64'),
+            hookB64: fs.readFileSync(HOOK_RUNNER).toString('base64'),
+            hookConfigB64: Buffer.from(JSON.stringify({ gatewayUrl: GATEWAY, pbxId: 'pbx_test', token: TOKEN })).toString('base64'),
+            retiredPbxIds: ['pbx_retired'],
+        };
+        const callsFile = path.join(dir, 'calls.json');
+        const specFile = path.join(dir, 'spec.json');
+        const harness = path.join(dir, 'harness.py');
+        write(harness, REMOTE_HARNESS.replace('System(... pbx-tenant-push-hook.py ...)', 'System(... sokrat-tenant-push-hook.py ...)'), 0o700);
+        write(specFile, JSON.stringify({ adapter: HOOK_ADAPTER, payload, targets, callsFile,
+            files: { [targets.hookConfigPath]: oldConfig }, modes: {} }), 0o600);
+        const result = spawnSync(PYTHON, [harness, specFile], { encoding: 'utf8', timeout: 20000 });
+        assert.equal(result.status, 0, result.stderr);
+        const data = JSON.parse(result.stdout.trim().split('\n').pop());
+        if (sameGateway) {
+            assert.equal(data.ok, true, result.stdout);
+            assert.equal(data.configBackup, true);
+            assert.equal(readJson(targets.hookConfigPath).pbxId, 'pbx_test');
+        } else {
+            assert.equal(data.ok, false);
+            assert.equal(data.error.code, 'hook_config_conflict');
+            assert.equal(fs.readFileSync(targets.hookConfigPath, 'utf8'), oldConfig);
+            assert.deepEqual(readJson(callsFile), []);
+        }
+    }
+});
+
 test('remote body restores hook and config after dry-run refusal, timeout, and reload-required', () => {
     for (const scenario of ['dry_refuse', 'apply_timeout', 'reload_required']) {
         const dir = tempDir('sokrat-remote-rollback-');

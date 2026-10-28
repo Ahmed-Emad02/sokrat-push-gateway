@@ -20,8 +20,9 @@ settings** for custom ports, TLS or separate hosts. Existing records open with
 automatic derivation disabled so their endpoints are never silently rewritten.
 Custom SSH onboarding still requires all endpoint hosts and the single media peer
 to match the resolved Tailscale IP. Changing the primary address invalidates the
-confirmed fingerprint. New managed PBXs still require save → manual approval →
-edit/SSH setup; device admission remains a separate manual decision.
+confirmed fingerprint. New managed PBXs can complete SSH setup while pending;
+successful setup approves them automatically. Device admission remains a separate
+manual decision.
 
 In Add/Edit PBX, select **Automatic SSH setup** and enter its Tailscale IPv4,
 root SSH username, and one-time password. Select **Check SSH host key**, compare
@@ -49,8 +50,11 @@ provisioning status API. No arbitrary command/path/SSH target overrides.
 
 - Tailscale IPv4, port22, root SSH password authentication.
 - WS/API host and the single media peer must exactly match that Tailscale IP.
-- A managed PBX must already be manually approved. Save it first, approve it,
-  then edit to run SSH setup. Unmanaged PBXs can be explicitly opted in too.
+- A managed PBX may be pending or approved. The broker accepts a pending identity
+  without activating it; the enrollment API approves it only after host-key,
+  password and key-only login verification succeeds and the saved PBX record is
+  still unchanged. Failed setup leaves it pending. Suspended/retired PBXs are
+  refused. Unmanaged PBXs can be explicitly opted in too.
 - Existing `[sub-sokrat-push-send]` in `extensions_sokrat.conf` or
   `extensions_custom.conf`; this does not install a fresh PBX stack.
 - Non-root/sudo accounts, arbitrary hostname targets, Tailscale IPv6, and
@@ -65,6 +69,21 @@ If a later stage fails, an added authorized key may remain on the PBX. Retry is
 idempotent, not a cross-host atomic rollback. Retiring access requires revoking
 the dedicated key on the PBX. PBX responses are treated as untrusted discovery
 data; only known dialplan paths and validated variable names are accepted.
+
+## Removing and re-adding a PBX
+
+Removal immediately revokes its devices and invites. On the next reconciliation
+(normally within 60 seconds), its relay is stopped, local firewall rules and
+service-readable relay secret are removed, and its runtime manifest entry is
+dropped—even if it was the last PBX. Allocation slots are retained, never reused.
+Cloud firewall rules are currently additive and are not removed automatically.
+
+Adding the same physical server again uses a new PBX identity and dedicated SSH
+key. Setup replaces a stale push-hook config only when its previous PBX was
+deleted from this gateway and its gateway URL still matches; backups are kept.
+No manual deletion of the old hook config is needed. A live PBX's hook is never
+overwritten. Dedicated SSH keys already installed on a removed PBX remain until
+explicitly revoked there; removal does not edit the PBX's desktop SIP dialplan.
 
 ## Multi-PBX acceptance
 

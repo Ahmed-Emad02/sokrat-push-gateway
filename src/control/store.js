@@ -1026,6 +1026,9 @@ class ControlStore {
         return this._mutate((draft) => {
             const record = draft.pbx.find((p) => p.id === id);
             if (!record) throw fail('pbx_not_found', 'PBX not found', 404);
+            if (meta.expectedPbx && JSON.stringify(publicPbx(record)) !== JSON.stringify(meta.expectedPbx)) {
+                throw fail('pbx_changed_during_setup', 'PBX changed during SSH setup', 409);
+            }
             if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
                 throw fail('invalid_pbx', 'PBX payload must be an object');
             }

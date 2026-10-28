@@ -191,6 +191,9 @@ test('malformed dialplans are refused without writing', async t => {
         ['duplicate legacy dispatcher', FIXTURE.replace(LEGACY, LEGACY + '\n' + LEGACY), /legacy dispatcher line/],
         ['tenant endpoint already present', FIXTURE.replace(LEGACY, LEGACY + '\n same => n,System(nohup env /usr/bin/curl "http://127.0.0.1:8097/api/gateway/incoming-call" >/dev/null 2>&1 &)'), /already references \/api\/gateway\/incoming-call/],
         ['marker without action', FIXTURE.replace(LEGACY, LEGACY + '\n' + MARKER), /marker .* is present but no managed action follows it/],
+        ['unrelated System after marker', FIXTURE.replace(LEGACY, LEGACY + '\n' + MARKER + '\n same => n,System(echo customer-action)'), /no managed action follows it/],
+        ['marker in another context', FIXTURE + '\n[unrelated]\n' + MARKER + '\n same => n,System(echo untouched)\n', /managed marker must occur once inside/],
+        ['duplicate marker', FIXTURE.replace(LEGACY, LEGACY + '\n' + MARKER + '\n' + MARKER), /managed marker must occur once inside/],
         ['hook referenced without marker', FIXTURE.replace(LEGACY, LEGACY + '\n same => n,System(/usr/bin/python3 /opt/x/pbx-tenant-push-hook.py)'), /already references pbx-tenant-push-hook\.py/],
     ];
     for (const [name, dialplan, needle] of cases) {

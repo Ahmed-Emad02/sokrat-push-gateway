@@ -1264,6 +1264,8 @@ def apply_run(state, previous):
     entries = state["entries"]
     eligible = [pbx_id for pbx_id, entry in entries.items() if entry["kind"] == "eligible"]
     disabled = [pbx_id for pbx_id, entry in entries.items() if entry["kind"] == "disabled"]
+    retired = sorted(pbx_id for pbx_id, entry in entries.items()
+                     if entry["record"] is None and entry["allocation"] is not None)
     state.setdefault("tokens", load_tokens(config))
     state.setdefault("manifest", load_manifest(config))
 
@@ -1286,6 +1288,16 @@ def apply_run(state, previous):
                               state["tokens"], config)
 
     need_sync = any(not skip_ready(pbx_id) for pbx_id in eligible)
+    # Deleting the last PBX (or deleting one while the others stay ready) must
+    # still run teardown. Retained allocation slots are not active tenants.
+    for pbx_id in retired:
+        allocation = entries[pbx_id]["allocation"]
+        unit = UNIT_TEMPLATE.replace("@.service", f"@{allocation['slug']}.service")
+        secret = config["stateDir"] / "secrets" / f"{allocation['slug']}.secret"
+        if (not disabled_settled(entries[pbx_id], previous.get(pbx_id))
+                or pbx_id in (state["manifest"] or {}).get("relays", {})
+                or secret.exists() or unit_active(unit, config["testMode"])):
+            need_sync = True
     if not need_sync:
         for pbx_id in disabled:
             if entries[pbx_id]["allocation"] is None:
@@ -1300,7 +1312,7 @@ def apply_run(state, previous):
         snapshot = build_snapshot(entries)
         ok, degraded = run_sync(config, snapshot)
         if not ok or degraded:
-            for pbx_id in eligible + disabled:
+            for pbx_id in eligible + disabled + retired:
                 result[pbx_id] = status_entry(
                     "error", "relay_failed", relay="error", firewall="skipped", hook="skipped",
                     fingerprint=entries[pbx_id]["fingerprint"],
@@ -1319,10 +1331,6 @@ def apply_run(state, previous):
 
     # PBX ids that were removed from the dashboard: their relay allocation is
     # retained on purpose, so their push-hook configuration on the PBX is stale.
-    retired = sorted(
-        other for other, other_entry in entries.items()
-        if other_entry["record"] is None and other_entry["allocation"] is not None
-    )
     for pbx_id in eligible:
         entry = entries[pbx_id]
         fingerprint = entry["fingerprint"]
@@ -1364,7 +1372,7 @@ def apply_run(state, previous):
         result[pbx_id] = status_entry("ready", "ready", relay="ready", firewall="ready",
                                       hook="ready", fingerprint=fingerprint, captured=captured)
 
-    for pbx_id in disabled:
+    for pbx_id in disabled + retired:
         # Disabled records are passed to sync as enabled=false (stop unit, remove
         # ufw rules, remove service secret copy). Cloud firewall policy is
         # intentionally retained: the provider adapter is additive, and this

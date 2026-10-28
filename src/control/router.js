@@ -400,6 +400,9 @@ function createControlRouter(options = {}) {
     // mapped; the raw broker error never reaches the dashboard.
     const ONBOARDING_MESSAGES = {
         pbx_not_approved_or_mismatched: 'This PBX is not approved for SSH setup yet, or its saved endpoints do not match the address. Approve the PBX (or leave "Managed multi-tenant PBX" off) and try again.',
+        pbx_endpoints_mismatched: 'The saved WS/API hosts and media IP must match the SSH address. Resolve the PBX address and save its connection settings again.',
+        pbx_approval_blocked: 'This PBX is suspended or retired. Restore it to Pending or Approved before running SSH setup.',
+        pbx_changed_during_setup: 'SSH setup completed, but the PBX record changed during setup. Review its settings and retry before approval.',
         password_auth_failed: 'The PBX rejected the root SSH password. Check the password and try again.',
         host_key_changed: 'The PBX host key changed since the fingerprint was shown. Check the host key again and confirm the new fingerprint.',
         ssh_unreachable: 'The gateway could not reach the PBX on SSH port 22.',
@@ -418,7 +421,8 @@ function createControlRouter(options = {}) {
         const action = String(req.params.action);
         if (!['resolve', 'probe', 'enroll'].includes(action)) return res.status(400).json({ success: false, error: 'invalid_action' });
         const input = req.body || {};
-        if (action === 'enroll' && !store.getPbx(input.pbxId)) return res.status(404).json({ success: false, error: 'pbx_not_found' });
+        const capturedPbx = action === 'enroll' ? store.getPbx(input.pbxId) : null;
+        if (action === 'enroll' && !capturedPbx) return res.status(404).json({ success: false, error: 'pbx_not_found' });
         if (onboardingBusy || Date.now() - (action === 'resolve' ? lastResolution : action === 'probe' ? lastProbe : lastOnboarding) < 2000) return res.status(429).json({ success: false, error: 'onboarding_busy' });
         onboardingBusy = true;
         if (action === 'resolve') lastResolution = Date.now();
@@ -432,10 +436,25 @@ function createControlRouter(options = {}) {
             const payload = { action, host: input.host, username: input.username };
             if (action === 'enroll') Object.assign(payload, { pbxId: input.pbxId, fingerprint: input.fingerprint, password: input.password });
             const result = await onboard(payload);
+            // Approval follows successful host-key/password/key-only verification,
+            // not the browser's requested approval value. Never approve a record
+            // edited or deleted while the root broker was working.
+            if (action === 'enroll') {
+                const current = store.getPbx(input.pbxId);
+                if (JSON.stringify(current) !== JSON.stringify(capturedPbx)) {
+                    return res.status(409).json({ success: false, error: 'pbx_changed_during_setup',
+                        message: onboardingMessage('pbx_changed_during_setup') });
+                }
+                if (current.management && current.management.approvalStatus === 'pending') {
+                    await store.updatePbx(current.id, {
+                        management: { ...current.management, approvalStatus: 'approved' },
+                    }, { actor: actorFor(req), expectedPbx: capturedPbx });
+                }
+            }
             res.json({ success: true, ...result });
         } catch (error) {
             if (action === 'resolve') return res.status(400).json({ success: false, error: 'invalid_pbx_address', message: error.message });
-            res.status(503).json({ success: false, error: 'onboarding_refused', code: error.code || 'onboarding_refused',
+            res.status(error.code === 'pbx_changed_during_setup' ? 409 : 503).json({ success: false, error: 'onboarding_refused', code: error.code || 'onboarding_refused',
                 message: onboardingMessage(error.code) });
         } finally {
             delete input.password;

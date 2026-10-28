@@ -52,13 +52,15 @@ def validate_request(req):
 
 def record_identity(record, host, worker):
     if sorted(record.get('mediaIps', [])) != [host]:
-        raise ValueError('media pin')
+        raise ValueError('pbx_endpoints_mismatched')
     for field in ('wsURL', 'apiURL'):
         if urllib.parse.urlsplit(record[field]).hostname != host:
-            raise ValueError('endpoint pin')
+            raise ValueError('pbx_endpoints_mismatched')
     approval = worker.record_approval(record)
-    if approval not in ('approved', 'unmanaged'):
-        raise ValueError('approval required')
+    # A pending PBX can prove ownership through SSH. It remains pending in the
+    # worker until the dashboard approves it AFTER key-only login succeeds.
+    if approval not in ('approved', 'unmanaged', 'pending'):
+        raise ValueError('pbx_approval_blocked')
     return { 'wsURL': record['wsURL'], 'apiURL': record['apiURL'],
              'mediaIps': [host], 'approval': approval }
 
@@ -109,6 +111,8 @@ def stage_error(stage, error):
 STAGE_CODES = {
     'ssh_handshake': 'ssh_unreachable',
     'pbx_pin': 'pbx_not_approved_or_mismatched',
+    'pbx_endpoints_mismatched': 'pbx_endpoints_mismatched',
+    'pbx_approval_blocked': 'pbx_approval_blocked',
     'password_auth': 'password_auth_failed',
     'pbx_bootstrap': 'pbx_bootstrap_failed',
     'verify_key': 'key_login_failed',
@@ -151,6 +155,8 @@ def handle(req, worker):
     try:
         pin = record_identity(record, host, worker)
     except Exception as error:
+        if str(error) in ('pbx_endpoints_mismatched', 'pbx_approval_blocked'):
+            raise ValueError(str(error)) from None
         raise stage_error('pbx_pin', error)
     pbx = record['id']
     worker.ensure_dir('/etc/sokrat/ssh', 0o700)
@@ -256,7 +262,7 @@ def main():
                 # dropped and the password never reaches the journal. Only a
                 # safe code is returned to the dashboard.
                 result={'ok': False, 'code': refusal_code(error)}
-                print('onboarding refused: %s' % (str(error)[:120] or type(error).__name__), file=sys.stderr, flush=True)
+                print('onboarding refused: %s' % result['code'], file=sys.stderr, flush=True)
             finally:
                 if isinstance(request,dict):request.pop('password',None)
             try:connection.sendall(json.dumps(result).encode())

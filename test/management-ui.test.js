@@ -82,7 +82,8 @@ test('management wording distinguishes manual ownership review and supported Chr
     const html = await read('index.html');
     const approvalHint = html.slice(html.indexOf('id="pbx-approval-hint"'), html.indexOf('</span>', html.indexOf('id="pbx-approval-hint"')));
     assert.match(approvalHint, /does not verify ownership/i);
-    assert.match(approvalHint, /still pending/i);
+    assert.match(approvalHint, /starts as pending/i);
+    assert.match(approvalHint, /Successful SSH setup approves it automatically/i);
 
     const platformHint = html.slice(html.indexOf('id="ext-platforms-hint"'), html.indexOf('</span>', html.indexOf('id="ext-platforms-hint"')));
     assert.match(platformHint, /Chrome enrollment requires extension version 1\.15\.0/i);

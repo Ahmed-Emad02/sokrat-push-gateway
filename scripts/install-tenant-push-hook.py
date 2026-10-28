@@ -185,25 +185,28 @@ def plan(text, args):
 
     warnings = []
     marker_line = MARKER + ending
-    existing = [line.strip() for line in lines]
-    if any(line == MARKER for line in existing):
-        if system_line.rstrip('\r\n') in [line.rstrip('\r\n') for line in lines]:
-            return None, None, 'already installed (marker %r present)' % MARKER, []
+    markers = [index for index, line in enumerate(lines) if line.strip() == MARKER]
+    if markers:
+        if len(markers) != 1 or not start <= markers[0] < done_index:
+            refuse('managed marker must occur once inside [%s] before Return()' % CONTEXT)
         # The marker identifies our own managed line. If it differs from the
         # canonical rendering (an older path, a renamed variable), it is
         # replaced instead of blocking the setup.
-        marker_index = next(index for index, line in enumerate(existing) if line == MARKER)
+        marker_index = markers[0]
         action_index = None
-        for index in range(marker_index + 1, len(lines)):
+        for index in range(marker_index + 1, done_index):
             stripped = lines[index].strip()
             if not stripped:
                 continue
-            if stripped.startswith('same') and 'System(' in stripped:
+            if (re.match(r'^same\s*=>\s*n\s*,\s*System\(', stripped)
+                    and 'SOKRAT_HOOK_CONFIG=' in stripped and '/usr/bin/python3' in stripped):
                 action_index = index
             break
         if action_index is None:
             refuse('marker %r is present but no managed action follows it; refusing to guess'
                    % MARKER)
+        if lines[action_index].rstrip('\r\n') == system_line.rstrip('\r\n'):
+            return None, None, 'already installed (marker %r present)' % MARKER, []
         updated = list(lines)
         updated[action_index] = system_line
         return updated, action_index, 'replaced the managed action after marker %r' % MARKER, warnings

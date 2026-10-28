@@ -395,6 +395,7 @@ function createControlRouter(options = {}) {
     let onboardingBusy = false;
     let lastOnboarding = 0;
     let lastResolution = 0;
+    let lastProbe = 0;
     // Operator-facing reasons for a refused SSH setup. Only safe codes are
     // mapped; the raw broker error never reaches the dashboard.
     const ONBOARDING_MESSAGES = {
@@ -418,9 +419,10 @@ function createControlRouter(options = {}) {
         if (!['resolve', 'probe', 'enroll'].includes(action)) return res.status(400).json({ success: false, error: 'invalid_action' });
         const input = req.body || {};
         if (action === 'enroll' && !store.getPbx(input.pbxId)) return res.status(404).json({ success: false, error: 'pbx_not_found' });
-        if (onboardingBusy || Date.now() - (action === 'resolve' ? lastResolution : lastOnboarding) < 2000) return res.status(429).json({ success: false, error: 'onboarding_busy' });
+        if (onboardingBusy || Date.now() - (action === 'resolve' ? lastResolution : action === 'probe' ? lastProbe : lastOnboarding) < 2000) return res.status(429).json({ success: false, error: 'onboarding_busy' });
         onboardingBusy = true;
         if (action === 'resolve') lastResolution = Date.now();
+        else if (action === 'probe') lastProbe = Date.now();
         else lastOnboarding = Date.now();
         try {
             if (action === 'resolve') {

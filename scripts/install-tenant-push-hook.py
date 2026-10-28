@@ -234,11 +234,14 @@ def diff_text(path, before, after):
 
 
 def atomic_write(path, text, mode):
+    original = path.stat()
     directory = path.parent
     tmp = directory / ('.%s.tmp-%d-%s' % (path.name, os.getpid(), secrets.token_hex(4)))
     descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         with os.fdopen(descriptor, 'wb') as handle:
+            if os.geteuid() == 0:
+                os.fchown(handle.fileno(), original.st_uid, original.st_gid)
             handle.write(text.encode('utf-8'))
             handle.flush()
             os.fsync(handle.fileno())

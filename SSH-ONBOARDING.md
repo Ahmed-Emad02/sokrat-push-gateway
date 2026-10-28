@@ -69,6 +69,17 @@ checks key-only login, saves root-private identity/known-host files under
 `/etc/sokrat/ssh`, and pins the PBX for reconciliation. The timer provisions the
 relay, cloud rules, and additive hook. Device approval stays manual.
 
+For older installs that have the shared push context on disk but forgot to load
+`extensions_sokrat.conf`, the hook adapter adds its include to the already-loaded
+`extensions_custom.conf`, backs that file up and reloads only the dialplan. This
+automatic repair is restricted to a file containing only the shared push context;
+it refuses to activate historical files containing other routes or nested includes.
+Existing custom routes stay byte-for-byte intact. Asterisk is never restarted.
+Atomic hook insertion preserves the dialplan's existing owner, group and mode.
+The adapter also repairs the older installer's unreadable `root:root 0640`
+dialplan to `root:asterisk 0640`, then verifies the loaded context. This does not
+loosen the separate credential-bearing hook configuration.
+
 If a later stage fails, an added authorized key may remain on the PBX. Retry is
 idempotent, not a cross-host atomic rollback. Retiring access requires revoking
 the dedicated key on the PBX. PBX responses are treated as untrusted discovery

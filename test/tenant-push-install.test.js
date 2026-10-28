@@ -144,6 +144,34 @@ test('apply inserts exactly one System() action immediately before the context d
     assert.match(result.stdout, /No Asterisk reload was performed/);
 });
 
+test('atomic replacement retains the original dialplan uid, gid and mode when run as root', () => {
+    const box = sandbox();
+    const script = `
+import importlib.util, json, os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('installer', ${JSON.stringify(INSTALLER)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+target = Path(${JSON.stringify(box.dialplan)})
+original = target.read_text()
+ownership = []
+with patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=987, st_gid=981)), \
+     patch.object(os, 'geteuid', return_value=0), \
+     patch.object(os, 'fchown', side_effect=lambda fd, uid, gid: ownership.append([uid, gid])):
+    module.atomic_write(target, original + '; retained owner\\n', 0o640)
+print(json.dumps({'ownership': ownership, 'mode': target.stat().st_mode & 0o777,
+                  'text': target.read_text()}))
+`;
+    const result = spawnSync(PYTHON, ['-c', script], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const data = JSON.parse(result.stdout);
+    assert.deepEqual(data.ownership, [[987, 981]], 'do not replace an Asterisk-owned inode with root:root');
+    assert.equal(data.mode, 0o640);
+    assert.equal(data.text, FIXTURE + '; retained owner\n');
+});
+
 test('apply is idempotent: a second run changes nothing and writes no new backup', () => {
     const box = sandbox();
     assert.equal(run(box, ['--apply', '--allow-unprivileged']).status, 0);

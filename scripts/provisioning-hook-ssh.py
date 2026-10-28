@@ -63,7 +63,10 @@ checks that ``hookRunnerUser`` (default ``asterisk``) is in that group and can
 read the installed hook config. ``reloadDialplan`` must be true before a
 changed dialplan is applied; when true the adapter runs only the scoped
 ``asterisk -rx "dialplan reload"`` after an actual change and then verifies the
-hook is visible in the running ``[sub-sokrat-push-send]`` context. It never
+hook is visible in the running ``[sub-sokrat-push-send]`` context. An orphaned
+push-only extensions_sokrat.conf is wired into the already-loaded custom file;
+historical Sokrat files containing other routes are never activated implicitly.
+It never
 restarts Asterisk. An already-installed dialplan is accepted only after that
 effective-context check.
 
@@ -686,7 +689,7 @@ def safe_path(raw, label):
     return raw
 
 
-def check_ancestors(path):
+def check_ancestors(path, allow_asterisk=False):
     current = '/'
     parts = [part for part in path.split('/') if part]
     for part in parts[:-1]:
@@ -697,12 +700,19 @@ def check_ancestors(path):
             fail('remote_path_unsafe', 'missing directory for ' + path)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             fail('remote_path_unsafe', 'unsafe ancestor for ' + path)
+        if allow_asterisk and current == os.path.dirname(path):
+            account = pwd.getpwnam('asterisk')
+            group = grp.getgrnam('asterisk')
+            if (info.st_uid in (0, account.pw_uid) and info.st_gid in (0, group.gr_gid)
+                    and not info.st_mode & 0o002
+                    and (not info.st_mode & 0o020 or info.st_gid == group.gr_gid)):
+                continue
         if info.st_uid != 0 or info.st_mode & 0o022:
             fail('remote_path_unsafe', 'ancestor is not root-owned or is group/other writable: ' + current)
 
 
-def atomic_write(path, data, mode, uid, gid):
-    check_ancestors(path)
+def atomic_write(path, data, mode, uid, gid, allow_asterisk=False):
+    check_ancestors(path, allow_asterisk=allow_asterisk)
     if os.path.islink(path):
         fail('remote_path_unsafe', 'target is a symlink')
     directory = os.path.dirname(path) or '/'
@@ -745,7 +755,7 @@ def read_existing(path):
         return handle.read()
 
 
-def install(path, data, mode, uid, gid, stamp):
+def install(path, data, mode, uid, gid, stamp, allow_asterisk=False):
     existing = read_existing(path)
     if existing == data:
         os.chmod(path, mode)
@@ -759,7 +769,7 @@ def install(path, data, mode, uid, gid, stamp):
             fail('backup_exists', backup)
         shutil.copy2(path, backup)
         os.chmod(backup, os.lstat(path).st_mode & 0o7777)
-    atomic_write(path, data, mode, uid, gid)
+    atomic_write(path, data, mode, uid, gid, allow_asterisk=allow_asterisk)
     return backup
 
 
@@ -811,14 +821,98 @@ def run_asterisk(args, timeout=15):
     return process
 
 
-def verify_effective_dialplan(hook_path):
+def effective_dialplan(hook_path):
     process = run_asterisk(['-rx', 'dialplan show sub-sokrat-push-send'])
     text = process.stdout.decode('utf-8', 'replace')
     # The configured hook path is authoritative: installations may use
     # sokrat-tenant-push-hook.py or pbx-tenant-push-hook.py.
-    if process.returncode != 0 or os.path.basename(hook_path) not in text:
+    return process.returncode == 0 and os.path.basename(hook_path) in text
+
+
+def verify_effective_dialplan(hook_path):
+    if not effective_dialplan(hook_path):
         fail('dialplan_not_effective',
              'additive hook is not visible in the running dialplan')
+
+
+def ensure_dialplan_loaded(dialplan, reload_requested, stamp):
+    '''Wire an orphaned, push-only Sokrat file into the existing custom include.
+
+    Never load a whole historical Sokrat routing file: it might contain desktop
+    routes. Repair is restricted to a file containing ONLY the shared push
+    context, with no nested file/context includes or executable directives.
+    '''
+    if os.path.basename(dialplan) != 'extensions_sokrat.conf':
+        return False
+    directory = os.path.dirname(dialplan)
+    main_path = os.path.join(directory, 'extensions.conf')
+    custom_path = os.path.join(directory, 'extensions_custom.conf')
+    for path in (dialplan, main_path, custom_path):
+        # FreePBX/Issabel normally gives /etc/asterisk to asterisk:asterisk
+        # with group write access. That is legitimate ONLY for these dialplans,
+        # never for the executable hook or its credential-bearing config.
+        check_ancestors(path, allow_asterisk=True)
+    source = read_existing(dialplan)
+    main = read_existing(main_path)
+    custom = read_existing(custom_path)
+    if source is None or main is None or custom is None:
+        fail('dialplan_include_missing', 'required Asterisk dialplan file is missing')
+
+    def includes(text, name):
+        target = re.escape(name)
+        absolute = re.escape(os.path.join(directory, name))
+        return re.search(r'^\s*#(?:try)?include\s+["<]?(?:' + target + '|' + absolute
+                         + r')[">]?\s*(?:;[^\r\n]*)?$', text, re.M) is not None
+
+    main_text = main.decode('utf-8')
+    custom_text = custom.decode('utf-8')
+    if includes(main_text, 'extensions_sokrat.conf'):
+        return False
+    if not includes(main_text, 'extensions_custom.conf'):
+        fail('dialplan_include_missing', 'extensions_custom.conf is not loaded by extensions.conf')
+    if includes(custom_text, 'extensions_sokrat.conf'):
+        return False
+    source_text = source.decode('utf-8')
+    headers = re.findall(r'^\s*\[([^\]\r\n]+)\][^\r\n]*$', source_text, re.M)
+    if (headers != ['sub-sokrat-push-send']
+            or re.search(r'^\s*(?:#|include\s*=>|switch\s*=>|eswitch\s*=>)', source_text, re.M | re.I)
+            or re.search(r'^\s*\[sub-sokrat-push-send\]', main_text + '\n' + custom_text, re.M)):
+        fail('dialplan_include_unsafe', 'orphaned Sokrat file is not an isolated shared push context')
+    if reload_requested is not True:
+        fail('reload_required', 'reloadDialplan must be true before adding the shared push include')
+    ending = '\r\n' if '\r\n' in custom_text else '\n'
+    rendered = custom + (b'' if not custom or custom.endswith(b'\n') else ending.encode())
+    rendered += ('; Sokrat gateway shared push context' + ending
+                 + '#include extensions_sokrat.conf' + ending).encode('utf-8')
+    info = os.lstat(custom_path)
+    install(custom_path, rendered, info.st_mode & 0o7777, info.st_uid, info.st_gid, stamp,
+            allow_asterisk=True)
+    return True
+
+
+def ensure_dialplan_readable(dialplan, reload_requested):
+    # Older installer versions atomically replaced an asterisk-owned file with
+    # root:root 0640. Repair only that ownership regression, never chmod 0644 or
+    # relax the private hook configuration. Normal dialplan owners are retained.
+    check_ancestors(dialplan, allow_asterisk=True)
+    if read_existing(dialplan) is None:
+        fail('dialplan_unreadable', 'shared push dialplan is missing')
+    info = os.lstat(dialplan)
+    account = pwd.getpwnam('asterisk')
+    group = grp.getgrnam('asterisk')
+    groups = set(os.getgrouplist('asterisk', account.pw_gid))
+    readable = (bool(info.st_mode & 0o400) if info.st_uid == account.pw_uid else
+                bool(info.st_mode & 0o040) if info.st_gid in groups else
+                bool(info.st_mode & 0o004))
+    if readable:
+        return False
+    if info.st_uid != 0 or info.st_gid != 0 or info.st_mode & 0o7777 != 0o640:
+        fail('dialplan_unreadable', 'Asterisk cannot read the shared push dialplan')
+    if reload_requested is not True:
+        fail('reload_required', 'reloadDialplan must be true before repairing dialplan group access')
+    os.chown(dialplan, info.st_uid, group.gr_gid)
+    os.chmod(dialplan, (info.st_mode & 0o7777) | 0o040)
+    return True
 
 
 def main():
@@ -1003,8 +1097,14 @@ def main():
             fail('installer_refused', 'installer refused the dialplan change')
         installer_stdout = process.stdout.decode('utf-8', 'replace')
         action = 'unchanged' if 'already installed' in installer_stdout else 'installed'
+        include_changed = ensure_dialplan_loaded(dialplan, reload_requested, stamp)
+        access_changed = ensure_dialplan_readable(dialplan, reload_requested)
         reload_status = 'not-requested'
-        if reload_requested is True and action == 'installed':
+        # Recover if a previous attempt wrote files but its reload failed.
+        needs_reload = action == 'installed' or include_changed or access_changed
+        if not needs_reload and reload_requested is True:
+            needs_reload = not effective_dialplan(hook_path)
+        if reload_requested is True and needs_reload:
             reload_process = run_asterisk(['-rx', 'dialplan reload'])
             if reload_process.returncode != 0:
                 fail('reload_failed', 'Asterisk dialplan reload failed')
@@ -1015,6 +1115,8 @@ def main():
         out({'ok': True, 'action': action, 'pbxId': pbx, 'dialplanFile': dialplan,
              'hookPath': hook_path, 'hookConfigPath': config_path,
              'reload': reload_status,
+             'includeChanged': include_changed,
+             'accessChanged': access_changed,
              'hookBackup': hook_backup is not None,
              'configBackup': config_backup is not None})
     finally:

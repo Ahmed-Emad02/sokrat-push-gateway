@@ -533,6 +533,15 @@ for target, content in spec.get('files', {}).items():
         handle.write(content.encode('utf-8'))
     os.chmod(target, spec.get('modes', {}).get(target, 0o600))
 
+# The installer subprocess is mocked; retain a real, readable source file just
+# as the real installer requires, unless the scenario supplies its own fixture.
+dialplan = spec['targets']['dialplanFile']
+if not os.path.exists(dialplan):
+    os.makedirs(os.path.dirname(dialplan), exist_ok=True)
+    with open(dialplan, 'w') as handle:
+        handle.write('[sub-sokrat-push-send]\nexten => s,1,Return()\n')
+    os.chmod(dialplan, 0o640)
+
 ancestor_dirs = set()
 for target in spec['targets'].values():
     current = '/'
@@ -544,6 +553,8 @@ real_lstat = os.lstat
 
 def fake_lstat(path, *args, **kwargs):
     if path in ancestor_dirs:
+        if spec.get('asteriskOwned') and path == os.path.dirname(spec['targets']['dialplanFile']):
+            return types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o775, st_uid=os.getuid(), st_gid=os.getgid())
         return types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
     return real_lstat(path, *args, **kwargs)
 
@@ -566,7 +577,7 @@ def fake_run(argv, **kwargs):
         if '--apply' not in argv:
             if scenario == 'dry_refuse':
                 return subprocess.CompletedProcess(argv, 2, b'', b'raw dry-run error')
-            if scenario in ('dry_unchanged', 'not_effective'):
+            if scenario in ('dry_unchanged', 'not_effective', 'reload_recover'):
                 return subprocess.CompletedProcess(argv, 0, b'Tenant push hook: already installed\n', b'')
             return subprocess.CompletedProcess(
                 argv, 0, b'Tenant push hook: inserted one System() action before line 9\n', b'')
@@ -574,7 +585,7 @@ def fake_run(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 2, b'', b'raw apply error')
         if scenario == 'apply_timeout':
             raise subprocess.TimeoutExpired(argv, 120)
-        if scenario in ('dry_unchanged', 'not_effective'):
+        if scenario in ('dry_unchanged', 'not_effective', 'reload_recover'):
             return subprocess.CompletedProcess(argv, 0, b'Tenant push hook: already installed\n', b'')
         return subprocess.CompletedProcess(argv, 0, b'Applied. Backup written\n', b'')
     if argv and argv[0] == '/fake/asterisk':
@@ -584,6 +595,8 @@ def fake_run(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 0, b'Dialplan reloaded.\n', b'')
         if scenario == 'not_effective':
             return subprocess.CompletedProcess(argv, 0, b'[sub-sokrat-push-send]\n', b'')
+        if scenario == 'reload_recover' and not any(call[-1] == 'dialplan reload' for call in calls):
+            return subprocess.CompletedProcess(argv, 0, b'There is no existence of context\n', b'')
         return subprocess.CompletedProcess(
             argv, 0, b'[sub-sokrat-push-send] System(... pbx-tenant-push-hook.py ...)\n', b'')
     return subprocess.CompletedProcess(argv, 0, b'', b'')
@@ -598,6 +611,170 @@ except SystemExit:
 with open(spec['callsFile'], 'w') as handle:
     json.dump(calls, handle)
 `;
+
+test('remote body wires an orphaned push-only Sokrat file, including retry after hook was already installed', () => {
+    for (const scenario of ['success', 'dry_unchanged']) {
+        const dir = tempDir('sokrat-orphan-push-');
+        const targets = {
+            dialplanFile: path.join(dir, 'etc/asterisk/extensions_sokrat.conf'),
+            hookPath: path.join(dir, 'usr/local/sbin/pbx-tenant-push-hook.py'),
+            hookConfigPath: path.join(dir, 'etc/sokrat/gateway-hook.json'),
+        };
+        for (const target of Object.values(targets)) fs.mkdirSync(path.dirname(target), { recursive: true });
+        const main = path.join(path.dirname(targets.dialplanFile), 'extensions.conf');
+        const custom = path.join(path.dirname(main), 'extensions_custom.conf');
+        const original = '[from-internal-custom]\nexten => 123,1,NoOp(existing desktop route)\n';
+        const payload = {
+            pbxId: 'pbx_test', gatewayUrl: GATEWAY, ...targets,
+            calleeVar: 'CALLEE', callerVar: 'CALLER', nameVar: 'CALLER_NAME',
+            callIdVar: 'SOKRAT_CALL_ID', hookConfigMode: 0o640,
+            hookConfigGroup: 'asterisk', hookRunnerUser: 'asterisk', reloadDialplan: true,
+            installerB64: fs.readFileSync(INSTALLER).toString('base64'),
+            hookB64: fs.readFileSync(HOOK_RUNNER).toString('base64'),
+            hookConfigB64: Buffer.from(JSON.stringify({ gatewayUrl: GATEWAY, pbxId: 'pbx_test', token: TOKEN })).toString('base64'),
+        };
+        const callsFile = path.join(dir, 'calls.json');
+        const specFile = path.join(dir, 'spec.json');
+        const harness = path.join(dir, 'harness.py');
+        write(harness, REMOTE_HARNESS, 0o700);
+        const files = {
+            [main]: '#include extensions_custom.conf\n',
+            [custom]: original,
+            [targets.dialplanFile]: '; Shared wake only\n[sub-sokrat-push-send]\nexten => s,1,Return()\n',
+        };
+        write(specFile, JSON.stringify({ adapter: HOOK_ADAPTER, payload, targets, callsFile, scenario, files, asteriskOwned: true }), 0o600);
+        let result = spawnSync(PYTHON, [harness, specFile], { encoding: 'utf8', timeout: 20000 });
+        let data = JSON.parse(result.stdout.trim().split('\n').pop());
+        assert.equal(data.ok, true, result.stdout + result.stderr);
+        assert.equal(data.includeChanged, true);
+        assert.equal(data.reload, 'reloaded', 'an unchanged hook still needs reload when its include is new');
+        const rendered = fs.readFileSync(custom, 'utf8');
+        assert.ok(rendered.startsWith(original), 'desktop routes preserved byte for byte');
+        assert.equal(rendered.match(/^#include extensions_sokrat.conf$/gm).length, 1);
+        assert.equal(fs.readFileSync(main, 'utf8'), files[main], 'never edit generated main dialplan');
+        const backup = fs.readdirSync(path.dirname(custom)).find(name => name.startsWith('extensions_custom.conf.bak-tenant-provision-'));
+        assert.equal(fs.readFileSync(path.join(path.dirname(custom), backup), 'utf8'), original);
+        write(specFile, JSON.stringify({ adapter: HOOK_ADAPTER, payload, targets, callsFile, scenario: 'dry_unchanged', files: {} }), 0o600);
+        result = spawnSync(PYTHON, [harness, specFile], { encoding: 'utf8', timeout: 20000 });
+        data = JSON.parse(result.stdout.trim().split('\n').pop());
+        assert.equal(data.ok, true, result.stdout + result.stderr);
+        assert.equal(data.includeChanged, false);
+        assert.equal(data.reload, 'unchanged');
+        assert.equal(fs.readFileSync(custom, 'utf8'), rendered, 'include repair is idempotent');
+        assert.ok(!readJson(callsFile).some(argv => argv.includes('dialplan reload')), 'do not reload on every reconciliation');
+        write(specFile, JSON.stringify({ adapter: HOOK_ADAPTER, payload, targets, callsFile, scenario: 'reload_recover', files: {} }), 0o600);
+        result = spawnSync(PYTHON, [harness, specFile], { encoding: 'utf8', timeout: 20000 });
+        data = JSON.parse(result.stdout.trim().split('\n').pop());
+        assert.equal(data.ok, true, result.stdout + result.stderr);
+        assert.equal(data.reload, 'reloaded', 'recover when files exist but a previous reload did not take effect');
+        assert.equal(fs.readFileSync(custom, 'utf8'), rendered);
+    }
+});
+
+test('orphan include repair refuses routing files, nested includes, duplicates and unapproved reloads', () => {
+    for (const scenario of ['routes', 'nested', 'duplicate', 'reload_disabled', 'custom_not_loaded', 'already_included']) {
+        const dir = tempDir('sokrat-orphan-guard-');
+        const targets = {
+            dialplanFile: path.join(dir, 'etc/asterisk/extensions_sokrat.conf'),
+            hookPath: path.join(dir, 'usr/local/sbin/pbx-tenant-push-hook.py'),
+            hookConfigPath: path.join(dir, 'etc/sokrat/gateway-hook.json'),
+        };
+        for (const target of Object.values(targets)) fs.mkdirSync(path.dirname(target), { recursive: true });
+        const main = path.join(path.dirname(targets.dialplanFile), 'extensions.conf');
+        const custom = path.join(path.dirname(main), 'extensions_custom.conf');
+        const source = '[sub-sokrat-push-send]\nexten => s,1,Return()\n';
+        const original = scenario === 'duplicate' ? source : '; existing custom settings\n';
+        const payload = {
+            pbxId: 'pbx_test', gatewayUrl: GATEWAY, ...targets,
+            calleeVar: 'CALLEE', callerVar: 'CALLER', nameVar: 'CALLER_NAME',
+            callIdVar: 'SOKRAT_CALL_ID', hookConfigMode: 0o640,
+            hookConfigGroup: 'asterisk', hookRunnerUser: 'asterisk', reloadDialplan: scenario !== 'reload_disabled',
+            installerB64: fs.readFileSync(INSTALLER).toString('base64'),
+            hookB64: fs.readFileSync(HOOK_RUNNER).toString('base64'),
+            hookConfigB64: Buffer.from(JSON.stringify({ gatewayUrl: GATEWAY, pbxId: 'pbx_test', token: TOKEN })).toString('base64'),
+        };
+        const callsFile = path.join(dir, 'calls.json');
+        const specFile = path.join(dir, 'spec.json');
+        const harness = path.join(dir, 'harness.py');
+        write(harness, REMOTE_HARNESS, 0o700);
+        const files = {
+            [main]: scenario === 'custom_not_loaded' ? '; no custom loader\n' : '#include extensions_custom.conf\n',
+            [custom]: original + (scenario === 'already_included' ? '#include "extensions_sokrat.conf" ; existing\n' : ''),
+            [targets.dialplanFile]: source + (scenario === 'routes' ? '[outbound-routes]\nexten => _X.,1,Hangup()\n' : scenario === 'nested' ? '#exec arbitrary-command\n' : ''),
+        };
+        write(specFile, JSON.stringify({ adapter: HOOK_ADAPTER, payload, targets, callsFile, scenario: 'dry_unchanged', files }), 0o600);
+        const result = spawnSync(PYTHON, [harness, specFile], { encoding: 'utf8', timeout: 20000 });
+        const data = JSON.parse(result.stdout.trim().split('\n').pop());
+        if (scenario === 'already_included') {
+            assert.equal(data.ok, true, result.stdout + result.stderr);
+            assert.equal(data.includeChanged, false);
+        } else {
+            assert.equal(data.ok, false, scenario + result.stdout);
+            assert.equal(data.error.code, scenario === 'reload_disabled' ? 'reload_required'
+                : scenario === 'custom_not_loaded' ? 'dialplan_include_missing' : 'dialplan_include_unsafe');
+        }
+        assert.equal(fs.readFileSync(custom, 'utf8'), files[custom], 'no include writes on refusal or when already wired');
+        assert.equal(fs.readFileSync(main, 'utf8'), files[main]);
+    }
+});
+
+test('dialplan readability recovery is limited to the old root:root 0640 regression and is idempotent', () => {
+    const dir = tempDir('sokrat-readability-');
+    const script = `
+import importlib.util, json, os, stat
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('adapter', ${JSON.stringify(HOOK_ADAPTER)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+scope = {}
+exec(compile(module.REMOTE_CODE.split('\\ntry:\\n    main()')[0], '<remote-functions>', 'exec'), scope)
+target = Path(${JSON.stringify(path.join(dir, 'push.conf'))})
+target.write_text('[sub-sokrat-push-send]\\nexten => s,1,Return()\\n')
+real_lstat = os.lstat
+results = []
+for uid, gid, mode, reload_allowed in [(0,0,0o640,True), (0,0,0o640,False),
+        (123,456,0o640,True), (0,0,0o600,True), (987,981,0o640,True)]:
+    os.chmod(str(target), mode)
+    ownership = {'uid': uid, 'gid': gid}
+    changes = []
+    def info(path, *args, **kwargs):
+        original = real_lstat(path, *args, **kwargs)
+        if str(path) != str(target):
+            return original
+        return SimpleNamespace(st_mode=original.st_mode, st_size=original.st_size,
+                               st_uid=ownership['uid'], st_gid=ownership['gid'])
+    def chown(path, new_uid, new_gid):
+        ownership.update(uid=new_uid, gid=new_gid)
+        changes.append([new_uid, new_gid])
+    def refuse(code, detail=''):
+        raise ValueError(code)
+    scope['check_ancestors'] = lambda *args, **kwargs: None
+    scope['fail'] = refuse
+    with patch.object(os, 'lstat', side_effect=info), patch.object(os, 'chown', side_effect=chown), \
+         patch.object(scope['pwd'], 'getpwnam', return_value=SimpleNamespace(pw_uid=987, pw_gid=981)), \
+         patch.object(scope['grp'], 'getgrnam', return_value=SimpleNamespace(gr_gid=981)), \
+         patch.object(os, 'getgrouplist', return_value=[981]):
+        try:
+            changed = scope['ensure_dialplan_readable'](str(target), reload_allowed)
+            again = scope['ensure_dialplan_readable'](str(target), reload_allowed)
+            results.append({'changed': changed, 'again': again, 'changes': changes,
+                            'mode': real_lstat(str(target)).st_mode & 0o777})
+        except ValueError as error:
+            results.append({'error': str(error), 'changes': changes})
+print(json.dumps(results))
+`;
+    const result = spawnSync(PYTHON, ['-c', script], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [
+        { changed: true, again: false, changes: [[0, 981]], mode: 0o640 },
+        { error: 'reload_required', changes: [] },
+        { error: 'dialplan_unreadable', changes: [] },
+        { error: 'dialplan_unreadable', changes: [] },
+        { changed: false, again: false, changes: [], mode: 0o640 },
+    ]);
+});
 
 test('remote body refuses to overwrite a hook config belonging to another PBX', () => {
     const oldConfig = '{"gatewayUrl":"https://old.example.com","pbxId":"pbx_other","token":"' + 'o'.repeat(64) + '"}\n';

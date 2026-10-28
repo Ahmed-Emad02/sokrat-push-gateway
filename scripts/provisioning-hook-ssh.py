@@ -811,10 +811,12 @@ def run_asterisk(args, timeout=15):
     return process
 
 
-def verify_effective_dialplan():
+def verify_effective_dialplan(hook_path):
     process = run_asterisk(['-rx', 'dialplan show sub-sokrat-push-send'])
     text = process.stdout.decode('utf-8', 'replace')
-    if process.returncode != 0 or 'pbx-tenant-push-hook.py' not in text:
+    # The configured hook path is authoritative: installations may use
+    # sokrat-tenant-push-hook.py or pbx-tenant-push-hook.py.
+    if process.returncode != 0 or os.path.basename(hook_path) not in text:
         fail('dialplan_not_effective',
              'additive hook is not visible in the running dialplan')
 
@@ -1009,7 +1011,7 @@ def main():
             reload_status = 'reloaded'
         elif action == 'unchanged':
             reload_status = 'unchanged'
-        verify_effective_dialplan()
+        verify_effective_dialplan(hook_path)
         out({'ok': True, 'action': action, 'pbxId': pbx, 'dialplanFile': dialplan,
              'hookPath': hook_path, 'hookConfigPath': config_path,
              'reload': reload_status,

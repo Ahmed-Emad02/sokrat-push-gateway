@@ -178,6 +178,12 @@
         try { await resolveAddress(); } catch (error) { handleError(error); }
         finally { setBusy(refs.pbxResolve, false); }
     });
+    // Enabling SSH setup resolves the address on its own: the SSH target is
+    // always the resolved Tailscale address, in automatic and in advanced mode.
+    refs.sshEnable.addEventListener('change', async () => {
+        if (!refs.sshEnable.checked || !refs.pbxAddress.value.trim()) return;
+        try { await resolveAddress(); } catch (error) { handleError(error); }
+    });
     syncAddressMode();
 
     refs.sshHost.addEventListener('input', () => {
@@ -1001,15 +1007,31 @@
     async function submitPbx(event) {
         event.preventDefault();
         clearMessages();
+        const sshSetup = refs.sshEnable.checked;
+        // The derived endpoints and the SSH target come from the resolved
+        // address, so it is resolved before the form is read.
         try {
-            if (refs.pbxAutoAddress.checked) await resolveAddress();
+            if (refs.pbxAutoAddress.checked || sshSetup) await resolveAddress();
         } catch (error) { handleError(error); refs.pbxAddress.focus(); return; }
         const payload = readPbxForm();
-        const sshSetup = refs.sshEnable.checked;
-        if (sshSetup && (!refs.sshConfirm.checked || sshVerifiedHost !== refs.sshHost.value.trim() || !sshFingerprint || !refs.sshPassword.value)) {
-            showError('Check and confirm the SSH host fingerprint, then enter the one-time password.');
-            refs.sshHost.focus();
-            return;
+        if (sshSetup) {
+            // The SSH target is always the resolved address, so a stale or empty
+            // host field can never silently point the enrollment somewhere else.
+            if (!refs.sshConfirm.checked) {
+                showError('Check the SSH host key, compare the fingerprint with the PBX host key and tick the confirmation box.');
+                refs.sshProbe.focus();
+                return;
+            }
+            if (!sshFingerprint || sshVerifiedHost !== refs.sshHost.value.trim()) {
+                showError('The SSH host key changed or was never checked. Check the host key again and confirm the fingerprint.');
+                refs.sshProbe.focus();
+                return;
+            }
+            if (!refs.sshPassword.value) {
+                showError('Enter the one-time root SSH password for this PBX.');
+                refs.sshPassword.focus();
+                return;
+            }
         }
         setBusy(refs.pbxSubmit, true, 'Saving…');
         try {

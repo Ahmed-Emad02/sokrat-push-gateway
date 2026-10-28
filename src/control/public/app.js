@@ -190,17 +190,21 @@
         sshVerifiedHost = null; sshFingerprint = null;
         refs.sshFingerprint.textContent = ''; refs.sshConfirm.checked = false;
     });
+    async function probeSshHost() {
+        await resolveAddress();
+        const revision = addressRevision;
+        const host = refs.sshHost.value.trim();
+        const result = await api('/api/pbx-ssh/probe', { method: 'POST', body: { host, username: refs.sshUser.value } });
+        if (addressRevision !== revision || refs.sshHost.value.trim() !== host) throw new Error('Address changed; check the host key again.');
+        sshVerifiedHost = host; sshFingerprint = result.fingerprint;
+        refs.sshFingerprint.textContent = result.fingerprint;
+        refs.sshConfirm.checked = false;
+        return result.fingerprint;
+    }
     refs.sshProbe.addEventListener('click', async () => {
         setBusy(refs.sshProbe, true, 'Checking…');
         try {
-            await resolveAddress();
-            const revision = addressRevision;
-            const host = refs.sshHost.value.trim();
-            const result = await api('/api/pbx-ssh/probe', { method: 'POST', body: { host, username: refs.sshUser.value } });
-            if (addressRevision !== revision || refs.sshHost.value.trim() !== host) throw new Error('Address changed; check the host key again.');
-            sshVerifiedHost = host; sshFingerprint = result.fingerprint;
-            refs.sshFingerprint.textContent = result.fingerprint;
-            refs.sshConfirm.checked = false;
+            await probeSshHost();
         } catch (error) { handleError(error); }
         finally { setBusy(refs.sshProbe, false); }
     });
@@ -1017,14 +1021,19 @@
         if (sshSetup) {
             // The SSH target is always the resolved address, so a stale or empty
             // host field can never silently point the enrollment somewhere else.
-            if (!refs.sshConfirm.checked) {
-                showError('Check the SSH host key, compare the fingerprint with the PBX host key and tick the confirmation box.');
-                refs.sshProbe.focus();
+            if (!sshFingerprint || sshVerifiedHost !== refs.sshHost.value.trim()) {
+                // The fingerprint is fetched for the operator instead of being
+                // demanded first: it is shown and the confirmation is reset, so
+                // a stale or missing check can never be mistaken for a verified
+                // one.
+                try { await probeSshHost(); } catch (error) { handleError(error); refs.sshProbe.focus(); return; }
+                showError('Compare the SSH host key below with the PBX host key, then tick the confirmation box and save again.');
+                refs.sshFingerprint.focus();
                 return;
             }
-            if (!sshFingerprint || sshVerifiedHost !== refs.sshHost.value.trim()) {
-                showError('The SSH host key changed or was never checked. Check the host key again and confirm the fingerprint.');
-                refs.sshProbe.focus();
+            if (!refs.sshConfirm.checked) {
+                showError('Compare the SSH host key with the PBX host key and tick the confirmation box.');
+                refs.sshConfirm.focus();
                 return;
             }
             if (!refs.sshPassword.value) {

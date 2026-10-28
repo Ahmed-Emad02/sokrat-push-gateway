@@ -52,7 +52,7 @@ const CLAIM_RETRY_HINT_MS = 3000;
 
 const WS_PROTOCOLS = new Set(['ws:', 'wss:']);
 const API_PROTOCOLS = new Set(['http:', 'https:']);
-const PLATFORMS = new Set(['ios', 'android', 'desktop']);
+const PLATFORMS = new Set(['ios', 'android', 'desktop', 'chrome']);
 const DEVICE_STATUSES = new Set(['pending', 'approved', 'rejected', 'revoked']);
 const ENROLLMENT_MODES = new Set(['invite', 'claim']);
 
@@ -229,7 +229,7 @@ function normalizeExtension(value, field = 'extension') {
 function normalizePlatform(value) {
     const platform = requireString(value, 'platform', { max: 16, label: 'Platform' }).toLowerCase();
     if (!PLATFORMS.has(platform)) {
-        throw fail('invalid_platform', 'platform must be ios, android or desktop');
+        throw fail('invalid_platform', 'platform must be ios, android, desktop or chrome');
     }
     return platform;
 }

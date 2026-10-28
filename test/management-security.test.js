@@ -6,10 +6,10 @@
  * Pins three fail-closed behaviours around the managed control plane:
  *
  *  1. Persisted devices may only carry an enrollment platform the gateway can
- *     actually push to (`ios`, `android`, `desktop`). A schema-2 document that
- *     stores `chrome` or any other unsupported value must refuse to load
+ *     supports (`ios`, `android`, `desktop`, `chrome`). A schema-2 document that
+ *     stores an unsupported value must refuse to load
  *     (`control_store_corrupt`, 500) and must never be rewritten. Enrollment
- *     itself keeps rejecting `chrome`.
+ *     itself supports Chrome while rejecting unknown platform values.
  *  2. A managed PBX with optional extension policies can already hold approved
  *     devices. Creating a policy whose `maxDevices` is below that live usage
  *     must be refused atomically with `device_cap_below_usage`; a cap equal to
@@ -209,7 +209,6 @@ test('a schema-2 document with an unsupported device platform fails closed and i
     const pbxId = `pbx_${crypto.randomBytes(8).toString('hex')}`;
 
     const cases = [
-        ['chrome is a policy platform, never an enrollment platform', seededDevice(pbxId, { platform: 'chrome' })],
         ['an arbitrary platform is rejected', seededDevice(pbxId, { platform: 'windows' })],
         ['a device without a platform is rejected', seededDevice(pbxId, { platform: undefined })],
         ['a numeric platform is rejected', seededDevice(pbxId, { platform: 7 })]
@@ -249,7 +248,8 @@ test('a schema-2 document with an unsupported device platform fails closed and i
             devices: [
                 seededDevice(pbxId, { platform: 'android' }),
                 seededDevice(pbxId, { platform: 'ios' }),
-                seededDevice(pbxId, { platform: 'desktop' })
+                seededDevice(pbxId, { platform: 'desktop' }),
+                seededDevice(pbxId, { platform: 'chrome' })
             ]
         })
     );
@@ -260,20 +260,20 @@ test('a schema-2 document with an unsupported device platform fails closed and i
             .listDevices('approved')
             .map((device) => device.platform)
             .sort();
-        assert.deepEqual(platforms, ['android', 'desktop', 'ios']);
+        assert.deepEqual(platforms, ['android', 'chrome', 'desktop', 'ios']);
     } finally {
         await good.close();
     }
 });
 
-test('enrollment keeps rejecting chrome while android still enrolls', async () => {
+test('enrollment rejects unknown platforms while chrome enrolls', async () => {
     const { filePath, store, close } = await makeStore();
     try {
         const { token } = await store.createEnrollmentToken({ label: 'invite platform check', maxUses: 5 });
         const before = await fsp.readFile(filePath, 'utf8');
 
         await rejectsWithCode(
-            store.enrollDevice({ token, platform: 'chrome', deviceUuid: crypto.randomUUID() }),
+            store.enrollDevice({ token, platform: 'unknown', deviceUuid: crypto.randomUUID() }),
             'invalid_platform',
             400
         );
@@ -287,10 +287,10 @@ test('enrollment keeps rejecting chrome while android still enrolls', async () =
 
         const { device } = await store.enrollDevice({
             token,
-            platform: 'android',
+            platform: 'chrome',
             deviceUuid: crypto.randomUUID()
         });
-        assert.equal(device.platform, 'android');
+        assert.equal(device.platform, 'chrome');
         assert.equal(store.listDevices('pending').length, 1);
     } finally {
         await close();
@@ -298,6 +298,23 @@ test('enrollment keeps rejecting chrome while android still enrolls', async () =
 });
 
 // --- 2. policy creation vs live usage -------------------------------------
+
+test('Chrome anonymous claim enrolls pending and redeems only its reviewed PBX assignment', async () => {
+    const { store, close } = await makeStore();
+    try {
+        const pbx = await store.addPbx(pbxInput('Chrome fixture'));
+        const claimSecret = crypto.randomBytes(32).toString('base64url');
+        const { device } = await store.enrollClaim({ platform: 'chrome', deviceUuid: crypto.randomUUID(),
+            extension: 'fixture', claimSecret });
+        assert.equal(device.platform, 'chrome');
+        assert.equal(device.status, 'pending');
+        assert.equal(JSON.stringify(device).includes(claimSecret), false);
+        await store.approveDevice(device.id, { pbxId: pbx.id, extension: 'fixture' });
+        const result = await store.redeemClaim({ deviceId: device.id, claimSecret });
+        assert.equal(result.assignment.pbxId, pbx.id);
+        assert.equal(result.assignment.extension, 'fixture');
+    } finally { await close(); }
+});
 
 test('adding a policy below the already approved device usage is rejected atomically', async () => {
     const { filePath, store, close } = await makeStore();

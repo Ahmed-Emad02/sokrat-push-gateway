@@ -157,6 +157,22 @@ test('apply is idempotent: a second run changes nothing and writes no new backup
     assert.deepEqual(backups(box.dir), firstBackups);
 });
 
+test('a managed line that drifted is replaced instead of blocking the setup', () => {
+    // The marker identifies the gateway's own line. An older path or a renamed
+    // variable must be corrected in place, not turned into a dead end.
+    const box = sandbox();
+    const stale = 'same=>n,System(nohup env SOKRAT_HOOK_CONFIG="/old/hook.json" '
+        + '/usr/bin/python3 "/old/hook.py" "${URIENCODE(${CALLEE})}" "${URIENCODE(${CALLER})}" '
+        + '"${URIENCODE(${CALLER_NAME})}" "${SOKRAT_CALL_ID}" >/dev/null 2>&1 &)';
+    fs.writeFileSync(box.dialplan, FIXTURE.replace(LEGACY, LEGACY + '\n' + MARKER + '\n' + stale));
+    const result = run(box, ['--apply', '--allow-unprivileged']);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /replaced the managed action/);
+    const after = fs.readFileSync(box.dialplan, 'utf8');
+    assert.ok(after.includes(systemLine(box)), 'the canonical line is present');
+    assert.equal((after.match(/System\(/g) || []).length, 2, 'no duplicate System() action');
+});
+
 test('apply without root is refused unless explicitly allowed', { skip: process.getuid?.() === 0 }, () => {
     const box = sandbox();
     const before = fs.readFileSync(box.dialplan, 'utf8');
@@ -174,7 +190,7 @@ test('malformed dialplans are refused without writing', async t => {
         ['missing legacy dispatcher', FIXTURE.replace(LEGACY, ' same => n,NoOp(no dispatcher)'), /legacy dispatcher line/],
         ['duplicate legacy dispatcher', FIXTURE.replace(LEGACY, LEGACY + '\n' + LEGACY), /legacy dispatcher line/],
         ['tenant endpoint already present', FIXTURE.replace(LEGACY, LEGACY + '\n same => n,System(nohup env /usr/bin/curl "http://127.0.0.1:8097/api/gateway/incoming-call" >/dev/null 2>&1 &)'), /already references \/api\/gateway\/incoming-call/],
-        ['marker without action', FIXTURE.replace(LEGACY, LEGACY + '\n' + MARKER), /marker .* is present but the expected System\(\) line is missing/],
+        ['marker without action', FIXTURE.replace(LEGACY, LEGACY + '\n' + MARKER), /marker .* is present but no managed action follows it/],
         ['hook referenced without marker', FIXTURE.replace(LEGACY, LEGACY + '\n same => n,System(/usr/bin/python3 /opt/x/pbx-tenant-push-hook.py)'), /already references pbx-tenant-push-hook\.py/],
     ];
     for (const [name, dialplan, needle] of cases) {

@@ -189,8 +189,24 @@ def plan(text, args):
     if any(line == MARKER for line in existing):
         if system_line.rstrip('\r\n') in [line.rstrip('\r\n') for line in lines]:
             return None, None, 'already installed (marker %r present)' % MARKER, []
-        refuse('marker %r is present but the expected System() line is missing; refusing to guess'
-               % MARKER)
+        # The marker identifies our own managed line. If it differs from the
+        # canonical rendering (an older path, a renamed variable), it is
+        # replaced instead of blocking the setup.
+        marker_index = next(index for index, line in enumerate(existing) if line == MARKER)
+        action_index = None
+        for index in range(marker_index + 1, len(lines)):
+            stripped = lines[index].strip()
+            if not stripped:
+                continue
+            if stripped.startswith('same') and 'System(' in stripped:
+                action_index = index
+            break
+        if action_index is None:
+            refuse('marker %r is present but no managed action follows it; refusing to guess'
+                   % MARKER)
+        updated = list(lines)
+        updated[action_index] = system_line
+        return updated, action_index, 'replaced the managed action after marker %r' % MARKER, warnings
     if any(HOOK_NAME in line for line in body):
         refuse('context [%s] already references %s without the installer marker'
                % (CONTEXT, HOOK_NAME))

@@ -911,6 +911,10 @@ def main():
     config_orig_mode = 0o600 if config_existed is None else (os.lstat(config_path).st_mode & 0o7777)
     config_orig_uid = 0 if config_existed is None else os.lstat(config_path).st_uid
     config_orig_gid = 0 if config_existed is None else os.lstat(config_path).st_gid
+    retired = payload.get('retiredPbxIds') or []
+    if not isinstance(retired, list) or len(retired) > 64 or any(
+            not isinstance(item, str) or not PBX_RE.match(item) for item in retired):
+        fail('payload_invalid', 'retiredPbxIds must be a short list of PBX ids')
     if config_existed is not None:
         try:
             existing_config = json.loads(config_existed.decode('utf-8'))
@@ -918,8 +922,12 @@ def main():
             fail('hook_config_conflict',
                  'existing hook config is not recognized; refusing to overwrite it')
         if not isinstance(existing_config, dict) or existing_config.get('pbxId') != pbx:
-            fail('hook_config_conflict',
-                 'existing hook config belongs to a different PBX; refusing to overwrite it')
+            previous = existing_config.get('pbxId') if isinstance(existing_config, dict) else None
+            if previous not in retired:
+                fail('hook_config_conflict',
+                     'existing hook config belongs to a different PBX; refusing to overwrite it')
+            # The previous owner was removed from the dashboard, so its hook
+            # configuration is stale and is replaced by this PBX.
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     base = '/run' if os.path.isdir('/run') and os.access('/run', os.W_OK) else '/tmp'
     tmpdir = tempfile.mkdtemp(prefix='sokrat-provision-', dir=base)
@@ -1041,6 +1049,10 @@ def main(argv=None):
         if not isinstance(token, str) or not TOKEN_RE.match(token):
             refuse('request_invalid', 'token must be a 16..512 character opaque secret')
         SECRETS.append(token)
+        retired = request.get('retiredPbxIds') or []
+        if not isinstance(retired, list) or len(retired) > 64 or any(
+                not isinstance(item, str) or not PBX_ID_RE.match(item) for item in retired):
+            refuse('request_invalid', 'retiredPbxIds must be a short list of PBX ids')
 
         bundle = check_bundle()
         installer = check_bundle_file(
@@ -1075,6 +1087,7 @@ def main(argv=None):
             'installerB64': base64.b64encode(installer).decode('ascii'),
             'hookB64': base64.b64encode(hook).decode('ascii'),
             'hookConfigB64': base64.b64encode(hook_config_bytes).decode('ascii'),
+            'retiredPbxIds': list(retired),
         }
         payload_bytes = json.dumps(payload, separators=(',', ':')).encode('utf-8')
         if len(payload_bytes) > MAX_PAYLOAD:

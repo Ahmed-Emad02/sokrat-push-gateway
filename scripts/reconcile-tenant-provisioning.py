@@ -164,7 +164,7 @@ REASONS = frozenset({
     "configuration_invalid",
 })
 
-APPROVALS = frozenset({"approved", "unmanaged"})
+APPROVALS = frozenset({"approved", "unmanaged", "pending"})
 
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
@@ -1183,7 +1183,7 @@ def firewall_request(config, pbx_id, allocation, enabled, peers=None):
     }
 
 
-def hook_request(config, pbx_id, allocation, token, peers=None):
+def hook_request(config, pbx_id, allocation, token, peers=None, retired=None):
     return {
         "pbxId": pbx_id,
         "gatewayUrl": config["gatewayUrl"],
@@ -1191,6 +1191,10 @@ def hook_request(config, pbx_id, allocation, token, peers=None):
         "peerIps": list(peers if peers is not None else allocation["peerIps"]),
         "enabled": True,
         "token": token,
+        # PBX ids removed from the dashboard. Their push-hook configuration on
+        # the PBX is stale and may be replaced; a configuration that belongs to
+        # a live PBX never is.
+        "retiredPbxIds": list(retired or []),
     }
 
 
@@ -1311,6 +1315,12 @@ def apply_run(state, previous):
     manifest = state["manifest"]
     tokens = state["tokens"]
 
+    # PBX ids that were removed from the dashboard: their relay allocation is
+    # retained on purpose, so their push-hook configuration on the PBX is stale.
+    retired = sorted(
+        other for other, other_entry in entries.items()
+        if other_entry["record"] is None and other_entry["allocation"] is not None
+    )
     for pbx_id in eligible:
         entry = entries[pbx_id]
         fingerprint = entry["fingerprint"]
@@ -1343,7 +1353,7 @@ def apply_run(state, previous):
         guard()
         if not call_adapter(entry["pin"]["hookAdapter"], pbx_id,
                             hook_request(config, pbx_id, allocation, token,
-                                         peers=entry["pin"]["mediaIps"])):
+                                         peers=entry["pin"]["mediaIps"], retired=retired)):
             result[pbx_id] = status_entry("error", "hook_failed", relay="ready",
                                           firewall="ready", hook="error",
                                           fingerprint=fingerprint, captured=captured)

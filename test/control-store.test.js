@@ -52,7 +52,7 @@ test('creates the durable store with 0600 file and 0700 directory', async () => 
         assert.equal(fileMode, 0o600);
         assert.equal(dirMode, 0o700);
         const document = await rawDocument(filePath);
-        assert.equal(document.schemaVersion, 1);
+        assert.equal(document.schemaVersion, 2);
         assert.deepEqual(document.pbx, []);
         assert.deepEqual(document.devices, []);
     } finally {

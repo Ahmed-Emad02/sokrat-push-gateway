@@ -77,6 +77,44 @@ longer required. No PBX dialplan or endpoint rollback is needed for this change.
 
 ## Multi-PBX / device approval
 
+### Live migration status (2026-10-28)
+
+Public `/api/gateway/` and ticketed `:8088/ws?ticket=…` now reach the tenant
+runtime. `enable-tenant-routing.py --coexist` preserves bare legacy `/ws`,
+legacy ICE and push registration for the original PBX while upgraded devices
+enroll. This is **not global approval enforcement**: old unticketed clients can
+still use the original route. A nonempty invalid ticket always receives403 and
+never falls back to that PBX. Admin9096 and runtime9097 remain loopback-only.
+
+Live smoke passed: public enroll→pending202→admin approve→claim200→isolated
+ICE3500→single-use ticket→upstream SIP authentication challenge; revoked device
+then receives403 on tickets. Smoke device was revoked and registered no SIP
+contact. Control file upgraded to schema2 through the authenticated API.
+Tenant relay external UDP/TCP allocation and PBX echo roundtrip passed.
+
+PBX existing mobile push dispatcher now additionally invokes
+`scripts/pbx-tenant-push-hook.py` with URI-encoded arguments and a private
+`/etc/sokrat/gateway-hook.json`; legacy push remains intact during migration.
+Hook run as Asterisk returned200. No outbound routing/macros/desktop endpoints
+were changed; only one additive background dispatch in the existing send context.
+
+For additional PBXs: create/approve the server and extension policies, establish
+gateway↔PBX connectivity, synchronize isolated relays with
+`sync-tenant-runtime.py`, permit each allocated TCP/UDP listener in the cloud
+firewall, restart the private runtime to load its manifest, and install that
+PBX's own authenticated hook. A dashboard row alone does not provision media or
+install the hook. Then enroll/approve clients and test a real call. Duplicate
+extensions are assigned manually to a specific PBX; hostname discovery is not
+active.
+
+Clients must use the **gateway** origin for both authenticated API and ticketed
+WebSocket requests; assignment wsURL/apiURL are private PBX upstreams, not client
+endpoints. Existing legacy mobile accounts need a fresh login to discover the
+tenant API. Do not switch to full enforcement until clients are migrated and
+incoming wake/media are verified. Full activation requires explicit
+`--confirm-device-migration` and private store/relay/hook readiness checks;
+restore the pre-coexist nginx backup before full activation.
+
 The control module and authenticated WebSocket router are implemented separately
 from the single-PBX deployment. Do not expose the admin dashboard publicly or
 switch live SIP routing until client enrollment, per-PBX push storage, revocation

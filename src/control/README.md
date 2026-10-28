@@ -1,5 +1,15 @@
 # Control plane — multi-PBX & device approval dashboard
 
+## Management increment (local feature branch)
+
+`feature/gateway-extension-management` adds manually reviewed PBX management
+metadata and independent extension access policies with platform/device limits.
+See `../../MANAGEMENT-IMPLEMENTATION.md` for API, compatibility and rollback
+details. Schema2 prevents old binaries from silently dropping policy records.
+Existing unmanaged PBXs keep legacy behavior. Hostname fields reserve customer
+addresses only: discovery, DNS and public routing activation are not implemented
+by this increment. No standard SIP client transport was added.
+
 Self-contained module for `sokrat-push-gateway-master`. It is mounted by the
 gateway process and provides:
 

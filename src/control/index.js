@@ -39,6 +39,7 @@ function createControl(options = {}) {
         maxPendingDevices: options.maxPendingDevices,
         maxDevices: options.maxDevices,
         maxEnrollmentTokens: options.maxEnrollmentTokens,
+        maxExtensions: options.maxExtensions,
         claimTtlMs: options.claimTtlMs,
         now: options.now
     });

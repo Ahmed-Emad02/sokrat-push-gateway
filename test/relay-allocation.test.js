@@ -17,5 +17,6 @@ for value in ('pbx_b02b63850dbb278c', 'pbx_' + 'a' * 60, 'PBX_' + 'a' * 60):
     assert m.SLUG_RE.fullmatch(slug)
 assert len(taken) == 3
 assert m.MAX_SLOTS == 155
+assert m.CONTROL_SCHEMA_VERSION == 2
 `], { cwd: path.resolve(__dirname, '..'), stdio: 'pipe' });
 });

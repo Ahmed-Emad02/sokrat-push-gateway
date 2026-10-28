@@ -106,6 +106,59 @@
             <span>Enabled</span>
           </label>
         </div>
+        <div class="field field-inline">
+          <label class="check" for="pbx-managed">
+            <input id="pbx-managed" name="managed" type="checkbox" aria-describedby="pbx-managed-hint">
+            <span>Managed multi-tenant PBX</span>
+          </label>
+          <span id="pbx-managed-hint" class="hint">Optional. Leave off for a legacy single-customer PBX.</span>
+        </div>
+        <div class="field" hidden>
+          <label for="pbx-customer">Customer</label>
+          <input id="pbx-customer" name="customer" type="text" maxlength="64"
+                 placeholder="Customer or tenant name" autocomplete="off"
+                 autocorrect="off" autocapitalize="off" spellcheck="false"
+                 aria-describedby="pbx-customer-hint">
+          <span id="pbx-customer-hint" class="hint">Optional tenant label recorded for this PBX.</span>
+        </div>
+        <div class="field" hidden>
+          <label for="pbx-login-hostname">Login hostname</label>
+          <input id="pbx-login-hostname" name="loginHostname" type="text" maxlength="253"
+                 placeholder="pbx.customer.example" autocomplete="off"
+                 autocorrect="off" autocapitalize="off" spellcheck="false"
+                 aria-describedby="pbx-login-hostname-hint">
+          <span id="pbx-login-hostname-hint" class="hint">Optional hostname devices use for the three-field login. Leave empty if unused.</span>
+        </div>
+        <div class="field field-inline" hidden>
+          <label class="check" for="pbx-policy-required">
+            <input id="pbx-policy-required" name="extensionPolicyRequired" type="checkbox" checked>
+            <span>Extension policy required</span>
+          </label>
+        </div>
+        <div class="field" hidden>
+          <label for="pbx-approval">Approval status</label>
+          <select id="pbx-approval" name="approvalStatus" aria-describedby="pbx-approval-hint">
+            <option value="pending">Pending</option>
+            <option value="approved">Approved (manual)</option>
+            <option value="suspended">Suspended</option>
+            <option value="retired">Retired</option>
+          </select>
+          <span id="pbx-approval-hint" class="hint">
+            Manual approval records an operator decision only. It does not verify ownership of the
+            PBX, and automated ownership verification is still pending. A new managed PBX starts as
+            pending.
+          </span>
+        </div>
+        <div class="field" hidden>
+          <label for="pbx-reviewed-installation-id">Reviewed installation ID</label>
+          <input id="pbx-reviewed-installation-id" name="reviewedInstallationId" type="text" maxlength="128"
+                 placeholder="Optional installation identifier" autocomplete="off"
+                 autocorrect="off" autocapitalize="off" spellcheck="false"
+                 aria-describedby="pbx-reviewed-installation-id-hint">
+          <span id="pbx-reviewed-installation-id-hint" class="hint">
+            Optional identifier the operator checked. It is a manual record, not automated verification.
+          </span>
+        </div>
         <div class="form-actions">
           <button id="pbx-submit" class="btn btn-primary" type="submit">Add PBX</button>
           <button id="pbx-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
@@ -129,6 +182,107 @@
         </table>
       </div>
       <p id="pbx-empty" class="empty" hidden>No PBX connections yet. Add one above.</p>
+    </section>
+
+    <section class="card" aria-labelledby="extensions-title">
+      <div class="card-head">
+        <h2 id="extensions-title">Extensions</h2>
+        <p class="hint">
+          Register the extensions this gateway may serve and which platforms may bind devices to
+          them. Extensions belong to a managed PBX, and registering one does not approve a device;
+          every device is still reviewed in the pending list.
+        </p>
+      </div>
+      <form id="ext-form" class="form-grid">
+        <input type="hidden" id="ext-id" value="">
+        <div class="field">
+          <label for="ext-pbx">PBX</label>
+          <select id="ext-pbx" name="pbxId" required aria-describedby="ext-pbx-hint"></select>
+          <span id="ext-pbx-hint" class="hint">
+            Only managed PBX connections can hold extensions. The extension cannot be moved after it
+            is created.
+          </span>
+        </div>
+        <div class="field">
+          <label for="ext-number">Extension number</label>
+          <input id="ext-number" name="extension" type="text" required maxlength="32"
+                 inputmode="numeric" pattern="[0-9A-Za-z*#._-]{1,32}" placeholder="1001"
+                 autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                 aria-describedby="ext-number-hint">
+          <span id="ext-number-hint" class="hint">
+            Stored as text, so leading zeros are kept. Digits are typical; letters and * # . _ -
+            are also accepted.
+          </span>
+        </div>
+        <div class="field">
+          <label for="ext-name">Employee name</label>
+          <input id="ext-name" name="name" type="text" required maxlength="128"
+                 placeholder="Employee or desk name" autocomplete="off"
+                 autocorrect="off" autocapitalize="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="ext-status">Status</label>
+          <select id="ext-status" name="status" aria-describedby="ext-status-hint">
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+            <option value="suspended">Suspended</option>
+          </select>
+          <span id="ext-status-hint" class="hint">Disabled and suspended extensions cannot receive pushes.</span>
+        </div>
+        <div class="field">
+          <label for="ext-max-devices">Max approved devices</label>
+          <input id="ext-max-devices" name="maxDevices" type="number" required min="1" max="20"
+                 step="1" value="5" inputmode="numeric" aria-describedby="ext-max-devices-hint">
+          <span id="ext-max-devices-hint" class="hint">Between 1 and 20 approved devices per extension.</span>
+        </div>
+        <fieldset class="field" aria-describedby="ext-platforms-hint">
+          <legend>Allowed platforms</legend>
+          <div class="row-actions">
+            <label class="check" for="ext-platform-android">
+              <input id="ext-platform-android" name="allowedPlatforms" type="checkbox" value="android" checked>
+              <span>Android</span>
+            </label>
+            <label class="check" for="ext-platform-ios">
+              <input id="ext-platform-ios" name="allowedPlatforms" type="checkbox" value="ios" checked>
+              <span>iOS</span>
+            </label>
+            <label class="check" for="ext-platform-desktop">
+              <input id="ext-platform-desktop" name="allowedPlatforms" type="checkbox" value="desktop" checked>
+              <span>Desktop</span>
+            </label>
+            <label class="check" for="ext-platform-chrome">
+              <input id="ext-platform-chrome" name="allowedPlatforms" type="checkbox" value="chrome" checked>
+              <span>Chrome</span>
+            </label>
+          </div>
+          <span id="ext-platforms-hint" class="hint">
+            Select at least one. Devices on other platforms cannot bind. Chrome tenant enrollment is
+            not supported yet; the Chrome option only records the platform policy.
+          </span>
+        </fieldset>
+        <div class="form-actions">
+          <button id="ext-submit" class="btn btn-primary" type="submit">Add extension</button>
+          <button id="ext-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
+        </div>
+      </form>
+
+      <div class="table-wrapper" role="region" aria-labelledby="extensions-caption" tabindex="0">
+        <table>
+          <caption id="extensions-caption" class="visually-hidden">Registered extensions</caption>
+          <thead>
+            <tr>
+              <th scope="col">PBX</th>
+              <th scope="col">Extension</th>
+              <th scope="col">Status</th>
+              <th scope="col">Approved devices</th>
+              <th scope="col">Limit</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ext-rows"></tbody>
+        </table>
+      </div>
+      <p id="ext-empty" class="empty" hidden>No extensions registered yet. Add one above.</p>
     </section>
 
     <section class="card" aria-labelledby="invite-title">

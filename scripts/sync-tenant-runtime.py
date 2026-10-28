@@ -130,7 +130,7 @@ import stat
 import subprocess
 import sys
 
-CONTROL_SCHEMA_VERSION = 1
+CONTROL_SCHEMA_VERSION = 2
 PLAN_SCHEMA_VERSION = 1
 
 UNIT_TEMPLATE = "sokrat-tenant-turn@.service"

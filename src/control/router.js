@@ -381,6 +381,25 @@ function createControlRouter(options = {}) {
         res.json({ success: true, ...result, limits: { ...store.limits } });
     }));
 
+    // --- extension gateway access -----------------------------------------
+
+    router.get('/api/extensions', requireSession, (req, res) => {
+        if (req.query.pbxId !== undefined && typeof req.query.pbxId !== 'string') {
+            return res.status(400).json({ success: false, error: 'invalid_pbxId' });
+        }
+        res.json({ success: true, extensions: store.listExtensions(req.query.pbxId) });
+    });
+
+    router.post('/api/extensions', requireSession, requireCsrf, wrap(async (req, res) => {
+        const extension = await store.addExtension(req.body, { actor: actorFor(req) });
+        res.status(201).json({ success: true, extension });
+    }));
+
+    router.patch('/api/extensions/:id', requireSession, requireCsrf, wrap(async (req, res) => {
+        const extension = await store.updateExtension(req.params.id, req.body, { actor: actorFor(req) });
+        res.json({ success: true, extension });
+    }));
+
     // --- enrollment invitations -------------------------------------------
 
     router.post('/api/enrollment-tokens', requireSession, requireCsrf, wrap(async (req, res) => {

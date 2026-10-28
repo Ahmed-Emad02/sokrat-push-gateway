@@ -44,6 +44,27 @@
         pbxRows: document.getElementById('pbx-rows'),
         pbxEmpty: document.getElementById('pbx-empty'),
         pbxCapHint: document.getElementById('pbx-cap-hint'),
+        pbxManaged: document.getElementById('pbx-managed'),
+        pbxCustomer: document.getElementById('pbx-customer'),
+        pbxLoginHostname: document.getElementById('pbx-login-hostname'),
+        pbxPolicyRequired: document.getElementById('pbx-policy-required'),
+        pbxApproval: document.getElementById('pbx-approval'),
+        pbxReviewedInstallationId: document.getElementById('pbx-reviewed-installation-id'),
+        extForm: document.getElementById('ext-form'),
+        extId: document.getElementById('ext-id'),
+        extPbx: document.getElementById('ext-pbx'),
+        extNumber: document.getElementById('ext-number'),
+        extName: document.getElementById('ext-name'),
+        extStatus: document.getElementById('ext-status'),
+        extMaxDevices: document.getElementById('ext-max-devices'),
+        extPlatformAndroid: document.getElementById('ext-platform-android'),
+        extPlatformIos: document.getElementById('ext-platform-ios'),
+        extPlatformDesktop: document.getElementById('ext-platform-desktop'),
+        extPlatformChrome: document.getElementById('ext-platform-chrome'),
+        extSubmit: document.getElementById('ext-submit'),
+        extCancel: document.getElementById('ext-cancel'),
+        extRows: document.getElementById('ext-rows'),
+        extEmpty: document.getElementById('ext-empty'),
         inviteForm: document.getElementById('invite-form'),
         inviteLabel: document.getElementById('invite-label'),
         invitePbx: document.getElementById('invite-pbx'),
@@ -69,7 +90,23 @@
         activityEmpty: document.getElementById('activity-empty')
     };
 
-    if (!refs.main || !refs.loginForm || !refs.pbxRows) return;
+    if (!refs.main || !refs.loginForm || !refs.pbxRows || !refs.extForm || !refs.extRows) return;
+
+    // PBX management fields stay out of the payload unless the operator opts in,
+    // so legacy single-customer PBX records keep their original request shape.
+    const MANAGEMENT_FIELDS = [
+        refs.pbxCustomer,
+        refs.pbxLoginHostname,
+        refs.pbxPolicyRequired,
+        refs.pbxApproval,
+        refs.pbxReviewedInstallationId
+    ];
+    const PLATFORM_FIELDS = [
+        refs.extPlatformAndroid,
+        refs.extPlatformIos,
+        refs.extPlatformDesktop,
+        refs.extPlatformChrome
+    ];
 
     const dateFormatter = new Intl.DateTimeFormat(undefined, {
         dateStyle: 'medium',
@@ -79,6 +116,7 @@
     let csrfToken = null;
     let snapshot = null;
     let editingPbxId = null;
+    let editingExtensionId = null;
     let statusTimer = null;
 
     // ------------------------------------------------------------- utilities
@@ -139,6 +177,70 @@
         return device.enrollmentTokenId
             ? `invite ${shortId(device.enrollmentTokenId)}`
             : 'invite';
+    }
+
+    const APPROVAL_LABELS = {
+        pending: 'Pending',
+        approved: 'Approved (manual)',
+        suspended: 'Suspended',
+        retired: 'Retired'
+    };
+    const EXTENSION_STATUS_LABELS = {
+        enabled: 'Enabled',
+        disabled: 'Disabled',
+        suspended: 'Suspended'
+    };
+    const PLATFORM_LABELS = {
+        android: 'Android',
+        ios: 'iOS',
+        desktop: 'Desktop',
+        chrome: 'Chrome'
+    };
+
+    function approvalLabel(status) {
+        return APPROVAL_LABELS[status] || APPROVAL_LABELS.pending;
+    }
+
+    function extensionStatusLabel(status) {
+        return EXTENSION_STATUS_LABELS[status] || EXTENSION_STATUS_LABELS.disabled;
+    }
+
+    function platformLabel(value) {
+        return PLATFORM_LABELS[value] || String(value || '');
+    }
+
+    /** Approved devices whose PBX + extension match this extension record. */
+    function approvedDeviceCount(record) {
+        return (snapshot.devices || []).filter((device) =>
+            device.status === 'approved' &&
+            device.pbxId === record.pbxId &&
+            String(device.extension || '') === String(record.extension || '')
+        ).length;
+    }
+
+    function selectedPlatforms() {
+        return PLATFORM_FIELDS.filter((field) => field.checked).map((field) => field.value);
+    }
+
+    function clearPlatformValidity() {
+        for (const field of PLATFORM_FIELDS) field.setCustomValidity('');
+    }
+
+    /**
+     * Validate the platform group through the constraint-validation API so the
+     * browser shows its native message. A single `required` checkbox would force
+     * one specific platform instead of "at least one of these".
+     */
+    function requirePlatformSelection() {
+        if (selectedPlatforms().length > 0) {
+            clearPlatformValidity();
+            return true;
+        }
+        const first = PLATFORM_FIELDS[0];
+        first.setCustomValidity('Select at least one allowed platform.');
+        first.reportValidity();
+        first.focus();
+        return false;
     }
 
     function setBusy(button, busy, label) {
@@ -301,6 +403,8 @@
             `${stats.pbx || 0} of ${limits.maxPbx || 0} records used.`;
 
         renderPbx();
+        renderExtensionPbxOptions();
+        renderExtensions();
         renderInvites();
         renderPending();
         renderApproved();
@@ -310,36 +414,119 @@
     function renderPbx() {
         const pbx = snapshot.pbx || [];
         refs.pbxEmpty.hidden = pbx.length > 0;
-        refs.pbxRows.replaceChildren(...pbx.map((record) => el('tr', {},
-            el('th', { scope: 'row', dataset: { label: 'Name' } },
-                record.name,
-                el('span', { class: 'cell-sub', text: record.id })),
-            el('td', { dataset: { label: 'WebSocket' } },
-                el('span', { class: 'url', text: record.wsURL })),
-            el('td', { dataset: { label: 'API' } },
-                el('span', { class: 'url', text: record.apiURL })),
-            el('td', { dataset: { label: 'Media IPs' } },
-                record.mediaIps && record.mediaIps.length
-                    ? el('span', { class: 'url', text: record.mediaIps.join(', ') })
-                    : el('span', { class: 'empty', text: 'None' })),
-            el('td', { dataset: { label: 'State' } },
-                el('span', {
-                    class: record.enabled ? 'pill pill-on' : 'pill pill-off',
-                    text: record.enabled ? 'Enabled' : 'Disabled'
-                })),
-            el('td', { dataset: { label: 'Actions' } },
-                el('div', { class: 'row-actions' },
+        refs.pbxRows.replaceChildren(...pbx.map((record) => {
+            const management = record.management || null;
+            return el('tr', {},
+                el('th', { scope: 'row', dataset: { label: 'Name' } },
+                    record.name,
+                    el('span', { class: 'cell-sub', text: record.id }),
+                    management && management.customer
+                        ? el('span', { class: 'cell-sub', text: `Customer · ${management.customer}` })
+                        : null,
+                    management && management.loginHostname
+                        ? el('span', { class: 'cell-sub', text: `Login · ${management.loginHostname}` })
+                        : null),
+                el('td', { dataset: { label: 'WebSocket' } },
+                    el('span', { class: 'url', text: record.wsURL })),
+                el('td', { dataset: { label: 'API' } },
+                    el('span', { class: 'url', text: record.apiURL })),
+                el('td', { dataset: { label: 'Media IPs' } },
+                    record.mediaIps && record.mediaIps.length
+                        ? el('span', { class: 'url', text: record.mediaIps.join(', ') })
+                        : el('span', { class: 'empty', text: 'None' })),
+                el('td', { dataset: { label: 'State' } },
+                    el('span', {
+                        class: record.enabled ? 'pill pill-on' : 'pill pill-off',
+                        text: record.enabled ? 'Enabled' : 'Disabled'
+                    }),
+                    el('span', {
+                        class: 'cell-sub',
+                        text: management
+                            ? `Approval · ${approvalLabel(management.approvalStatus)}`
+                            : 'Unmanaged (legacy)'
+                    }),
+                    management && management.extensionPolicyRequired
+                        ? el('span', { class: 'cell-sub', text: 'Extension policy required' })
+                        : null,
+                    management && management.reviewedInstallationId
+                        ? el('span', {
+                            class: 'cell-sub',
+                            text: `Reviewed installation · ${management.reviewedInstallationId}`
+                        })
+                        : null),
+                el('td', { dataset: { label: 'Actions' } },
+                    el('div', { class: 'row-actions' },
+                        el('button', {
+                            class: 'btn btn-sm',
+                            type: 'button',
+                            onclick: () => startEditPbx(record)
+                        }, 'Edit'),
+                        el('button', {
+                            class: 'btn btn-danger btn-sm',
+                            type: 'button',
+                            onclick: () => removePbx(record)
+                        }, 'Remove')))
+            );
+        }));
+    }
+
+    function renderExtensionPbxOptions() {
+        const wanted = refs.extPbx.value;
+        // Only managed PBXs can hold extension policies (store rejects others).
+        const managed = (snapshot.pbx || []).filter((record) => record.management);
+        const options = managed.length
+            ? managed.map((record) => el('option', {
+                value: record.id,
+                text: record.name + (record.enabled ? '' : ' (disabled)')
+            }))
+            : [el('option', { value: '', text: 'Add a managed PBX first' })];
+        // Keep a selection whose PBX was removed visible while it is being edited.
+        if (wanted && !options.some((option) => option.value === wanted)) {
+            options.push(el('option', { value: wanted, text: 'Removed PBX' }));
+        }
+        refs.extPbx.replaceChildren(...options);
+        refs.extPbx.value = wanted && options.some((option) => option.value === wanted)
+            ? wanted
+            : (options[0] ? options[0].value : '');
+    }
+
+    function renderExtensions() {
+        // Legacy snapshots predate extension records; treat a missing array as empty.
+        const extensions = Array.isArray(snapshot.extensions) ? snapshot.extensions : [];
+        const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
+
+        refs.extEmpty.hidden = extensions.length > 0;
+        refs.extRows.replaceChildren(...extensions.map((record) => {
+            const pbx = record.pbxId ? pbxById.get(record.pbxId) : null;
+            const status = record.status || 'disabled';
+            const platforms = Array.isArray(record.allowedPlatforms) ? record.allowedPlatforms : [];
+            return el('tr', {},
+                el('td', { dataset: { label: 'PBX' }, text: pbx ? pbx.name : 'Removed PBX' }),
+                el('th', { scope: 'row', dataset: { label: 'Extension' } },
+                    record.extension || '—',
+                    el('span', { class: 'cell-sub', text: record.name || '—' })),
+                el('td', { dataset: { label: 'Status' } },
+                    el('span', {
+                        class: status === 'enabled' ? 'pill pill-on' : 'pill pill-off',
+                        text: extensionStatusLabel(status)
+                    }),
+                    el('span', {
+                        class: 'cell-sub',
+                        text: platforms.length ? platforms.map(platformLabel).join(' · ') : 'No platforms'
+                    })),
+                el('td', {
+                    dataset: { label: 'Approved devices' },
+                    text: String(approvedDeviceCount(record))
+                }),
+                el('td', { dataset: { label: 'Limit' }, text: String(Number(record.maxDevices) || 0) }),
+                el('td', { dataset: { label: 'Actions' } },
                     el('button', {
                         class: 'btn btn-sm',
                         type: 'button',
-                        onclick: () => startEditPbx(record)
-                    }, 'Edit'),
-                    el('button', {
-                        class: 'btn btn-danger btn-sm',
-                        type: 'button',
-                        onclick: () => removePbx(record)
-                    }, 'Remove')))
-        )));
+                        onclick: () => startEditExtension(record)
+                    }, 'Edit'))
+            );
+        }));
     }
 
     function renderInvites() {
@@ -493,31 +680,75 @@
 
     // ------------------------------------------------------------- PBX CRUD
 
+    function syncManagementFields() {
+        const managed = refs.pbxManaged.checked;
+        for (const field of MANAGEMENT_FIELDS) {
+            const wrapper = field.closest('.field');
+            if (wrapper) wrapper.hidden = !managed;
+            field.disabled = !managed;
+        }
+        if (!managed) return;
+        if (editingPbxId) {
+            refs.pbxApproval.disabled = false;
+        } else {
+            // A managed PBX is created pending; approval is a separate manual step.
+            refs.pbxApproval.value = 'pending';
+            refs.pbxApproval.disabled = true;
+        }
+    }
+
     function readPbxForm() {
-        return {
+        const payload = {
             name: refs.pbxName.value.trim(),
             wsURL: refs.pbxWs.value.trim(),
             apiURL: refs.pbxApi.value.trim(),
             mediaIps: refs.pbxIps.value.trim(),
             enabled: refs.pbxEnabled.checked
         };
+        // Omitted entirely for legacy PBX records.
+        if (refs.pbxManaged.checked) {
+            payload.management = {
+                customer: refs.pbxCustomer.value.trim() || null,
+                loginHostname: refs.pbxLoginHostname.value.trim() || null,
+                extensionPolicyRequired: refs.pbxPolicyRequired.checked,
+                approvalStatus: editingPbxId ? refs.pbxApproval.value : 'pending',
+                reviewedInstallationId: refs.pbxReviewedInstallationId.value.trim() || null
+            };
+        }
+        return payload;
     }
 
     function resetPbxForm() {
         editingPbxId = null;
         refs.pbxForm.reset();
         refs.pbxEnabled.checked = true;
+        refs.pbxPolicyRequired.checked = true;
         refs.pbxSubmit.textContent = 'Add PBX';
         refs.pbxCancel.hidden = true;
+        syncManagementFields();
     }
 
     function startEditPbx(record) {
         editingPbxId = record.id;
+        const management = record.management || null;
         refs.pbxName.value = record.name;
         refs.pbxWs.value = record.wsURL;
         refs.pbxApi.value = record.apiURL;
         refs.pbxIps.value = (record.mediaIps || []).join(', ');
         refs.pbxEnabled.checked = Boolean(record.enabled);
+        refs.pbxManaged.checked = Boolean(management);
+        refs.pbxCustomer.value = management && management.customer ? management.customer : '';
+        refs.pbxLoginHostname.value =
+            management && management.loginHostname ? management.loginHostname : '';
+        refs.pbxPolicyRequired.checked = management
+            ? Boolean(management.extensionPolicyRequired)
+            : true;
+        refs.pbxApproval.value = management && management.approvalStatus
+            ? management.approvalStatus
+            : 'pending';
+        refs.pbxReviewedInstallationId.value =
+            management && management.reviewedInstallationId ? management.reviewedInstallationId : '';
+        syncManagementFields();
         refs.pbxSubmit.textContent = 'Save changes';
         refs.pbxCancel.hidden = false;
         clearMessages();
@@ -559,6 +790,94 @@
             await api(`/api/pbx/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
             if (editingPbxId === record.id) resetPbxForm();
             showStatus('PBX removed.');
+            await refresh();
+        } catch (error) {
+            handleError(error);
+        }
+    }
+
+    // ------------------------------------------------------------ extensions
+
+    function startEditExtension(record) {
+        editingExtensionId = record.id;
+        refs.extId.value = record.id;
+        refs.extPbx.value = record.pbxId || '';
+        renderExtensionPbxOptions();
+        // PBX and extension number are identity: fixed while editing.
+        refs.extPbx.disabled = true;
+        refs.extNumber.value = record.extension || '';
+        refs.extNumber.disabled = true;
+        refs.extName.value = record.name || '';
+        refs.extStatus.value = record.status || 'enabled';
+        refs.extMaxDevices.value = String(Number(record.maxDevices) || 1);
+        const allowed = Array.isArray(record.allowedPlatforms) ? record.allowedPlatforms : [];
+        for (const field of PLATFORM_FIELDS) field.checked = allowed.includes(field.value);
+        clearPlatformValidity();
+        refs.extSubmit.textContent = 'Save extension';
+        refs.extCancel.hidden = false;
+        clearMessages();
+        refs.extForm.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        refs.extName.focus({ preventScroll: true });
+    }
+
+    function resetExtensionForm() {
+        editingExtensionId = null;
+        refs.extForm.reset();
+        refs.extId.value = '';
+        refs.extPbx.disabled = false;
+        refs.extNumber.disabled = false;
+        refs.extSubmit.textContent = 'Add extension';
+        refs.extCancel.hidden = true;
+        clearPlatformValidity();
+    }
+
+    function readExtensionForm() {
+        const maxDevices = Math.min(20, Math.max(1, Math.trunc(Number(refs.extMaxDevices.value)) || 1));
+        return {
+            name: refs.extName.value.trim(),
+            status: refs.extStatus.value,
+            maxDevices,
+            allowedPlatforms: selectedPlatforms()
+        };
+    }
+
+    async function submitExtension(event) {
+        event.preventDefault();
+        clearMessages();
+        if (!requirePlatformSelection()) return;
+
+        const payload = readExtensionForm();
+        const extension = refs.extNumber.value.trim();
+        const pbxId = refs.extPbx.value;
+        setBusy(refs.extSubmit, true, 'Saving…');
+
+        let saved = false;
+        try {
+            if (editingExtensionId) {
+                // Identity (pbxId, extension) is immutable: PATCH sends only the
+                // mutable fields the store accepts.
+                await api(`/api/extensions/${encodeURIComponent(editingExtensionId)}`, {
+                    method: 'PATCH',
+                    body: payload
+                });
+                showStatus(`Updated extension ${extension}.`);
+            } else {
+                await api('/api/extensions', {
+                    method: 'POST',
+                    body: { pbxId, extension, ...payload }
+                });
+                showStatus(`Added extension ${extension}.`);
+            }
+            saved = true;
+        } catch (error) {
+            handleError(error);
+        }
+
+        setBusy(refs.extSubmit, false);
+        if (!saved) return;
+
+        resetExtensionForm();
+        try {
             await refresh();
         } catch (error) {
             handleError(error);
@@ -785,12 +1104,21 @@
     function wireEvents() {
         refs.loginForm.addEventListener('submit', submitLogin);
         refs.pbxForm.addEventListener('submit', submitPbx);
+        refs.extForm.addEventListener('submit', submitExtension);
         refs.inviteForm.addEventListener('submit', createInvite);
         refs.signOut.addEventListener('click', signOut);
+        refs.pbxManaged.addEventListener('change', syncManagementFields);
         refs.pbxCancel.addEventListener('click', () => {
             resetPbxForm();
             clearMessages();
         });
+        refs.extCancel.addEventListener('click', () => {
+            resetExtensionForm();
+            clearMessages();
+        });
+        for (const field of PLATFORM_FIELDS) {
+            field.addEventListener('change', clearPlatformValidity);
+        }
         refs.tokenCopy.addEventListener('click', () => copyFrom(refs.tokenValue, refs.tokenCopy));
         refs.secretCopy.addEventListener('click', () => copyFrom(refs.secretValue, refs.secretCopy));
         refs.tokenDismiss.addEventListener('click', () => {
@@ -804,6 +1132,8 @@
 
         document.addEventListener('blur', syncValidity, true);
         document.addEventListener('input', syncValidity, true);
+
+        syncManagementFields();
     }
 
     async function boot() {

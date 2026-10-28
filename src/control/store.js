@@ -38,8 +38,9 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const net = require('node:net');
 const path = require('node:path');
+const managementPolicy = require('./management');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const ENROLLMENT_TOKEN_PREFIX = 'sk_enroll_v1_';
 const DEVICE_SECRET_PREFIX = 'sk_device_v1_';
@@ -66,6 +67,7 @@ const DEFAULT_LIMITS = Object.freeze({
     maxPendingDevices: 200,
     maxDevices: 2000,
     maxEnrollmentTokens: 100,
+    maxExtensions: 5000,
     claimTtlMs: DEFAULT_CLAIM_TTL_MS,
     auditEntries: 200
 });
@@ -311,6 +313,8 @@ function normalizeLimits(options = {}) {
     );
     return {
         maxEnabledPbx,
+        maxExtensions: positiveInt(options.maxExtensions ?? env.CONTROL_MAX_EXTENSIONS,
+            DEFAULT_LIMITS.maxExtensions, { min: 1, max: 20000 }),
         maxPbx: Math.max(
             maxEnabledPbx,
             positiveInt(options.maxPbx ?? env.CONTROL_MAX_PBX, DEFAULT_LIMITS.maxPbx, { min: 1, max: 128 })
@@ -400,7 +404,8 @@ function publicPbx(pbx) {
         mediaIps: [...pbx.mediaIps],
         enabled: pbx.enabled,
         createdAt: pbx.createdAt,
-        updatedAt: pbx.updatedAt
+        updatedAt: pbx.updatedAt,
+        ...(pbx.management ? { management: clone(pbx.management) } : {})
     };
 }
 
@@ -469,6 +474,7 @@ class ControlStore {
                 createdAt: now,
                 updatedAt: now,
                 pbx: [],
+                extensions: [],
                 enrollmentTokens: [],
                 devices: [],
                 audit: []
@@ -527,7 +533,10 @@ class ControlStore {
                 500
             );
         }
-        for (const key of ['pbx', 'enrollmentTokens', 'devices', 'audit']) {
+        if (version >= 2 && !Array.isArray(parsed.extensions)) {
+            throw fail('control_store_corrupt', 'Schema2 requires an extension policy collection', 500);
+        }
+        for (const key of ['pbx', 'extensions', 'enrollmentTokens', 'devices', 'audit']) {
             if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
                 throw fail('control_store_corrupt', `Control store field "${key}" must be an array`, 500);
             }
@@ -539,6 +548,7 @@ class ControlStore {
             createdAt: isoOrNull(parsed.createdAt) || now,
             updatedAt: isoOrNull(parsed.updatedAt) || now,
             pbx: [],
+            extensions: [],
             enrollmentTokens: [],
             devices: [],
             audit: []
@@ -554,6 +564,10 @@ class ControlStore {
                 throw fail('control_store_corrupt', `Control store contains duplicate ids (${id})`, 500);
             }
             seenIds.add(id);
+            if (Object.hasOwn(record, 'management') && (!record.management
+                || !['approvalStatus', 'extensionPolicyRequired'].every(key => Object.hasOwn(record.management, key)))) {
+                throw fail('control_store_corrupt', 'Persisted management authorization fields are required', 500);
+            }
             state.pbx.push({
                 id,
                 name: requireString(record.name, 'name', { max: 64, label: 'PBX name' }),
@@ -561,9 +575,29 @@ class ControlStore {
                 apiURL: String(record.apiURL || ''),
                 mediaIps: Array.isArray(record.mediaIps) ? record.mediaIps.map(String) : [],
                 enabled: record.enabled === true,
+                ...(Object.hasOwn(record, 'management') ? { management: this._normalizeManagement(record.management) } : {}),
                 createdAt: isoOrNull(record.createdAt) || now,
                 updatedAt: isoOrNull(record.updatedAt) || now
             });
+        }
+
+        for (const pbx of state.pbx) this._assertHostnameFree(state, pbx.management, pbx.id);
+        // maxExtensions is an admission limit, not a load-time repair policy.
+        // A reduced limit must not discard restrictions or prevent revocation.
+        const seenExtensions = new Set();
+        for (const record of parsed.extensions || []) {
+            if (!record || !state.pbx.some(p => p.id === record.pbxId)
+                || typeof record.id !== 'string' || seenIds.has(record.id)
+                || !['status', 'maxDevices', 'allowedPlatforms'].every(key => Object.hasOwn(record, key))) {
+                throw fail('control_store_corrupt', 'Invalid extension policy record', 500);
+            }
+            seenIds.add(record.id);
+            const normalized = this._normalizeExtensionPolicy(record);
+            const key = `${record.pbxId}\n${normalized.extension}`;
+            if (seenExtensions.has(key)) throw fail('control_store_corrupt', 'Duplicate extension policy', 500);
+            seenExtensions.add(key);
+            state.extensions.push({ id: record.id, pbxId: record.pbxId, ...normalized,
+                createdAt: isoOrNull(record.createdAt) || now, updatedAt: isoOrNull(record.updatedAt) || now });
         }
 
         for (const record of parsed.enrollmentTokens || []) {
@@ -611,7 +645,7 @@ class ControlStore {
                 id,
                 status,
                 enrollmentMode,
-                platform: PLATFORMS.has(record.platform) ? record.platform : 'android',
+                platform: normalizePlatform(record.platform),
                 deviceUuid: String(record.deviceUuid || ''),
                 instanceId: record.instanceId || null,
                 deviceName: record.deviceName || null,
@@ -758,6 +792,7 @@ class ControlStore {
         if (!pbx.enabled) {
             throw fail('pbx_disabled', 'The assigned PBX is disabled; contact the administrator', 409);
         }
+        this._assertManagedAccess(state, device, pbx);
         return {
             deviceId: device.id,
             deviceUuid: device.deviceUuid,
@@ -778,6 +813,7 @@ class ControlStore {
         return {
             schemaVersion: this.state.schemaVersion,
             pbx: this.state.pbx.map(publicPbx),
+            extensions: this.state.extensions.map(clone),
             devices: this.state.devices.filter((d) => this._visibleDevice(d)).map(publicDevice),
             enrollmentTokens: this.state.enrollmentTokens.map(publicEnrollment),
             audit: this.state.audit.slice(-50),
@@ -847,6 +883,94 @@ class ControlStore {
 
     // --- PBX lifecycle -----------------------------------------------------
 
+    _normalizeManagement(input, existing) {
+        if (!input || typeof input !== 'object' || Array.isArray(input)
+            || Object.keys(input).some(k => !['customer', 'loginHostname', 'extensionPolicyRequired', 'approvalStatus', 'reviewedInstallationId'].includes(k))) {
+            throw fail('invalid_management', 'Unsupported PBX management payload');
+        }
+        try { return managementPolicy.normalizeManagement(input, existing); }
+        catch (error) { throw fail(error.code || 'invalid_management', error.message, 400); }
+    }
+
+    _normalizeExtensionPolicy(input, existing) {
+        try {
+            const next = managementPolicy.normalizeExtensionPolicy(input, existing);
+            next.extension = normalizeExtension(next.extension);
+            return next;
+        } catch (error) { throw fail(error.code || 'invalid_extension_policy', error.message, 400); }
+    }
+
+    _assertHostnameFree(state, management, excludeId) {
+        if (!management?.loginHostname) return;
+        if (state.pbx.some(p => p.id !== excludeId && p.management?.loginHostname === management.loginHostname)) {
+            throw fail('gateway_hostname_conflict', 'Gateway login hostname is already assigned', 409);
+        }
+    }
+
+    _assertManagedAccess(state, device, pbx) {
+        if (!pbx?.management) return;
+        if (pbx.management.approvalStatus !== 'approved') {
+            throw fail('pbx_not_approved', 'PBX management approval is required', 403);
+        }
+        const policy = state.extensions.find(e => e.pbxId === pbx.id && e.extension === device.extension);
+        if (!policy && !pbx.management.extensionPolicyRequired) return;
+        if (!policy || policy.status !== 'enabled') {
+            throw fail('extension_not_approved', 'Extension gateway access is not enabled', 403);
+        }
+        if (!policy.allowedPlatforms.includes(device.platform)) {
+            throw fail('platform_not_allowed', 'Platform is not enabled for this extension', 403);
+        }
+    }
+
+    listExtensions(pbxId) {
+        this._assertReady();
+        return this.state.extensions.filter(e => !pbxId || e.pbxId === pbxId).map(clone);
+    }
+
+    addExtension(input, meta = {}) {
+        return this._mutate(draft => {
+            if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('invalid_extension_policy', 'Policy must be an object');
+            if (Object.keys(input).some(k => !['pbxId', 'extension', 'name', 'status', 'maxDevices', 'allowedPlatforms'].includes(k))) {
+                throw fail('invalid_extension_policy', 'Unsupported extension policy field');
+            }
+            const pbx = draft.pbx.find(p => p.id === input.pbxId);
+            if (!pbx) throw fail('pbx_not_found', 'PBX not found', 404);
+            if (!pbx.management) throw fail('pbx_management_required', 'Opt this PBX into management before adding policies', 409);
+            const normalized = this._normalizeExtensionPolicy(input);
+            if (draft.extensions.some(e => e.pbxId === pbx.id && e.extension === normalized.extension)) {
+                throw fail('extension_conflict', 'Extension policy already exists for this PBX', 409);
+            }
+            if (draft.extensions.length >= this.limits.maxExtensions) throw fail('extension_limit_reached', 'Extension policy limit reached', 409);
+            const approved = draft.devices.filter(d => d.status === 'approved' && d.pbxId === pbx.id && d.extension === normalized.extension).length;
+            if (normalized.maxDevices < approved) throw fail('device_cap_below_usage', 'Revoke devices before setting a limit below usage', 409);
+            const at = isoAt(this._now());
+            const record = { id: `ext_${randomHex(8)}`, pbxId: pbx.id, ...normalized, createdAt: at, updatedAt: at };
+            draft.extensions.push(record);
+            pushAudit(draft, { at, actor: meta.actor, action: 'extension.added', target: record.id,
+                detail: `${pbx.name} / ${record.extension} (${record.status})` }, this.limits.auditEntries);
+            return clone(record);
+        });
+    }
+
+    updateExtension(id, patch, meta = {}) {
+        return this._mutate(draft => {
+            const record = draft.extensions.find(e => e.id === id);
+            if (!record) throw fail('extension_not_found', 'Extension policy not found', 404);
+            if (!patch || typeof patch !== 'object' || Array.isArray(patch)
+                || Object.keys(patch).some(k => !['name', 'status', 'maxDevices', 'allowedPlatforms'].includes(k))) {
+                throw fail('invalid_extension_policy', 'Only policy fields may be updated; extension identity is immutable');
+            }
+            const next = this._normalizeExtensionPolicy(patch, record);
+            const approved = draft.devices.filter(d => d.status === 'approved' && d.pbxId === record.pbxId && d.extension === record.extension).length;
+            if (next.maxDevices < approved) throw fail('device_cap_below_usage', 'Revoke devices before lowering the limit below usage', 409);
+            const at = isoAt(this._now());
+            Object.assign(record, next, { updatedAt: at });
+            pushAudit(draft, { at, actor: meta.actor, action: 'extension.updated', target: id,
+                detail: `${record.extension} (${record.status})` }, this.limits.auditEntries);
+            return clone(record);
+        });
+    }
+
     _assertEnabledCapacity(draft, excludeId) {
         const enabled = draft.pbx.filter((p) => p.enabled && p.id !== excludeId).length;
         if (enabled >= this.limits.maxEnabledPbx) {
@@ -871,6 +995,8 @@ class ControlStore {
                 throw fail('pbx_limit_reached', `Maximum of ${this.limits.maxPbx} PBX records reached`, 409);
             }
             this._assertPbxNameFree(draft, normalized.name, null);
+            if (Object.hasOwn(input, 'management')) normalized.management = this._normalizeManagement(input.management);
+            this._assertHostnameFree(draft, normalized.management, null);
             if (normalized.enabled) this._assertEnabledCapacity(draft, null);
 
             const at = isoAt(this._now());
@@ -903,13 +1029,17 @@ class ControlStore {
             if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
                 throw fail('invalid_pbx', 'PBX payload must be an object');
             }
-            const allowed = ['name', 'wsURL', 'apiURL', 'mediaIps', 'enabled'];
+            const allowed = ['name', 'wsURL', 'apiURL', 'mediaIps', 'enabled', 'management'];
             const unknown = Object.keys(patch).filter((key) => !allowed.includes(key));
             if (unknown.length) {
                 throw fail('invalid_pbx', `Unsupported PBX field(s): ${unknown.join(', ')}`);
             }
 
             const next = {};
+            if (Object.hasOwn(patch, 'management')) {
+                next.management = this._normalizeManagement(patch.management, record.management);
+                this._assertHostnameFree(draft, next.management, record.id);
+            }
             if (patch.name !== undefined) {
                 next.name = requireString(patch.name, 'name', { max: 64, label: 'PBX name' });
             }
@@ -924,6 +1054,19 @@ class ControlStore {
             }
             if (patch.enabled !== undefined) {
                 next.enabled = toBoolean(patch.enabled, 'enabled', record.enabled);
+            }
+
+            // A changed route/identity needs a separate review action. Compare
+            // normalized values so merely re-saving an equivalent form is safe.
+            if (next.management || record.management) {
+                const endpointChanged = ['wsURL', 'apiURL'].some(key => next[key] !== undefined && next[key] !== record[key]);
+                const mediaChanged = next.mediaIps !== undefined
+                    && JSON.stringify([...next.mediaIps].sort()) !== JSON.stringify([...record.mediaIps].sort());
+                const identityChanged = record.management && next.management
+                    && ['loginHostname', 'reviewedInstallationId'].some(key => next.management[key] !== record.management[key]);
+                if (endpointChanged || mediaChanged || identityChanged) {
+                    next.management = { ...(next.management || record.management), approvalStatus: 'pending' };
+                }
             }
 
             if (next.name && next.name.toLowerCase() !== record.name.toLowerCase()) {
@@ -957,6 +1100,7 @@ class ControlStore {
             const index = draft.pbx.findIndex((p) => p.id === id);
             if (index === -1) throw fail('pbx_not_found', 'PBX not found', 404);
             const [removed] = draft.pbx.splice(index, 1);
+            draft.extensions = draft.extensions.filter(e => e.pbxId !== id);
             const at = isoAt(this._now());
 
             let revokedDevices = 0;
@@ -1481,6 +1625,11 @@ class ControlStore {
                 throw fail('pbx_disabled', 'PBX is disabled; enable it before approving devices', 409);
             }
             const extension = normalizeExtension(input.extension);
+            this._assertManagedAccess(draft, { ...device, extension }, pbx);
+            const policy = draft.extensions.find(e => e.pbxId === pbx.id && e.extension === extension);
+            if (policy && draft.devices.filter(d => d.status === 'approved' && d.pbxId === pbx.id && d.extension === extension).length >= policy.maxDevices) {
+                throw fail('extension_device_limit', 'Extension device limit reached', 409);
+            }
             const at = isoAt(this._now());
 
             if (device.enrollmentMode === 'claim') {
@@ -1619,6 +1768,8 @@ class ControlStore {
         if (!timingSafeEqualHex(device.secretHash, hashSecret(secret))) {
             return { ok: false };
         }
+        try { this._assertManagedAccess(this.state, device, this.state.pbx.find(p => p.id === device.pbxId)); }
+        catch { return { ok: false }; }
         return { ok: true, device: publicDevice(device) };
     }
 
@@ -1627,7 +1778,10 @@ class ControlStore {
         const device = this.state.devices.find(
             (d) => d.id === deviceId && d.status === 'approved'
         );
-        return device ? publicDevice(device) : null;
+        if (!device) return null;
+        try { this._assertManagedAccess(this.state, device, this.state.pbx.find(p => p.id === device.pbxId)); }
+        catch { return null; }
+        return publicDevice(device);
     }
 
     touchDevice(deviceId) {

@@ -18,6 +18,7 @@ import re
 import socket
 import struct
 import subprocess
+import sys
 import urllib.parse
 
 BUNDLE = Path('/usr/local/lib/sokrat-tenant-provisioning')

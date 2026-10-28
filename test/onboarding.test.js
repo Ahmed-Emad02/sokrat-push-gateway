@@ -8,7 +8,21 @@ const path = require('node:path');
 const net = require('node:net');
 const express = require('express');
 const crypto = require('node:crypto');
-const { requestOnboarding } = require('../src/control/onboarding');
+const { requestOnboarding, resolvePbxAddress } = require('../src/control/onboarding');
+
+test('one PBX address derives standard settings and pins hostnames to one Tailscale IPv4', async () => {
+    const direct = await resolvePbxAddress('100.64.0.12');
+    assert.deepEqual(direct, { host: '100.64.0.12', wsURL: 'ws://100.64.0.12:8088/ws', apiURL: 'http://100.64.0.12:8080', mediaIps: '100.64.0.12' });
+    assert.deepEqual(await resolvePbxAddress('PBX.example.', async host => {
+        assert.equal(host, 'pbx.example'); return [{ address: '100.64.0.12', family: 4 }];
+    }), direct);
+    for (const address of ['127.0.0.1', '169.254.169.254', '192.0.2.1', '100.63.0.1', '100.128.0.1', 'http://pbx.example', 'pbx.example:22', '-option', 'x;id', '::1']) {
+        await assert.rejects(resolvePbxAddress(address, async () => []));
+    }
+    for (const answers of [[], [{ address: '192.0.2.1' }], [{ address: '100.64.0.12' }, { address: '100.64.0.13' }], [{ address: '100.64.0.12' }, { address: '::1' }]]) {
+        await assert.rejects(resolvePbxAddress('pbx.example', async () => answers));
+    }
+});
 const { createControlRouter } = require('../src/control/router');
 const { ControlStore } = require('../src/control/store');
 
@@ -115,6 +129,12 @@ test('SSH API requires session and CSRF and returns no credentials', async t => 
     r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: 'sokrat_control_sid=test-session', Origin: origin }, body: '{}' });
     assert.equal(r.status, 403);
     assert.equal(called, false);
+    const resolved = await fetch(origin + '/control/api/pbx-ssh/resolve', { method: 'POST', headers: {
+        'Content-Type': 'application/json', Cookie: 'sokrat_control_sid=test-session', Origin: origin, 'X-CSRF-Token': session.csrfToken
+    }, body: JSON.stringify({ address: '100.64.0.12' }) });
+    assert.equal(resolved.status, 200);
+    assert.equal((await resolved.json()).host, '100.64.0.12');
+    assert.equal(called, false, 'resolution never invokes the SSH broker');
     r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: 'sokrat_control_sid=test-session', Origin: origin, 'X-CSRF-Token': session.csrfToken }, body: JSON.stringify({ host: '100.64.0.12', username: 'root' }) });
     assert.equal(r.status, 200);
     assert.equal((await r.json()).fingerprint, 'SHA256:' + 'a'.repeat(43));

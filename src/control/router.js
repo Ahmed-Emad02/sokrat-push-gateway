@@ -394,6 +394,7 @@ function createControlRouter(options = {}) {
     const onboard = options.onboardingRequest || require('./onboarding').requestOnboarding;
     let onboardingBusy = false;
     let lastOnboarding = 0;
+    let lastResolution = 0;
     router.post('/api/pbx-ssh/:action', requireSession, requireCsrf, wrap(async (req, res) => {
         // Sensitive credentials are only accepted over TLS or a local SSH tunnel.
         const peer = req.socket.remoteAddress;
@@ -401,18 +402,24 @@ function createControlRouter(options = {}) {
             return res.status(403).json({ success: false, error: 'secure_transport_required' });
         }
         const action = String(req.params.action);
-        if (!['probe', 'enroll'].includes(action)) return res.status(400).json({ success: false, error: 'invalid_action' });
+        if (!['resolve', 'probe', 'enroll'].includes(action)) return res.status(400).json({ success: false, error: 'invalid_action' });
         const input = req.body || {};
         if (action === 'enroll' && !store.getPbx(input.pbxId)) return res.status(404).json({ success: false, error: 'pbx_not_found' });
-        if (onboardingBusy || Date.now() - lastOnboarding < 2000) return res.status(429).json({ success: false, error: 'onboarding_busy' });
+        if (onboardingBusy || Date.now() - (action === 'resolve' ? lastResolution : lastOnboarding) < 2000) return res.status(429).json({ success: false, error: 'onboarding_busy' });
         onboardingBusy = true;
-        lastOnboarding = Date.now();
+        if (action === 'resolve') lastResolution = Date.now();
+        else lastOnboarding = Date.now();
         try {
+            if (action === 'resolve') {
+                const result = await require('./onboarding').resolvePbxAddress(input.address, options.pbxAddressLookup);
+                return res.json({ success: true, ...result });
+            }
             const payload = { action, host: input.host, username: input.username };
             if (action === 'enroll') Object.assign(payload, { pbxId: input.pbxId, fingerprint: input.fingerprint, password: input.password });
             const result = await onboard(payload);
             res.json({ success: true, ...result });
-        } catch {
+        } catch (error) {
+            if (action === 'resolve') return res.status(400).json({ success: false, error: 'invalid_pbx_address', message: error.message });
             res.status(503).json({ success: false, error: 'onboarding_refused', message: 'SSH setup refused or unavailable. Verify root credentials, confirmed host key, approved PBX and matching Tailscale endpoints.' });
         } finally {
             delete input.password;

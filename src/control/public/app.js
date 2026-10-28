@@ -33,6 +33,11 @@
         statApproved: document.getElementById('stat-approved'),
         statCap: document.getElementById('stat-cap'),
         pbxForm: document.getElementById('pbx-form'),
+        pbxAddress: document.getElementById('pbx-address'),
+        pbxAutoAddress: document.getElementById('pbx-auto-address'),
+        pbxResolve: document.getElementById('pbx-resolve'),
+        pbxAddressStatus: document.getElementById('pbx-address-status'),
+        pbxAdvanced: document.getElementById('pbx-advanced'),
         pbxId: document.getElementById('pbx-id'),
         pbxName: document.getElementById('pbx-name'),
         pbxWs: document.getElementById('pbx-ws'),
@@ -130,6 +135,50 @@
     let statusTimer = null;
     let sshVerifiedHost = null;
     let sshFingerprint = null;
+    let resolvedAddress = null;
+    let addressRevision = 0;
+
+    function invalidateAddress() {
+        addressRevision++;
+        resolvedAddress = null;
+        sshVerifiedHost = null; sshFingerprint = null;
+        refs.sshFingerprint.textContent = ''; refs.sshConfirm.checked = false;
+        refs.sshHost.value = '';
+        refs.pbxAddressStatus.textContent = '';
+    }
+    function syncAddressMode() {
+        const automatic = refs.pbxAutoAddress.checked;
+        refs.pbxWs.required = !automatic;
+        refs.pbxApi.required = !automatic;
+        refs.pbxWs.readOnly = automatic;
+        refs.pbxApi.readOnly = automatic;
+        refs.pbxIps.readOnly = automatic;
+        refs.pbxAddress.required = automatic;
+        refs.pbxAdvanced.open = !automatic;
+    }
+    refs.pbxAddress.addEventListener('input', invalidateAddress);
+    refs.pbxAutoAddress.addEventListener('change', () => { invalidateAddress(); syncAddressMode(); });
+    async function resolveAddress() {
+        const address = refs.pbxAddress.value.trim();
+        const revision = addressRevision;
+        if (resolvedAddress?.address === address) return resolvedAddress;
+        if (!address) throw new Error('Enter the PBX address first.');
+        const result = await api('/api/pbx-ssh/resolve', { method: 'POST', body: { address } });
+        if (addressRevision !== revision || refs.pbxAddress.value.trim() !== address) throw new Error('Address changed; resolve it again.');
+        resolvedAddress = { ...result, address };
+        refs.sshHost.value = result.host;
+        if (refs.pbxAutoAddress.checked) {
+            refs.pbxWs.value = result.wsURL; refs.pbxApi.value = result.apiURL; refs.pbxIps.value = result.mediaIps;
+        }
+        refs.pbxAddressStatus.textContent = `Resolved to ${result.host}. Defaults are not a service-readiness check.`;
+        return resolvedAddress;
+    }
+    refs.pbxResolve.addEventListener('click', async () => {
+        setBusy(refs.pbxResolve, true, 'Resolving…');
+        try { await resolveAddress(); } catch (error) { handleError(error); }
+        finally { setBusy(refs.pbxResolve, false); }
+    });
+    syncAddressMode();
 
     refs.sshHost.addEventListener('input', () => {
         sshVerifiedHost = null; sshFingerprint = null;
@@ -138,8 +187,11 @@
     refs.sshProbe.addEventListener('click', async () => {
         setBusy(refs.sshProbe, true, 'Checking…');
         try {
+            await resolveAddress();
+            const revision = addressRevision;
             const host = refs.sshHost.value.trim();
             const result = await api('/api/pbx-ssh/probe', { method: 'POST', body: { host, username: refs.sshUser.value } });
+            if (addressRevision !== revision || refs.sshHost.value.trim() !== host) throw new Error('Address changed; check the host key again.');
             sshVerifiedHost = host; sshFingerprint = result.fingerprint;
             refs.sshFingerprint.textContent = result.fingerprint;
             refs.sshConfirm.checked = false;
@@ -903,6 +955,7 @@
         sshVerifiedHost = null; sshFingerprint = null; refs.sshFingerprint.textContent = '';
         editingPbxId = null;
         refs.pbxForm.reset();
+        invalidateAddress(); syncAddressMode();
         refs.pbxEnabled.checked = true;
         refs.pbxPolicyRequired.checked = true;
         refs.pbxSubmit.textContent = 'Add PBX';
@@ -920,6 +973,10 @@
         refs.pbxWs.value = record.wsURL;
         refs.pbxApi.value = record.apiURL;
         refs.pbxIps.value = (record.mediaIps || []).join(', ');
+        // Never rewrite existing/custom endpoints merely by opening Edit.
+        refs.pbxAutoAddress.checked = false;
+        refs.pbxAddress.value = (record.mediaIps || []).length === 1 ? record.mediaIps[0] : '';
+        invalidateAddress(); syncAddressMode();
         refs.pbxEnabled.checked = Boolean(record.enabled);
         refs.pbxManaged.checked = Boolean(management);
         refs.pbxCustomer.value = management && management.customer ? management.customer : '';
@@ -944,6 +1001,9 @@
     async function submitPbx(event) {
         event.preventDefault();
         clearMessages();
+        try {
+            if (refs.pbxAutoAddress.checked) await resolveAddress();
+        } catch (error) { handleError(error); refs.pbxAddress.focus(); return; }
         const payload = readPbxForm();
         const sshSetup = refs.sshEnable.checked;
         if (sshSetup && (!refs.sshConfirm.checked || sshVerifiedHost !== refs.sshHost.value.trim() || !sshFingerprint || !refs.sshPassword.value)) {

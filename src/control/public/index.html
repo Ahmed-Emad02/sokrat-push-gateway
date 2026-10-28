@@ -87,6 +87,16 @@
                  placeholder="Head office PBX" autocomplete="off">
         </div>
         <div class="field">
+          <label for="pbx-address">PBX address</label>
+          <input id="pbx-address" name="address" type="text" maxlength="253" autocomplete="off" spellcheck="false" aria-describedby="pbx-address-hint">
+          <span id="pbx-address-hint" class="hint">Enter one Tailscale IPv4 or hostname resolving to it. Standard WS :8088, API :8080, media and SSH targets are filled automatically. These defaults do not prove service readiness.</span>
+          <label class="check" for="pbx-auto-address"><input id="pbx-auto-address" name="autoAddress" type="checkbox" checked> Derive standard connection settings</label>
+          <button id="pbx-resolve" class="btn btn-ghost" type="button">Resolve address</button>
+          <output id="pbx-address-status" role="status" aria-live="polite"></output>
+        </div>
+        <details id="pbx-advanced" class="field">
+          <summary>Advanced connection settings</summary>
+        <div class="field">
           <label for="pbx-ws">SIP WebSocket URL</label>
           <input id="pbx-ws" name="wsURL" type="text" required maxlength="512"
                  placeholder="wss://pbx.example.com:8089/ws" autocomplete="off" spellcheck="false">
@@ -109,6 +119,7 @@
             <span>Enabled</span>
           </label>
         </div>
+        </details>
         <div class="field field-inline">
           <label class="check" for="pbx-managed">
             <input id="pbx-managed" name="managed" type="checkbox" aria-describedby="pbx-managed-hint">
@@ -166,7 +177,7 @@
           <legend>Automatic SSH setup (optional)</legend>
           <label class="check" for="pbx-ssh-enable"><input id="pbx-ssh-enable" name="sshSetup" type="checkbox"> Set up this PBX through SSH</label>
           <label for="pbx-ssh-host">Tailscale IPv4 address</label>
-          <input id="pbx-ssh-host" name="sshHost" type="text" maxlength="15" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pbx-ssh-hint">
+          <input id="pbx-ssh-host" name="sshHost" type="text" maxlength="15" readonly autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pbx-ssh-hint">
           <label for="pbx-ssh-user">SSH username</label>
           <input id="pbx-ssh-user" name="sshUsername" type="text" value="root" readonly autocomplete="section-pbx username">
           <label for="pbx-ssh-password">SSH password (used once, not stored)</label>
@@ -274,8 +285,7 @@
             </label>
           </div>
           <span id="ext-platforms-hint" class="hint">
-            Select at least one. Devices on other platforms cannot bind. Chrome tenant enrollment is
-            not supported yet; the Chrome option only records the platform policy.
+            Select at least one. Devices on other platforms cannot bind. Chrome enrollment requires extension version 1.15.0 or later.
           </span>
         </fieldset>
         <div class="form-actions">

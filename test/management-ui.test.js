@@ -78,14 +78,14 @@ test('PBX management is opt-in and a new managed PBX starts pending', async () =
     assert.doesNotMatch(script, /\binstallationId\b/, 'the store field is reviewedInstallationId');
 });
 
-test('management wording never claims verified ownership or Chrome enrollment', async () => {
+test('management wording distinguishes manual ownership review and supported Chrome version', async () => {
     const html = await read('index.html');
     const approvalHint = html.slice(html.indexOf('id="pbx-approval-hint"'), html.indexOf('</span>', html.indexOf('id="pbx-approval-hint"')));
     assert.match(approvalHint, /does not verify ownership/i);
     assert.match(approvalHint, /still pending/i);
 
     const platformHint = html.slice(html.indexOf('id="ext-platforms-hint"'), html.indexOf('</span>', html.indexOf('id="ext-platforms-hint"')));
-    assert.match(platformHint, /Chrome tenant enrollment is\s+not supported yet/i);
+    assert.match(platformHint, /Chrome enrollment requires extension version 1\.15\.0/i);
     assert.match(platformHint, /at least one/i);
 
     // "Approved (manual)" is the strongest label the UI may show.

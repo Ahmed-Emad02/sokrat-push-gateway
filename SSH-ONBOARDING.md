@@ -1,5 +1,28 @@
 # Dashboard SSH onboarding
 
+## Single-address connection settings
+
+Enter **PBX address** once (Tailscale IPv4 or a hostname/MagicDNS name resolving
+from the gateway to exactly one Tailscale IPv4). **Resolve address** derives
+`ws://<ip>:8088/ws`, `http://<ip>:8080`, the media IP and SSH target. Saving in
+automatic mode also resolves it if needed. DNS resolution is session/CSRF protected,
+bounded, and rejects public/private non-Tailscale, mixed-family and ambiguous
+answers. The returned numeric IP is pinned for host-key probing and SSH submission;
+the hostname is not re-resolved while sending credentials.
+
+These are standard defaults, not discovery of listening ports or proof of service
+readiness. Check the provisioning result and actual SIP/API connectivity. A domain
+behind a public proxy cannot reveal the PBX's Tailscale/media address: supply its
+Tailscale address instead. No new arbitrary DNS-to-SSH access is permitted.
+
+Uncheck **Derive standard connection settings** to edit **Advanced connection
+settings** for custom ports, TLS or separate hosts. Existing records open with
+automatic derivation disabled so their endpoints are never silently rewritten.
+Custom SSH onboarding still requires all endpoint hosts and the single media peer
+to match the resolved Tailscale IP. Changing the primary address invalidates the
+confirmed fingerprint. New managed PBXs still require save → manual approval →
+edit/SSH setup; device admission remains a separate manual decision.
+
 In Add/Edit PBX, select **Automatic SSH setup** and enter its Tailscale IPv4,
 root SSH username, and one-time password. Select **Check SSH host key**, compare
 the fingerprint with the PBX host key over a trusted channel, and confirm it.

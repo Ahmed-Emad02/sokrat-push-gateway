@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Sokrat tenant provisioning reconcile every 60 seconds
+Documentation=file:/opt/sokrat-push-gateway/PROVISIONING.md
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=sokrat-tenant-provisioning.service
+
+[Install]
+WantedBy=timers.target

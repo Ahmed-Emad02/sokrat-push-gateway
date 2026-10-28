@@ -211,3 +211,11 @@ private runtime service and restart it after synchronizing. Permit allocated
 TCP/UDP listener ports in the cloud firewall; only the private PBX needs the
 relay range. Test every listener externally before cutover. The old single-PBX
 3478 listener is not modified by this command.
+# Automated additional-PBX provisioning
+
+See [`PROVISIONING.md`](PROVISIONING.md) for the separate root-run reconciliation
+worker, host-verified SSH hook adapter and scoped AWS listener-rule adapter.
+The web dashboard only reads sanitized results; it never executes privileged
+commands or receives deployment credentials. Each installation still needs an
+operator-authorized PBX access profile and cloud permission configured once.
+Provisioning does not approve employee devices or enable global enforcement.

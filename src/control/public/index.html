@@ -75,6 +75,9 @@
       <div class="card-head">
         <h2 id="pbx-title">PBX connections</h2>
         <p class="hint" id="pbx-cap-hint">Enabled connections are capped by the gateway.</p>
+        <p class="hint" id="pbx-provisioning-summary" role="status" aria-live="polite">
+          Provisioning status has not been loaded yet.
+        </p>
       </div>
       <form id="pbx-form" class="form-grid">
         <input type="hidden" id="pbx-id" value="">
@@ -159,6 +162,20 @@
             Optional identifier the operator checked. It is a manual record, not automated verification.
           </span>
         </div>
+        <fieldset class="field">
+          <legend>Automatic SSH setup (optional)</legend>
+          <label class="check" for="pbx-ssh-enable"><input id="pbx-ssh-enable" name="sshSetup" type="checkbox"> Set up this PBX through SSH</label>
+          <label for="pbx-ssh-host">Tailscale IPv4 address</label>
+          <input id="pbx-ssh-host" name="sshHost" type="text" maxlength="15" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-describedby="pbx-ssh-hint">
+          <label for="pbx-ssh-user">SSH username</label>
+          <input id="pbx-ssh-user" name="sshUsername" type="text" value="root" readonly autocomplete="section-pbx username">
+          <label for="pbx-ssh-password">SSH password (used once, not stored)</label>
+          <input id="pbx-ssh-password" name="sshPassword" type="password" maxlength="1024" autocomplete="section-pbx current-password">
+          <span id="pbx-ssh-hint" class="hint">Requires root SSH, approved or unmanaged PBX, and API/WebSocket/media addresses matching this Tailscale IP. You must verify the host fingerprint before sending the password. Existing dialplan push context is required. Devices still need manual approval.</span>
+          <button id="pbx-ssh-probe" class="btn btn-ghost" type="button">Check SSH host key</button>
+          <output id="pbx-ssh-fingerprint" aria-live="polite"></output>
+          <label class="check" for="pbx-ssh-confirm"><input id="pbx-ssh-confirm" name="sshConfirm" type="checkbox"> I verified this fingerprint against the PBX’s SSH host key</label>
+        </fieldset>
         <div class="form-actions">
           <button id="pbx-submit" class="btn btn-primary" type="submit">Add PBX</button>
           <button id="pbx-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
@@ -175,6 +192,7 @@
               <th scope="col">API</th>
               <th scope="col">Media IPs</th>
               <th scope="col">State</th>
+              <th scope="col">Provisioning</th>
               <th scope="col">Actions</th>
             </tr>
           </thead>

@@ -114,3 +114,11 @@ Complete customer routing scope and client enrollment parity, transactional
 storage, extension directory sync, RBAC/audit, transport security decision,
 revocation/media expiry testing and real-device call compatibility gates.
 Do not treat this initial management increment as the full scaling rollout.
+# Provisioning automation boundary
+
+Additional-PBX host provisioning is handled by the separate worker documented
+in [`PROVISIONING.md`](PROVISIONING.md), not by privileged dashboard actions.
+The dashboard reads sanitized reconciliation results through its authenticated
+`GET /control/api/provisioning` endpoint. Missing, invalid, or stale worker
+results must not be represented as readiness. Manual PBX approval is not proof
+of ownership and does not itself supply SSH or cloud authorization.

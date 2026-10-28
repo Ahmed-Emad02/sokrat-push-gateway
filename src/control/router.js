@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 const { ControlStoreError } = require('./store');
+const { getProvisioningStatus, resolveStatusFile } = require('./provisioning');
 const {
     SessionManager,
     LoginRateLimiter,
@@ -97,6 +98,11 @@ function readIndex() {
  * @param {boolean} [options.trustProxy]    honour X-Forwarded-* headers
  * @param {boolean|'auto'} [options.cookieSecure]
  * @param {number} [options.loginFailureDelayMs]
+ * @param {object} [options.provisioning]     read-only worker snapshot settings
+ * @param {string} [options.provisioning.filePath]
+ * @param {string[]} [options.provisioning.ownerUids]
+ * @param {number} [options.provisioning.now]
+ * @param {number} [options.provisioning.staleAfterMs]
  * @returns {import('express').Router}
  */
 function createControlRouter(options = {}) {
@@ -114,6 +120,9 @@ function createControlRouter(options = {}) {
     const loginFailureDelayMs = options.loginFailureDelayMs !== undefined
         ? Math.max(0, Number(options.loginFailureDelayMs) || 0)
         : 150;
+    const provisioningOptions = options.provisioning || {};
+    const provisioningFilePath = provisioningOptions.filePath ||
+        resolveStatusFile(options.env || process.env);
 
     const sessions = options.sessions || new SessionManager({
         ttlMs: (Number(process.env.CONTROL_SESSION_TTL_MINUTES) || 30) * 60 * 1000,
@@ -362,7 +371,54 @@ function createControlRouter(options = {}) {
         });
     });
 
+    // --- provisioning status (read-only worker snapshot) --------------------
+
+    // The provisioning worker publishes its reconciliation snapshot to a private
+    // file and polls approved configuration itself; this route only sanitizes
+    // and forwards that snapshot. It never writes the file and never issues
+    // commands to the worker.
+    router.get('/api/provisioning', requireSession, wrap(async (req, res) => {
+        const current = store.snapshot();
+        const provisioning = await getProvisioningStatus({
+            filePath: provisioningFilePath,
+            ownerUids: provisioningOptions.ownerUids,
+            now: provisioningOptions.now,
+            staleAfterMs: provisioningOptions.staleAfterMs,
+            pbx: current.pbx.map((record) => ({ id: record.id, updatedAt: record.updatedAt }))
+        });
+        res.json({ success: true, provisioning });
+    }));
+
     // --- PBX connections ---------------------------------------------------
+
+    const onboard = options.onboardingRequest || require('./onboarding').requestOnboarding;
+    let onboardingBusy = false;
+    let lastOnboarding = 0;
+    router.post('/api/pbx-ssh/:action', requireSession, requireCsrf, wrap(async (req, res) => {
+        // Sensitive credentials are only accepted over TLS or a local SSH tunnel.
+        const peer = req.socket.remoteAddress;
+        if (!isSecureRequest(req, trustProxy) && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)) {
+            return res.status(403).json({ success: false, error: 'secure_transport_required' });
+        }
+        const action = String(req.params.action);
+        if (!['probe', 'enroll'].includes(action)) return res.status(400).json({ success: false, error: 'invalid_action' });
+        const input = req.body || {};
+        if (action === 'enroll' && !store.getPbx(input.pbxId)) return res.status(404).json({ success: false, error: 'pbx_not_found' });
+        if (onboardingBusy || Date.now() - lastOnboarding < 2000) return res.status(429).json({ success: false, error: 'onboarding_busy' });
+        onboardingBusy = true;
+        lastOnboarding = Date.now();
+        try {
+            const payload = { action, host: input.host, username: input.username };
+            if (action === 'enroll') Object.assign(payload, { pbxId: input.pbxId, fingerprint: input.fingerprint, password: input.password });
+            const result = await onboard(payload);
+            res.json({ success: true, ...result });
+        } catch {
+            res.status(503).json({ success: false, error: 'onboarding_refused', message: 'SSH setup refused or unavailable. Verify root credentials, confirmed host key, approved PBX and matching Tailscale endpoints.' });
+        } finally {
+            delete input.password;
+            onboardingBusy = false;
+        }
+    }));
 
     router.post('/api/pbx', requireSession, requireCsrf, wrap(async (req, res) => {
         const pbx = await store.addPbx(req.body, { actor: actorFor(req) });

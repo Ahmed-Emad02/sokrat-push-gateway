@@ -40,10 +40,18 @@
         pbxIps: document.getElementById('pbx-ips'),
         pbxEnabled: document.getElementById('pbx-enabled'),
         pbxSubmit: document.getElementById('pbx-submit'),
+        sshEnable: document.getElementById('pbx-ssh-enable'),
+        sshHost: document.getElementById('pbx-ssh-host'),
+        sshUser: document.getElementById('pbx-ssh-user'),
+        sshPassword: document.getElementById('pbx-ssh-password'),
+        sshProbe: document.getElementById('pbx-ssh-probe'),
+        sshFingerprint: document.getElementById('pbx-ssh-fingerprint'),
+        sshConfirm: document.getElementById('pbx-ssh-confirm'),
         pbxCancel: document.getElementById('pbx-cancel'),
         pbxRows: document.getElementById('pbx-rows'),
         pbxEmpty: document.getElementById('pbx-empty'),
         pbxCapHint: document.getElementById('pbx-cap-hint'),
+        pbxProvisioningSummary: document.getElementById('pbx-provisioning-summary'),
         pbxManaged: document.getElementById('pbx-managed'),
         pbxCustomer: document.getElementById('pbx-customer'),
         pbxLoginHostname: document.getElementById('pbx-login-hostname'),
@@ -115,9 +123,29 @@
 
     let csrfToken = null;
     let snapshot = null;
+    let provisioning = null;
+    let provisioningError = null;
     let editingPbxId = null;
     let editingExtensionId = null;
     let statusTimer = null;
+    let sshVerifiedHost = null;
+    let sshFingerprint = null;
+
+    refs.sshHost.addEventListener('input', () => {
+        sshVerifiedHost = null; sshFingerprint = null;
+        refs.sshFingerprint.textContent = ''; refs.sshConfirm.checked = false;
+    });
+    refs.sshProbe.addEventListener('click', async () => {
+        setBusy(refs.sshProbe, true, 'Checking…');
+        try {
+            const host = refs.sshHost.value.trim();
+            const result = await api('/api/pbx-ssh/probe', { method: 'POST', body: { host, username: refs.sshUser.value } });
+            sshVerifiedHost = host; sshFingerprint = result.fingerprint;
+            refs.sshFingerprint.textContent = result.fingerprint;
+            refs.sshConfirm.checked = false;
+        } catch (error) { handleError(error); }
+        finally { setBusy(refs.sshProbe, false); }
+    });
 
     // ------------------------------------------------------------- utilities
 
@@ -196,6 +224,55 @@
         desktop: 'Desktop',
         chrome: 'Chrome'
     };
+
+    // Provisioning values are sanitized server-side already; these maps are a
+    // second allowlist so an unexpected value can only ever render as "Unknown".
+    const PROVISIONING_FILE_STATUS = new Set(['ok', 'stale', 'not_configured', 'unavailable']);
+    const PROVISIONING_STATE_LABELS = {
+        ready: 'Ready',
+        blocked: 'Blocked',
+        error: 'Error',
+        planned: 'Planned',
+        not_configured: 'Not configured',
+        pending: 'Pending reconciliation',
+        stale: 'Stale snapshot',
+        unavailable: 'Unavailable',
+        unknown: 'Unknown'
+    };
+    const PROVISIONING_STAGE_LABELS = {
+        pending: 'Pending',
+        ready: 'Ready',
+        blocked: 'Blocked',
+        error: 'Error',
+        planned: 'Planned',
+        skipped: 'Skipped',
+        unknown: 'Unknown'
+    };
+    const PROVISIONING_REASON_LABELS = {
+        not_configured: 'Not configured',
+        identity_mismatch: 'Identity mismatch',
+        approval_required: 'Approval required',
+        relay_failed: 'Relay failed',
+        firewall_required: 'Firewall permit required',
+        firewall_failed: 'Firewall permit failed',
+        hook_required: 'PBX hook required',
+        hook_failed: 'PBX hook failed',
+        ready: 'Ready',
+        planned: 'Planned',
+        stale: 'Stale snapshot',
+        worker_failed: 'Worker failed',
+        configuration_invalid: 'Configuration invalid',
+        unknown: 'Unknown'
+    };
+    const PROVISIONING_STAGE_NAMES = ['relay', 'firewall', 'hook'];
+
+    function labelFrom(labels, value) {
+        return Object.hasOwn(labels, value) ? labels[value] : labels.unknown;
+    }
+
+    function provisioningStatusOf(value) {
+        return PROVISIONING_FILE_STATUS.has(value) ? value : 'unavailable';
+    }
 
     function approvalLabel(status) {
         return APPROVAL_LABELS[status] || APPROVAL_LABELS.pending;
@@ -364,6 +441,8 @@
     function onUnauthenticated(message) {
         csrfToken = null;
         snapshot = null;
+        provisioning = null;
+        provisioningError = null;
         showLogin();
         showLoginMessage(message || 'Sign in to continue.');
     }
@@ -379,6 +458,16 @@
         refs.main.setAttribute('aria-busy', 'true');
         try {
             snapshot = await api('/api/state');
+            // Read-only, separate fetch: a provisioning read failure must never
+            // hide or block the approval workflow itself.
+            provisioning = null;
+            provisioningError = null;
+            try {
+                const result = await api('/api/provisioning');
+                provisioning = result && result.provisioning ? result.provisioning : null;
+            } catch (error) {
+                provisioningError = error;
+            }
             render();
         } finally {
             refs.main.removeAttribute('aria-busy');
@@ -402,6 +491,7 @@
             `Enabled connections are capped at ${limits.maxEnabledPbx || 0} by the gateway; ` +
             `${stats.pbx || 0} of ${limits.maxPbx || 0} records used.`;
 
+        renderProvisioningSummary();
         renderPbx();
         renderExtensionPbxOptions();
         renderExtensions();
@@ -409,6 +499,96 @@
         renderPending();
         renderApproved();
         renderActivity();
+    }
+
+    function provisioningEntry(id) {
+        if (!provisioning || !Array.isArray(provisioning.pbx)) return null;
+        const wanted = String(id);
+        return provisioning.pbx.find((item) => item && String(item.id) === wanted) || null;
+    }
+
+    function provisioningWhen() {
+        if (!provisioning || !provisioning.updatedAt) return 'never';
+        return formatTime(provisioning.updatedAt);
+    }
+
+    function renderProvisioningSummary() {
+        const node = refs.pbxProvisioningSummary;
+        if (!node) return;
+        let message;
+        if (!provisioning) {
+            message = provisioningError
+                ? 'Provisioning status is unavailable right now. Device approval still works; ' +
+                  'relay, firewall and PBX hook readiness are unverified.'
+                : 'Provisioning status has not been loaded yet.';
+        } else {
+            const status = provisioningStatusOf(provisioning.status);
+            if (status === 'not_configured') {
+                message =
+                    'No provisioning snapshot has been published by the worker. Relay, firewall and ' +
+                    'PBX hook readiness are unverified; this is not a failure report.';
+            } else if (status === 'unavailable') {
+                message =
+                    'Provisioning snapshot unavailable: the status file did not pass its ownership, ' +
+                    'permission, size or schema checks. Treat provisioning as unverified.';
+            } else if (status === 'stale') {
+                message =
+                    `Provisioning snapshot is stale. Last reconciliation ${provisioningWhen()}; the ` +
+                    'worker has not reported since, so the values below are historical, not current.';
+            } else {
+                message =
+                    `Provisioning snapshot reported by the worker. Last reconciliation ${provisioningWhen()}.`;
+            }
+        }
+        // Assigning the same text again would re-announce the polite live region
+        // on every unrelated refresh, so only write when the wording changes.
+        if (node.textContent !== message) node.textContent = message;
+    }
+
+    function provisioningCell(record) {
+        const entry = provisioningEntry(record.id);
+        if (!entry) {
+            return el('td', { dataset: { label: 'Provisioning' } },
+                el('span', {
+                    class: 'pill pill-off',
+                    text: provisioning ? 'Not reported' : 'Unknown'
+                }),
+                el('span', {
+                    class: 'cell-sub',
+                    text: provisioning
+                        ? 'No provisioning status reported for this PBX.'
+                        : 'Provisioning status not loaded.'
+                }));
+        }
+
+        const state = labelFrom(PROVISIONING_STATE_LABELS, entry.effectiveState);
+        const stages = PROVISIONING_STAGE_NAMES.map((name) => {
+            const raw = entry.stages && typeof entry.stages === 'object' ? entry.stages[name] : undefined;
+            const value = typeof raw === 'string' ? raw : 'unknown';
+            return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${labelFrom(PROVISIONING_STAGE_LABELS, value)}`;
+        }).join(' · ');
+
+        const reconciliation = typeof entry.reconciliation === 'string' ? entry.reconciliation : 'unknown';
+        const when = provisioningWhen();
+        const whenText = reconciliation === 'current'
+            ? `Last reconciliation · ${when}`
+            : reconciliation === 'pending'
+                ? `Pending reconciliation · last reported ${when}`
+                : reconciliation === 'stale'
+                    ? `Stale · last reconciliation ${when}`
+                    : 'No reconciliation timestamp';
+
+        return el('td', { dataset: { label: 'Provisioning' } },
+            el('span', {
+                class: entry.effectiveState === 'ready' ? 'pill pill-on' : 'pill pill-off',
+                text: state
+            }),
+            el('span', { class: 'cell-sub', text: whenText }),
+            el('span', { class: 'cell-sub', text: stages }),
+            el('span', {
+                class: 'cell-sub',
+                text: `Reason · ${labelFrom(PROVISIONING_REASON_LABELS, entry.reason)}`
+            }));
     }
 
     function renderPbx() {
@@ -454,6 +634,7 @@
                             text: `Reviewed installation · ${management.reviewedInstallationId}`
                         })
                         : null),
+                provisioningCell(record),
                 el('td', { dataset: { label: 'Actions' } },
                     el('div', { class: 'row-actions' },
                         el('button', {
@@ -719,6 +900,7 @@
     }
 
     function resetPbxForm() {
+        sshVerifiedHost = null; sshFingerprint = null; refs.sshFingerprint.textContent = '';
         editingPbxId = null;
         refs.pbxForm.reset();
         refs.pbxEnabled.checked = true;
@@ -729,6 +911,9 @@
     }
 
     function startEditPbx(record) {
+        refs.sshPassword.value = ''; refs.sshEnable.checked = false;
+        refs.sshConfirm.checked = false; sshVerifiedHost = null; sshFingerprint = null;
+        refs.sshFingerprint.textContent = '';
         editingPbxId = record.id;
         const management = record.management || null;
         refs.pbxName.value = record.name;
@@ -760,8 +945,15 @@
         event.preventDefault();
         clearMessages();
         const payload = readPbxForm();
+        const sshSetup = refs.sshEnable.checked;
+        if (sshSetup && (!refs.sshConfirm.checked || sshVerifiedHost !== refs.sshHost.value.trim() || !sshFingerprint || !refs.sshPassword.value)) {
+            showError('Check and confirm the SSH host fingerprint, then enter the one-time password.');
+            refs.sshHost.focus();
+            return;
+        }
         setBusy(refs.pbxSubmit, true, 'Saving…');
         try {
+            let pbxId = editingPbxId;
             if (editingPbxId) {
                 await api(`/api/pbx/${encodeURIComponent(editingPbxId)}`, {
                     method: 'PATCH',
@@ -769,14 +961,26 @@
                 });
                 showStatus(`Updated ${payload.name}.`);
             } else {
-                await api('/api/pbx', { method: 'POST', body: payload });
+                const created = await api('/api/pbx', { method: 'POST', body: payload });
+                pbxId = created.pbx.id;
+                editingPbxId = pbxId; // Retry setup on this saved record, never duplicate it.
                 showStatus(`Added ${payload.name}.`);
+            }
+            if (sshSetup) {
+                const password = refs.sshPassword.value;
+                refs.sshPassword.value = '';
+                await api('/api/pbx-ssh/enroll', { method: 'POST', body: {
+                    pbxId, host: sshVerifiedHost, username: refs.sshUser.value,
+                    fingerprint: sshFingerprint, password
+                } });
+                showStatus(`SSH key installed for ${payload.name}. Provisioning will reconcile automatically; device approval remains manual.`);
             }
             resetPbxForm();
             await refresh();
         } catch (error) {
             handleError(error);
         } finally {
+            refs.sshPassword.value = '';
             setBusy(refs.pbxSubmit, false);
         }
     }

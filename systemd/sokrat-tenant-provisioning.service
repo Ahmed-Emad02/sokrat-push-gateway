@@ -1,0 +1,33 @@
+[Unit]
+Description=Sokrat tenant provisioning reconcile (one-shot, root)
+Documentation=file:/opt/sokrat-push-gateway/PROVISIONING.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/usr/local/lib/sokrat-tenant-provisioning
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /usr/local/lib/sokrat-tenant-provisioning/reconcile-tenant-provisioning.py --apply
+# The bundled sync script legitimately writes state, coturn config, systemd
+# units, ufw rules and system accounts. Keep hardening conservative so those
+# documented writes are not blocked; authority still comes from the root-owned
+# bundle and root-private config, not from this unit file.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+TimeoutStartSec=900
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -74,12 +74,20 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
 // Runtime manifest is root/operator managed, outside dashboard state. Keeping
 // per-PBX TURN secrets and hook keys outside public PBX records avoids accidental
 // disclosure through the admin CRUD API.
+const MAX_RUNTIME_MANIFEST_BYTES = 1024 * 1024;
 async function readPrivateRuntimeManifest(file) {
-    const handle = await fs.open(file, require('node:fs').constants.O_RDONLY | require('node:fs').constants.O_NOFOLLOW);
+    const handle = await fs.open(file, require('node:fs').constants.O_RDONLY |
+        require('node:fs').constants.O_NOFOLLOW | require('node:fs').constants.O_NONBLOCK);
     try {
         const stat = await handle.stat();
         if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error('Runtime manifest must be a private regular file');
-        const manifest = JSON.parse(await handle.readFile('utf8'));
+        // Bound the read before allocating: the file is operator-managed, but a
+        // runaway or accidentally huge replacement must fail closed, not exhaust
+        // memory or stall every authorization lookup.
+        if (stat.size > MAX_RUNTIME_MANIFEST_BYTES) throw new Error('Runtime manifest is too large');
+        const text = await handle.readFile('utf8');
+        if (Buffer.byteLength(text) > MAX_RUNTIME_MANIFEST_BYTES) throw new Error('Runtime manifest is too large');
+        const manifest = JSON.parse(text);
         if (!manifest || typeof manifest !== 'object' || !manifest.relays) throw new Error('Invalid runtime manifest');
         for (const [id, relay] of Object.entries(manifest.relays)) {
             if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || !relay || typeof relay.host !== 'string' || !/^[A-Za-z0-9.-]+$/.test(relay.host) ||

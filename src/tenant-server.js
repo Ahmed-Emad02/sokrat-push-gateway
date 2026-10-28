@@ -2,33 +2,48 @@
 const express = require('express');
 const http = require('node:http');
 const fs = require('node:fs/promises');
-const { createTenantRuntime, readPrivateRuntimeManifest } = require('./tenant-runtime');
+const { createTenantRuntime } = require('./tenant-runtime');
+const { createTenantManifestLoader } = require('./tenant-manifest-loader');
 const { createPbxAuthorizer } = require('./tenant-hook-auth');
 const { createEnrollmentRouter } = require('./control');
 
-async function startTenantServer(control, env = process.env) {
-    const manifest = await readPrivateRuntimeManifest(env.TENANT_RUNTIME_FILE);
-    const providers = require('./index');
-    await providers.initializePush();
-    const getRelay = async id => {
-        const relay = manifest.relays[id];
+// Relay lookups are intentionally per request: the provisioner may atomically
+// replace the runtime manifest, and serving a stale relay would issue TURN
+// credentials for a peer set that is no longer provisioned.
+function createRelayResolver(control, manifestLoader) {
+    return async id => {
+        const relay = await manifestLoader.getRelay(id);
         const pbx = control.store.getPbx(id);
         if (!relay || !pbx?.enabled || !Array.isArray(relay.peerIps) || !Array.isArray(pbx.mediaIps)) return null;
         // Changing PBX media peers requires relay re-provisioning first.
         if (relay.peerIps.slice().sort().join(',') !== pbx.mediaIps.slice().sort().join(',')) return null;
-        const handle = await fs.open(relay.secretFile, require('node:fs').constants.O_RDONLY | require('node:fs').constants.O_NOFOLLOW);
+        const handle = await fs.open(relay.secretFile, require('node:fs').constants.O_RDONLY |
+            require('node:fs').constants.O_NOFOLLOW | require('node:fs').constants.O_NONBLOCK);
         let secret;
         try {
             const stat = await handle.stat();
             if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error('Relay secret permissions are not private');
+            if (stat.size > 128) throw new Error('Relay secret is too large');
             secret = (await handle.readFile('utf8')).trim();
         } finally { await handle.close(); }
         if (!/^[a-f0-9]{64}$/.test(secret)) return null;
         return { ...relay, secret };
     };
+}
+
+async function startTenantServer(control, env = process.env) {
+    // Startup requires a valid manifest, but the provisioner may atomically
+    // replace it later. Relay and hook-key lookups then read the current file, so
+    // a replacement takes effect for new requests without restarting the server
+    // or dropping established SIP sockets.
+    const manifestLoader = createTenantManifestLoader(env.TENANT_RUNTIME_FILE);
+    await manifestLoader.load();
+    const providers = require('./index');
+    await providers.initializePush();
+    const getRelay = createRelayResolver(control, manifestLoader);
     const runtime = createTenantRuntime({ control,
         pushFile: env.TENANT_PUSH_FILE || '/var/lib/sokrat-gateway/push.json',
-        getRelay, authorizePbx: createPbxAuthorizer(control, async id => manifest.hookHashes?.[id]),
+        getRelay, authorizePbx: createPbxAuthorizer(control, id => manifestLoader.getHookHash(id)),
         normalizeCallId: providers.normalizeCallId,
         sendToDevice: async (device, payload) => (await providers.buildCtx()).sendToDevice(device, payload)
     });
@@ -58,4 +73,4 @@ async function startTenantServer(control, env = process.env) {
     console.log('[tenant] gateway runtime listening on loopback');
     return { server, runtime, close() { proxy.close(); server.close(); } };
 }
-module.exports = { startTenantServer };
+module.exports = { startTenantServer, createRelayResolver };

@@ -1,0 +1,18 @@
+[Unit]
+Description=Sokrat authorized dashboard SSH bootstrap broker
+After=network-online.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/sokrat-tenant-provisioning/provisioning-onboarding.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

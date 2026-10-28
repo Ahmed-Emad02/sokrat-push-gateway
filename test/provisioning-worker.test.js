@@ -717,3 +717,17 @@ test('status file is root-owned private and capturedUpdatedAt tracks the record'
     const entry = fixture.readStatus().pbx.pbx_alpha;
     assert.equal(entry.capturedUpdatedAt, '2026-10-28T11:22:33Z');
 });
+
+test('the hook token file trusts the service account like the other state files', () => {
+    // The plan, the runtime manifest and the control store are read with the
+    // service account in the owner set, because the control service owns the
+    // state directory and must keep writing there. The hook token file lives
+    // in the same directory; refusing it would make the whole run fail with
+    // `configuration_invalid` before any stage is evaluated.
+    const source = fs.readFileSync(WORKER, 'utf8');
+    const loader = source.slice(
+        source.indexOf('def load_tokens('),
+        source.indexOf('def read_control_digest(')
+    );
+    assert.match(loader, /owners\.add\(config\["serviceUid"\]\)/);
+});

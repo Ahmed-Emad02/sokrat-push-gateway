@@ -812,6 +812,12 @@ def load_manifest(config):
 
 def load_tokens(config):
     owners = trusted_owners(config["testMode"])
+    # The token file lives beside the control store in the state directory, which
+    # the service account owns. It is trusted exactly like the plan, the runtime
+    # manifest and the control store; without this the state directory would
+    # have to be root-owned, which the control service cannot write to.
+    if config["serviceUid"] is not None:
+        owners.add(config["serviceUid"])
     path = config["stateDir"] / "hook-tokens.json"
     info = check_file(path, "hook token file", owners, private=True, must_exist=False)
     if info is None:

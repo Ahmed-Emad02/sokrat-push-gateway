@@ -28,7 +28,10 @@ async function resolvePbxAddress(value, lookup = dns.lookup) {
 // A fixed local broker, not a command runner. Passwords exist only in transit.
 function requestOnboarding(payload, { socketPath = '/run/sokrat-tenant-onboarding/broker.sock' } = {}) {
     return new Promise((resolve, reject) => {
-        const fail = () => reject(Object.assign(new Error('SSH onboarding unavailable or refused. Check the host key, credentials and PBX endpoints.'), { status: 503 }));
+        const fail = (code) => reject(Object.assign(
+            new Error('SSH onboarding unavailable or refused. Check the host key, credentials and PBX endpoints.'),
+            { status: 503, code: code || 'onboarding_refused' }
+        ));
         const socket = net.createConnection(socketPath);
         let data = '';
         socket.setTimeout(90000);
@@ -42,7 +45,7 @@ function requestOnboarding(payload, { socketPath = '/run/sokrat-tenant-onboardin
         socket.on('end', () => {
             try {
                 const result = JSON.parse(data);
-                if (!result.ok) return fail();
+                if (!result.ok) return fail(result.code);
                 if (payload.action === 'probe') {
                     if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(result.fingerprint)) return fail();
                     resolve({ fingerprint: result.fingerprint });

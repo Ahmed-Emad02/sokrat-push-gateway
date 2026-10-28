@@ -94,18 +94,51 @@ def load_worker():
     return worker
 
 
+def stage_error(stage, error):
+    """Tag a failure with the step it happened in.
+
+    The message never carries the password: only the step name and the
+    exception type reach the journal.
+    """
+    return ValueError('%s:%s' % (stage, type(error).__name__))
+
+
+# Safe, operator-facing reason codes. The raw exception text never leaves the
+# broker: only these codes are returned to the dashboard.
+STAGE_CODES = {
+    'ssh_handshake': 'ssh_unreachable',
+    'pbx_pin': 'pbx_not_approved_or_mismatched',
+    'password_auth': 'password_auth_failed',
+    'pbx_bootstrap': 'pbx_bootstrap_failed',
+    'verify_key': 'key_login_failed',
+    'config_write': 'config_write_failed',
+    'host key changed': 'host_key_changed',
+}
+
+
+def refusal_code(error):
+    text = str(error)
+    if text in STAGE_CODES:
+        return STAGE_CODES[text]
+    stage = text.split(':', 1)[0]
+    return STAGE_CODES.get(stage, 'onboarding_refused')
+
+
 def handle(req, worker):
     import paramiko
     host = validate_request(req)
     # Handshake without authentication: show fingerprint before sending password.
-    with socket.create_connection((host, 22), timeout=10) as raw:
-        transport = paramiko.Transport(raw)
-        try:
-            transport.start_client(timeout=10)
-            key = transport.get_remote_server_key()
-            actual = fingerprint(key)
-        finally:
-            transport.close()
+    try:
+        with socket.create_connection((host, 22), timeout=10) as raw:
+            transport = paramiko.Transport(raw)
+            try:
+                transport.start_client(timeout=10)
+                key = transport.get_remote_server_key()
+                actual = fingerprint(key)
+            finally:
+                transport.close()
+    except Exception as error:
+        raise stage_error('ssh_handshake', error)
     if req['action'] == 'probe':
         return {'ok': True, 'fingerprint': actual}
     if req['fingerprint'] != actual:
@@ -114,7 +147,10 @@ def handle(req, worker):
     control = worker.read_regular(config['controlFile'], 'control')
     records = json.loads(control)['pbx']
     record = next(p for p in records if p['id'] == req['pbxId'])
-    pin = record_identity(record, host, worker)
+    try:
+        pin = record_identity(record, host, worker)
+    except Exception as error:
+        raise stage_error('pbx_pin', error)
     pbx = record['id']
     worker.ensure_dir('/etc/sokrat/ssh', 0o700)
     identity = Path('/etc/sokrat/ssh') / (pbx + '.key')
@@ -128,14 +164,22 @@ def handle(req, worker):
     client = paramiko.SSHClient()
     client.get_host_keys().add(host, key.get_name(), key)
     try:
-        client.connect(host, username='root', password=req['password'], allow_agent=False, look_for_keys=False, timeout=10, auth_timeout=15, banner_timeout=10)
+        try:
+            client.connect(host, username='root', password=req['password'], allow_agent=False, look_for_keys=False, timeout=10, auth_timeout=15, banner_timeout=10)
+        except Exception as error:
+            raise stage_error('password_auth', error)
         import shlex
-        stdin, stdout, stderr = client.exec_command('/usr/bin/python3 -c ' + shlex.quote(BOOTSTRAP), timeout=20)
-        stdin.write(json.dumps({'key': public, 'pbxId': pbx}));stdin.flush();stdin.channel.shutdown_write()
-        result = stdout.read(8193)
-        if len(result)>8192 or stdout.channel.recv_exit_status()!=0:
-            raise ValueError('PBX bootstrap failed')
-        remote = json.loads(result)
+        try:
+            stdin, stdout, stderr = client.exec_command('/usr/bin/python3 -c ' + shlex.quote(BOOTSTRAP), timeout=20)
+            stdin.write(json.dumps({'key': public, 'pbxId': pbx}));stdin.flush();stdin.channel.shutdown_write()
+            result = stdout.read(8193)
+            if len(result)>8192 or stdout.channel.recv_exit_status()!=0:
+                raise stage_error('pbx_bootstrap', RuntimeError('the PBX refused the gateway key'))
+            remote = json.loads(result)
+        except Exception as error:
+            if isinstance(error, ValueError) and str(error).startswith('pbx_bootstrap:'):
+                raise
+            raise stage_error('pbx_bootstrap', error)
     finally:
         client.close()
         req.pop('password', None)
@@ -206,8 +250,12 @@ def main():
                 request=json.loads(data)
                 data=b''
                 result=handle(request,worker)
-            except Exception:
-                result={'ok':False}
+            except Exception as error:
+                # The reason is logged for the operator; the request itself is
+                # dropped and the password never reaches the journal. Only a
+                # safe code is returned to the dashboard.
+                result={'ok': False, 'code': refusal_code(error)}
+                print('onboarding refused: %s' % (str(error)[:120] or type(error).__name__), file=sys.stderr, flush=True)
             finally:
                 if isinstance(request,dict):request.pop('password',None)
             try:connection.sendall(json.dumps(result).encode())

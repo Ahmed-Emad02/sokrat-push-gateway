@@ -395,6 +395,19 @@ function createControlRouter(options = {}) {
     let onboardingBusy = false;
     let lastOnboarding = 0;
     let lastResolution = 0;
+    // Operator-facing reasons for a refused SSH setup. Only safe codes are
+    // mapped; the raw broker error never reaches the dashboard.
+    const ONBOARDING_MESSAGES = {
+        pbx_not_approved_or_mismatched: 'This PBX is not approved for SSH setup yet, or its saved endpoints do not match the address. Approve the PBX (or leave "Managed multi-tenant PBX" off) and try again.',
+        password_auth_failed: 'The PBX rejected the root SSH password. Check the password and try again.',
+        host_key_changed: 'The PBX host key changed since the fingerprint was shown. Check the host key again and confirm the new fingerprint.',
+        ssh_unreachable: 'The gateway could not reach the PBX on SSH port 22.',
+        pbx_bootstrap_failed: 'The PBX refused the gateway key. Check that the shared push context exists and that root SSH is permitted.',
+        key_login_failed: 'The gateway key was installed but key-only login failed on the PBX.',
+        config_write_failed: 'The gateway could not save its own provisioning configuration.',
+        onboarding_busy: 'Another SSH setup is already running. Wait a moment and try again.',
+    };
+    const onboardingMessage = code => ONBOARDING_MESSAGES[code] || 'SSH setup refused or unavailable. Verify root credentials, confirmed host key, approved PBX and matching Tailscale endpoints.';
     router.post('/api/pbx-ssh/:action', requireSession, requireCsrf, wrap(async (req, res) => {
         // Sensitive credentials are only accepted over TLS or a local SSH tunnel.
         const peer = req.socket.remoteAddress;
@@ -420,7 +433,8 @@ function createControlRouter(options = {}) {
             res.json({ success: true, ...result });
         } catch (error) {
             if (action === 'resolve') return res.status(400).json({ success: false, error: 'invalid_pbx_address', message: error.message });
-            res.status(503).json({ success: false, error: 'onboarding_refused', message: 'SSH setup refused or unavailable. Verify root credentials, confirmed host key, approved PBX and matching Tailscale endpoints.' });
+            res.status(503).json({ success: false, error: 'onboarding_refused', code: error.code || 'onboarding_refused',
+                message: onboardingMessage(error.code) });
         } finally {
             delete input.password;
             onboardingBusy = false;

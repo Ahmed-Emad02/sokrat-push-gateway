@@ -455,7 +455,9 @@ def compare_identity(pin, record):
 
     approval = record_approval(record)
     if pin["approval"] == "unmanaged":
-        if approval != "unmanaged":
+        # Both are authorized states: the operator may approve a previously
+        # unmanaged PBX later (for extension policies) without re-enrolling it.
+        if approval not in ("unmanaged", "approved"):
             return "identity_mismatch"
         return None
     # pin expects a managed, approved record

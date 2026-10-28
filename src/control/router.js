@@ -1,0 +1,525 @@
+'use strict';
+
+/**
+ * Express router for the Sokrat multi-PBX / device approval dashboard.
+ *
+ * Mount it from the gateway boot file (do not edit index.js from here):
+ *
+ *   const { createControl } = require('./control');
+ *   const control = createControl();
+ *   app.use('/control', control.router);   // after express.json()
+ *
+ * Everything is served from this module: JSON API, page shell and the two
+ * local static assets. No CDN, font or script is loaded from a third party and
+ * the CSP forbids it. The SIP proxy remains the parent's responsibility; this
+ * router never proxies SIP.
+ */
+
+const fs = require('node:fs');
+const path = require('node:path');
+const express = require('express');
+const { ControlStoreError } = require('./store');
+const {
+    SessionManager,
+    LoginRateLimiter,
+    loadAdminCredential,
+    isPrivateIp,
+    clientIp,
+    isSecureRequest,
+    originAllowed,
+    parseCookies,
+    serializeCookie,
+    clearCookie,
+    validateCsrf
+} = require('./auth');
+
+const COOKIE_NAME = 'sokrat_control_sid';
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
+const ASSETS = new Map([
+    ['app.css', { file: path.join(PUBLIC_DIR, 'app.css'), type: 'text/css; charset=utf-8' }],
+    ['app.js', { file: path.join(PUBLIC_DIR, 'app.js'), type: 'text/javascript; charset=utf-8' }]
+]);
+const BASE_PLACEHOLDER = '__CONTROL_BASE__';
+
+const CSP = [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+].join('; ');
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    })[char]);
+}
+
+function throttleHeaders(res, retryAfterMs) {
+    res.set('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+}
+
+function actorFor(req) {
+    const ip = clientIp(req, { trustProxy: req.controlTrustProxy === true });
+    return ip ? `admin@${ip}` : 'admin';
+}
+
+function httpDelay(ms) {
+    if (!ms) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readStatic(file) {
+    return fs.readFileSync(file, 'utf8');
+}
+
+function readIndex() {
+    return readStatic(INDEX_FILE);
+}
+
+/**
+ * @param {object} options
+ * @param {import('./store').ControlStore} options.store  required
+ * @param {object} [options.credential]                    from loadAdminCredential()
+ * @param {SessionManager} [options.sessions]
+ * @param {LoginRateLimiter} [options.loginLimiter]
+ * @param {LoginRateLimiter} [options.enrollLimiter]
+ * @param {boolean} [options.allowPublic]   default false: loopback/private peers only
+ * @param {boolean} [options.trustProxy]    honour X-Forwarded-* headers
+ * @param {boolean|'auto'} [options.cookieSecure]
+ * @param {number} [options.loginFailureDelayMs]
+ * @returns {import('express').Router}
+ */
+function createControlRouter(options = {}) {
+    const store = options.store;
+    if (!store) throw new Error('createControlRouter requires a store option');
+
+    const credential = options.credential || loadAdminCredential({ env: options.env });
+    const allowPublic = options.allowPublic === true || process.env.CONTROL_ALLOW_PUBLIC === 'true';
+    const trustProxy = options.trustProxy === true || process.env.CONTROL_TRUST_PROXY === 'true';
+    const cookieSecure = options.cookieSecure !== undefined
+        ? options.cookieSecure
+        : process.env.CONTROL_COOKIE_SECURE === 'true'
+            ? true
+            : 'auto';
+    const loginFailureDelayMs = options.loginFailureDelayMs !== undefined
+        ? Math.max(0, Number(options.loginFailureDelayMs) || 0)
+        : 150;
+
+    const sessions = options.sessions || new SessionManager({
+        ttlMs: (Number(process.env.CONTROL_SESSION_TTL_MINUTES) || 30) * 60 * 1000,
+        absoluteTtlMs: (Number(process.env.CONTROL_SESSION_MAX_HOURS) || 12) * 60 * 60 * 1000
+    });
+    const loginLimiter = options.loginLimiter || new LoginRateLimiter({
+        maxFailures: 5,
+        windowMs: 10 * 60 * 1000,
+        lockoutMs: 5 * 60 * 1000
+    });
+    const globalLimiter = options.globalLimiter || new LoginRateLimiter({
+        maxFailures: 25,
+        windowMs: 10 * 60 * 1000,
+        lockoutMs: 10 * 60 * 1000
+    });
+    const enrollLimiter = options.enrollLimiter || new LoginRateLimiter({
+        maxFailures: 20,
+        windowMs: 10 * 60 * 1000,
+        lockoutMs: 10 * 60 * 1000
+    });
+
+    const indexTemplate = readIndex();
+    const assetCache = new Map();
+    for (const [name, asset] of ASSETS) {
+        assetCache.set(name, { body: readStatic(asset.file), type: asset.type });
+    }
+
+    if (allowPublic) {
+        console.warn(
+            '[control] CONTROL_ALLOW_PUBLIC is enabled — the device approval dashboard is ' +
+            'reachable from any network peer. Terminate TLS and restrict the port at the firewall.'
+        );
+    }
+
+    const router = express.Router();
+
+    // --- cross-cutting -----------------------------------------------------
+
+    router.use((req, res, next) => {
+        res.set({
+            'Content-Security-Policy': CSP,
+            'X-Content-Type-Options': 'nosniff',
+            'X-Frame-Options': 'DENY',
+            'Referrer-Policy': 'no-referrer',
+            'Cross-Origin-Opener-Policy': 'same-origin',
+            'Cross-Origin-Resource-Policy': 'same-origin',
+            'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+            'Cache-Control': 'no-store'
+        });
+        if (isSecureRequest(req, trustProxy)) {
+            res.set('Strict-Transport-Security', 'max-age=15552000');
+        }
+        req.controlTrustProxy = trustProxy;
+        next();
+    });
+
+    // Local/private exposure guard. Override only for a deliberate, TLS-
+    // terminated deployment: CONTROL_ALLOW_PUBLIC=true.
+    router.use((req, res, next) => {
+        if (allowPublic) return next();
+        const ip = clientIp(req, { trustProxy });
+        if (isPrivateIp(ip)) return next();
+        return res
+            .status(403)
+            .type('text/plain; charset=utf-8')
+            .send('The control dashboard is restricted to loopback and private networks.');
+    });
+
+    router.use(express.json({ limit: '64kb', strict: true }));
+
+    router.use((req, res, next) => {
+        Promise.resolve(store.init()).then(() => next(), next);
+    });
+
+    // --- helpers -----------------------------------------------------------
+
+    const wrap = (handler) => (req, res, next) => {
+        Promise.resolve(handler(req, res, next)).catch(next);
+    };
+
+    const requireSession = (req, res, next) => {
+        const sid = parseCookies(req.headers.cookie)[COOKIE_NAME];
+        const session = sid ? sessions.get(sid) : null;
+        if (!session) {
+            return res.status(401).json({ success: false, error: 'authentication_required' });
+        }
+        req.controlSession = session;
+        next();
+    };
+
+    const requireCsrf = (req, res, next) => {
+        if (!originAllowed(req, { trustProxy })) {
+            return res.status(403).json({ success: false, error: 'origin_not_allowed' });
+        }
+        const token = req.get('x-csrf-token') || (req.body && req.body._csrf) || '';
+        if (!validateCsrf(req.controlSession, token)) {
+            return res.status(403).json({ success: false, error: 'csrf_token_invalid' });
+        }
+        next();
+    };
+
+    const secureCookie = (req) => cookieSecure === true ||
+        (cookieSecure === 'auto' && isSecureRequest(req, trustProxy));
+
+    const sessionCookieHeader = (req, session, options = {}) => {
+        if (options.clear) {
+            return clearCookie(COOKIE_NAME, {
+                path: '/',
+                sameSite: 'Strict',
+                secure: secureCookie(req)
+            });
+        }
+        return serializeCookie(COOKIE_NAME, session.id, {
+            path: '/',
+            maxAge: Math.max(0, Math.floor((session.absoluteExpiresAt - Date.now()) / 1000)),
+            sameSite: 'Strict',
+            secure: secureCookie(req)
+        });
+    };
+
+    // --- page + assets -----------------------------------------------------
+
+    router.get('/', (req, res) => {
+        const base = String(req.baseUrl || '').replace(/\/+$/, '');
+        res.type('text/html; charset=utf-8').send(
+            indexTemplate.replaceAll(BASE_PLACEHOLDER, escapeHtml(base))
+        );
+    });
+
+    router.get('/asset/:name', (req, res) => {
+        const asset = assetCache.get(String(req.params.name));
+        if (!asset) return res.status(404).type('text/plain; charset=utf-8').send('Not found');
+        res.type(asset.type).send(asset.body);
+    });
+
+    router.get('/favicon.ico', (req, res) => res.status(204).end());
+
+    // --- session -----------------------------------------------------------
+
+    router.get('/api/session', (req, res) => {
+        const sid = parseCookies(req.headers.cookie)[COOKIE_NAME];
+        const session = sid ? sessions.get(sid) : null;
+        if (!session) {
+            return res.json({
+                success: true,
+                authenticated: false,
+                configured: credential.configured
+            });
+        }
+        return res.json({
+            success: true,
+            authenticated: true,
+            csrfToken: session.csrfToken,
+            expiresAt: new Date(session.expiresAt).toISOString(),
+            limits: { ...store.limits }
+        });
+    });
+
+    router.post('/api/session', wrap(async (req, res) => {
+        const ip = clientIp(req, { trustProxy }) || 'unknown';
+
+        const gates = [
+            { limiter: loginLimiter, key: ip },
+            { limiter: globalLimiter, key: '__global__' }
+        ];
+        for (const gate of gates) {
+            const verdict = gate.limiter.check(gate.key);
+            if (!verdict.allowed) {
+                throttleHeaders(res, verdict.retryAfterMs || 1000);
+                return res.status(429).json({
+                    success: false,
+                    error: 'too_many_attempts',
+                    message: 'Too many sign-in attempts. Try again later.',
+                    retryAfterMs: verdict.retryAfterMs || 1000
+                });
+            }
+        }
+
+        if (!credential.configured) {
+            return res.status(503).json({
+                success: false,
+                error: 'admin_not_configured',
+                message:
+                    'No administrator credential is configured. Set CONTROL_ADMIN_PASSWORD_HASH ' +
+                    '(scrypt) or CONTROL_ADMIN_PASSWORD in the gateway environment.'
+            });
+        }
+
+        if (!originAllowed(req, { trustProxy })) {
+            return res.status(403).json({ success: false, error: 'origin_not_allowed' });
+        }
+
+        const password = req.body && req.body.password;
+        if (typeof password !== 'string' || password.length === 0 || password.length > 1024) {
+            loginLimiter.fail(ip);
+            globalLimiter.fail('__global__');
+            await httpDelay(loginFailureDelayMs);
+            return res.status(400).json({
+                success: false,
+                error: 'password_required',
+                message: 'Enter the administrator password.'
+            });
+        }
+
+        const ok = await credential.verify(password);
+        if (!ok) {
+            loginLimiter.fail(ip);
+            globalLimiter.fail('__global__');
+            await httpDelay(loginFailureDelayMs);
+            return res.status(401).json({
+                success: false,
+                error: 'invalid_credentials',
+                message: 'Sign-in failed. Check the password and try again.'
+            });
+        }
+
+        loginLimiter.reset(ip);
+        globalLimiter.reset('__global__');
+        const session = sessions.create({ ip, userAgent: req.get('user-agent') || '' });
+        res.set('Set-Cookie', sessionCookieHeader(req, session));
+        return res.json({
+            success: true,
+            authenticated: true,
+            csrfToken: session.csrfToken,
+            expiresAt: new Date(session.expiresAt).toISOString(),
+            limits: { ...store.limits }
+        });
+    }));
+
+    router.delete('/api/session', requireSession, requireCsrf, (req, res) => {
+        sessions.destroy(req.controlSession.id);
+        res.set('Set-Cookie', sessionCookieHeader(req, null, { clear: true }));
+        res.json({ success: true, authenticated: false });
+    });
+
+    // --- dashboard state ---------------------------------------------------
+
+    router.get('/api/state', requireSession, (req, res) => {
+        const snapshot = store.snapshot();
+        res.json({
+            success: true,
+            ...snapshot,
+            session: {
+                expiresAt: new Date(req.controlSession.expiresAt).toISOString()
+            }
+        });
+    });
+
+    // --- PBX connections ---------------------------------------------------
+
+    router.post('/api/pbx', requireSession, requireCsrf, wrap(async (req, res) => {
+        const pbx = await store.addPbx(req.body, { actor: actorFor(req) });
+        res.status(201).json({ success: true, pbx, limits: { ...store.limits } });
+    }));
+
+    router.patch('/api/pbx/:id', requireSession, requireCsrf, wrap(async (req, res) => {
+        const pbx = await store.updatePbx(String(req.params.id), req.body, {
+            actor: actorFor(req)
+        });
+        res.json({ success: true, pbx, limits: { ...store.limits } });
+    }));
+
+    router.delete('/api/pbx/:id', requireSession, requireCsrf, wrap(async (req, res) => {
+        const result = await store.removePbx(String(req.params.id), { actor: actorFor(req) });
+        res.json({ success: true, ...result, limits: { ...store.limits } });
+    }));
+
+    // --- enrollment invitations -------------------------------------------
+
+    router.post('/api/enrollment-tokens', requireSession, requireCsrf, wrap(async (req, res) => {
+        const result = await store.createEnrollmentToken(req.body || {}, {
+            actor: actorFor(req)
+        });
+        res.status(201).json({
+            success: true,
+            token: result.token,
+            enrollment: result.record,
+            // The plaintext token is returned exactly once.
+            notice: 'Copy this token now. Only its hash is stored.'
+        });
+    }));
+
+    router.delete('/api/enrollment-tokens/:id', requireSession, requireCsrf, wrap(async (req, res) => {
+        const enrollment = await store.revokeEnrollmentToken(String(req.params.id), {
+            actor: actorFor(req)
+        });
+        res.json({ success: true, enrollment });
+    }));
+
+    // --- device enrollment (public endpoint, token-authenticated) ----------
+
+    router.post('/api/devices/enroll', wrap(async (req, res) => {
+        const ip = clientIp(req, { trustProxy }) || 'unknown';
+        const verdict = enrollLimiter.check(ip);
+        if (!verdict.allowed) {
+            throttleHeaders(res, verdict.retryAfterMs || 1000);
+            return res.status(429).json({
+                success: false,
+                error: 'too_many_attempts',
+                message: 'Too many enrollment attempts. Try again later.',
+                retryAfterMs: verdict.retryAfterMs || 1000
+            });
+        }
+
+        try {
+            const result = await store.enrollDevice(req.body || {}, { requestIp: ip });
+            return res.status(result.reused ? 200 : 201).json({
+                success: true,
+                device: result.device,
+                status: result.device.status,
+                reused: result.reused,
+                notice: 'Enrollment is pending administrator approval.'
+            });
+        } catch (error) {
+            if (error instanceof ControlStoreError && error.status === 401) {
+                enrollLimiter.fail(ip);
+            }
+            throw error;
+        }
+    }));
+
+    // --- device decisions --------------------------------------------------
+
+    router.post('/api/devices/:id/approve', requireSession, requireCsrf, wrap(async (req, res) => {
+        const result = await store.approveDevice(String(req.params.id), req.body || {}, {
+            actor: actorFor(req)
+        });
+        if (!result.secret) {
+            // Automatic enrollment: the device keeps the claim secret it
+            // generated, so there is no secret for the operator to copy.
+            return res.json({
+                success: true,
+                device: result.device,
+                enrollmentMode: result.enrollmentMode || 'claim',
+                notice:
+                    'No secret is issued for automatic enrollment. The device redeems its ' +
+                    'claim and receives its assignment automatically.'
+            });
+        }
+        return res.json({
+            success: true,
+            device: result.device,
+            enrollmentMode: result.enrollmentMode || 'invite',
+            // Plaintext device secret: returned once, stored as a hash only.
+            secret: result.secret,
+            notice: 'Store this device secret now. It is shown once.'
+        });
+    }));
+
+    router.post('/api/devices/:id/reject', requireSession, requireCsrf, wrap(async (req, res) => {
+        const device = await store.rejectDevice(String(req.params.id), req.body || {}, {
+            actor: actorFor(req)
+        });
+        res.json({ success: true, device });
+    }));
+
+    router.post('/api/devices/:id/revoke', requireSession, requireCsrf, wrap(async (req, res) => {
+        const device = await store.revokeDevice(String(req.params.id), req.body || {}, {
+            actor: actorFor(req)
+        });
+        res.json({ success: true, device });
+    }));
+
+    // --- fallbacks ---------------------------------------------------------
+
+    router.use((req, res) => {
+        res.status(404).json({ success: false, error: 'not_found' });
+    });
+
+    // eslint-disable-next-line no-unused-vars
+    router.use((error, req, res, next) => {
+        if (res.headersSent) return next(error);
+        if (error && error.type === 'entity.parse.failed') {
+            return res.status(400).json({ success: false, error: 'invalid_json' });
+        }
+        if (error && error.type === 'entity.too.large') {
+            return res.status(413).json({ success: false, error: 'payload_too_large' });
+        }
+        if (error instanceof ControlStoreError) {
+            return res.status(error.status || 400).json({
+                success: false,
+                error: error.code,
+                message: error.message
+            });
+        }
+        console.error('[control] unhandled error:', error && error.stack ? error.stack : error);
+        return res.status(500).json({ success: false, error: 'internal_error' });
+    });
+
+    router.control = {
+        store,
+        credential,
+        sessions,
+        loginLimiter,
+        globalLimiter,
+        enrollLimiter,
+        cookieName: COOKIE_NAME,
+        csp: CSP
+    };
+
+    return router;
+}
+
+module.exports = {
+    createControlRouter,
+    COOKIE_NAME,
+    CSP,
+    ASSETS
+};

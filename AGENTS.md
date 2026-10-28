@@ -30,14 +30,20 @@ Node.js + Express, **`mysql2`**, `firebase-admin`, `apns2`.
 
 ## 2. Where it runs
 
-**On the Rocky VM** (`ssh rocky`) alongside Asterisk — it needs both:
+The legacy single-PBX service can run alongside Asterisk, or on a dedicated
+gateway with private connectivity to both:
 
 1. the local **`asterisk`** MariaDB/MySQL schema, and
-2. **Asterisk AMI** at `AMI_HOST:AMI_PORT` (default `127.0.0.1:5038`, admin/admin).
+2. **Asterisk AMI** at configured `AMI_HOST:AMI_PORT`, with explicitly supplied,
+   least-privilege `AMI_USER` and `AMI_PASS` (no default credentials).
 
 It does **not** run in WSL for real traffic (no AMI, no `mobile_devices` there).
 
-> ⛔ The VM currently has **no OS installed** — see `../../ACCESS.md` §5.
+Current test deployment runs on EC2 through a private Tailscale link to the PBX.
+See `PUBLIC-GATEWAY.md` and `../../CODEX-MAP.md` for the verified state. The
+separate private approval dashboard runs on loopback 9096; tenant HTTP/WS runtime
+on loopback 9097 is opt-in via `TENANT_RUNTIME_FILE`. Do not expose admin routes
+through the public listener or confuse deployed files with activated routing.
 
 ---
 
@@ -101,8 +107,8 @@ npm test       # node --test   → test/index.test.js, test/channel-matching.tes
   `fcm:false` and the gateway logs a warning but keeps serving (calls still work,
   only wake pushes are skipped). iOS pushes stay off until an APNs `.p8`
   (key/team/topic) is installed.
-- **`DB_PASS=admin` / `root` in `.env.example`** — credentials for the PBX's own
-  `asterisk` DB, shared with `sokrat-voice-main`. Change them together.
+- **Database credentials must be supplied** in deployment environment; the
+  template contains no usable password. Preserve existing customer credentials.
 - **AMI must be reachable** or the incoming-call webhook silently does nothing
   (it opens `net.createConnection` to `AMI_PORT`).
 - **Webhook is firewall/URL sensitive** — the dialplan `curl`s a fixed URL; if you

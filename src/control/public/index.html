@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Sokrat Push Gateway — Device approvals</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="__CONTROL_BASE__/asset/app.css">
+<script src="__CONTROL_BASE__/asset/app.js" defer></script>
+</head>
+<body data-control-base="__CONTROL_BASE__">
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">S</span>
+    <span class="brand-name">Sokrat Push Gateway</span>
+    <span class="brand-tag">Device approvals</span>
+  </div>
+  <button id="sign-out" class="btn btn-ghost" type="button" hidden>Sign out</button>
+</header>
+
+<main id="main">
+  <section id="login-view" class="card card-narrow" aria-labelledby="login-title" hidden>
+    <h1 id="login-title">Administrator sign in</h1>
+    <p class="hint">
+      This console manages PBX connections and approves mobile devices.
+      Keep it on loopback or a private network.
+    </p>
+    <p id="login-not-configured" class="notice notice-warn" hidden>
+      No administrator credential is configured. Set
+      <code>CONTROL_ADMIN_PASSWORD_HASH</code> (scrypt format) or
+      <code>CONTROL_ADMIN_PASSWORD</code> in the gateway environment, then restart
+      the service.
+    </p>
+    <form id="login-form" class="stack">
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password"
+               required maxlength="1024" spellcheck="false"
+               aria-errormessage="password-error" aria-describedby="password-hint">
+        <span id="password-hint" class="hint">Use the value configured in the gateway environment.</span>
+        <span id="password-error" class="error-msg">Enter the administrator password.</span>
+      </div>
+      <button id="login-submit" class="btn btn-primary" type="submit">Sign in</button>
+      <p id="login-message" class="alert alert-error" role="alert" hidden></p>
+    </form>
+  </section>
+
+  <div id="dashboard-view" hidden>
+    <div class="page-head">
+      <h1>PBX &amp; device control</h1>
+      <p class="hint">
+        Register the PBX connections this gateway serves, then approve pending
+        devices against a PBX and extension. Devices can enroll themselves with
+        their extension and password (approve only) or redeem a one-time
+        enrollment token; invite tokens and device secrets are shown once and
+        stored only as hashes.
+      </p>
+    </div>
+
+    <p id="dashboard-alert" class="alert alert-error" role="alert" hidden></p>
+    <p id="status-message" class="alert alert-ok" role="status" aria-live="polite" hidden></p>
+
+    <ul class="stats" aria-label="Summary">
+      <li><span class="stat-value" id="stat-enabled">0</span><span class="stat-label">Enabled PBX</span></li>
+      <li><span class="stat-value" id="stat-pending">0</span><span class="stat-label">Pending devices</span></li>
+      <li><span class="stat-value" id="stat-approved">0</span><span class="stat-label">Approved devices</span></li>
+      <li><span class="stat-value" id="stat-cap">0</span><span class="stat-label">Enabled cap</span></li>
+    </ul>
+
+    <section class="card" aria-labelledby="pbx-title">
+      <div class="card-head">
+        <h2 id="pbx-title">PBX connections</h2>
+        <p class="hint" id="pbx-cap-hint">Enabled connections are capped by the gateway.</p>
+      </div>
+      <form id="pbx-form" class="form-grid">
+        <input type="hidden" id="pbx-id" value="">
+        <div class="field">
+          <label for="pbx-name">Name</label>
+          <input id="pbx-name" name="name" type="text" required maxlength="64"
+                 placeholder="Head office PBX" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="pbx-ws">SIP WebSocket URL</label>
+          <input id="pbx-ws" name="wsURL" type="text" required maxlength="512"
+                 placeholder="wss://pbx.example.com:8089/ws" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pbx-api">API URL</label>
+          <input id="pbx-api" name="apiURL" type="text" required maxlength="512"
+                 placeholder="https://pbx.example.com:8080" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pbx-ips">Media IPs</label>
+          <input id="pbx-ips" name="mediaIps" type="text" maxlength="512"
+                 placeholder="203.0.113.10, 198.51.100.0/24" autocomplete="off" spellcheck="false"
+                 aria-describedby="pbx-ips-hint">
+          <span id="pbx-ips-hint" class="hint">Comma-separated IPv4/IPv6 addresses or CIDR blocks. Optional.</span>
+        </div>
+        <div class="field field-inline">
+          <label class="check" for="pbx-enabled">
+            <input id="pbx-enabled" name="enabled" type="checkbox" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button id="pbx-submit" class="btn btn-primary" type="submit">Add PBX</button>
+          <button id="pbx-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
+        </div>
+      </form>
+
+      <div class="table-wrapper" role="region" aria-labelledby="pbx-caption" tabindex="0">
+        <table>
+          <caption id="pbx-caption" class="visually-hidden">Configured PBX connections</caption>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">WebSocket</th>
+              <th scope="col">API</th>
+              <th scope="col">Media IPs</th>
+              <th scope="col">State</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="pbx-rows"></tbody>
+        </table>
+      </div>
+      <p id="pbx-empty" class="empty" hidden>No PBX connections yet. Add one above.</p>
+    </section>
+
+    <section class="card" aria-labelledby="invite-title">
+      <div class="card-head">
+        <h2 id="invite-title">Enrollment invites</h2>
+        <p class="hint">One token per device (raise uses only for a supervised rollout).</p>
+      </div>
+      <form id="invite-form" class="form-grid">
+        <div class="field">
+          <label for="invite-label">Label</label>
+          <input id="invite-label" type="text" required maxlength="64" value="Device invite" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="invite-pbx">Preset PBX</label>
+          <select id="invite-pbx"></select>
+          <span class="hint">Pre-fills the approval form. Approval still picks the final PBX.</span>
+        </div>
+        <div class="field">
+          <label for="invite-extension">Preset extension</label>
+          <input id="invite-extension" type="text" maxlength="32" placeholder="Extension" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="invite-uses">Uses</label>
+          <input id="invite-uses" type="number" min="1" max="100" step="1" value="1" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="invite-ttl">Valid for (hours)</label>
+          <input id="invite-ttl" type="number" min="1" max="720" step="1" value="24" inputmode="numeric">
+        </div>
+        <div class="form-actions">
+          <button id="invite-submit" class="btn btn-primary" type="submit">Create token</button>
+        </div>
+      </form>
+
+      <div id="token-panel" class="notice notice-token" hidden>
+        <p><strong>Enrollment token</strong> — copy it now. It is stored only as a hash and cannot be shown again.</p>
+        <div class="secret-row">
+          <code id="token-value"></code>
+          <button id="token-copy" class="btn btn-sm" type="button">Copy</button>
+          <button id="token-dismiss" class="btn btn-ghost btn-sm" type="button">Dismiss</button>
+        </div>
+      </div>
+
+      <div class="table-wrapper" role="region" aria-labelledby="invite-caption" tabindex="0">
+        <table>
+          <caption id="invite-caption" class="visually-hidden">Enrollment invites</caption>
+          <thead>
+            <tr>
+              <th scope="col">Label</th>
+              <th scope="col">Preset</th>
+              <th scope="col">Uses</th>
+              <th scope="col">Expires</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="invite-rows"></tbody>
+        </table>
+      </div>
+      <p id="invite-empty" class="empty" hidden>No enrollment invites yet.</p>
+    </section>
+
+    <section class="card" aria-labelledby="pending-title">
+      <div class="card-head">
+        <h2 id="pending-title">Pending devices</h2>
+        <p class="hint">Choose the PBX and extension, then approve or reject.</p>
+      </div>
+
+      <div id="secret-panel" class="notice notice-token" hidden>
+        <p><strong>Device secret</strong> — hand it to the device once. Only its hash is stored.
+          Devices that enrolled automatically never need this: they already hold their own secret.</p>
+        <div class="secret-row">
+          <code id="secret-value"></code>
+          <button id="secret-copy" class="btn btn-sm" type="button">Copy</button>
+          <button id="secret-dismiss" class="btn btn-ghost btn-sm" type="button">Dismiss</button>
+        </div>
+      </div>
+
+      <div class="table-wrapper" role="region" aria-labelledby="pending-caption" tabindex="0">
+        <table>
+          <caption id="pending-caption" class="visually-hidden">Devices waiting for approval</caption>
+          <thead>
+            <tr>
+              <th scope="col">Device</th>
+              <th scope="col">Platform</th>
+              <th scope="col">Version</th>
+              <th scope="col">Requested</th>
+              <th scope="col">Decision</th>
+              <th scope="col">Reject</th>
+            </tr>
+          </thead>
+          <tbody id="pending-rows"></tbody>
+        </table>
+      </div>
+      <p id="pending-empty" class="empty" hidden>No pending devices. A device appears here after it enrolls with its extension and password, or after it redeems an enrollment token.</p>
+    </section>
+
+    <section class="card" aria-labelledby="approved-title">
+      <div class="card-head">
+        <h2 id="approved-title">Approved devices</h2>
+        <p class="hint">Revoking drops the stored secret immediately and blocks future pushes.</p>
+      </div>
+      <div class="table-wrapper" role="region" aria-labelledby="approved-caption" tabindex="0">
+        <table>
+          <caption id="approved-caption" class="visually-hidden">Approved devices</caption>
+          <thead>
+            <tr>
+              <th scope="col">Device</th>
+              <th scope="col">Platform</th>
+              <th scope="col">PBX</th>
+              <th scope="col">Extension</th>
+              <th scope="col">Approved</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="approved-rows"></tbody>
+        </table>
+      </div>
+      <p id="approved-empty" class="empty" hidden>No approved devices yet.</p>
+    </section>
+
+    <section class="card" aria-labelledby="activity-title">
+      <div class="card-head">
+        <h2 id="activity-title">Recent activity</h2>
+        <p class="hint">Last 50 audited events, newest last.</p>
+      </div>
+      <ol id="activity-list" class="activity"></ol>
+      <p id="activity-empty" class="empty" hidden>No activity yet.</p>
+    </section>
+  </div>
+</main>
+
+<noscript>
+  <p class="alert alert-error">This console requires JavaScript. Enable it and reload.</p>
+</noscript>
+</body>
+</html>

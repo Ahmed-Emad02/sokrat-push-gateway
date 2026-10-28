@@ -1,0 +1,22 @@
+[Unit]
+Description=Sokrat Gateway Approval Dashboard (private)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sokrat-push
+Group=sokrat-push
+WorkingDirectory=/opt/sokrat-push-gateway
+EnvironmentFile=/etc/sokrat/gateway-control.env
+ExecStart=/usr/bin/node src/control-server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sokrat-gateway
+
+[Install]
+WantedBy=multi-user.target

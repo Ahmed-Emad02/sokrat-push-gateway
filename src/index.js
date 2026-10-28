@@ -16,7 +16,7 @@
  *   PORT            default 8095
  *   DB_HOST         default 127.0.0.1
  *   DB_USER         default root
- *   DB_PASS         default admin
+ *   DB_PASS         supplied through deployment environment
  *   DB_NAME         default asterisk
  *   APNS_ENABLED    true / false
  *   APNS_KEY_FILE   path to VoIP .p8 key
@@ -66,6 +66,8 @@ function tokenFingerprint(token) {
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '1mb' }));
+require('./mobile-ice')(app);
+require('./contacts-proxy').installContactsProxy(app);
 
 const PORT = parseInt(process.env.PORT, 10) || 8095;
 
@@ -423,8 +425,9 @@ const AMI_HOST = process.env.AMI_HOST || '127.0.0.1';
 const AMI_PORT = parseInt(process.env.AMI_PORT, 10) || 5038;
 
 function amiCommand(actions) {
-    const amiUser = process.env.AMI_USER || 'admin';
-    const amiPass = process.env.AMI_PASS || 'admin';
+    const amiUser = process.env.AMI_USER;
+    const amiPass = process.env.AMI_PASS;
+    if (!amiUser || !amiPass) return Promise.reject(new Error('AMI credentials are not configured'));
     return new Promise((resolve, reject) => {
         const client = net.createConnection({ host: AMI_HOST, port: AMI_PORT }, () => {
             let req = `Action: Login\r\nUsername: ${amiUser}\r\nSecret: ${amiPass}\r\nEvents: off\r\n\r\n`;
@@ -572,7 +575,8 @@ async function start() {
         console.log(`[Sokrat Push Gateway] APNs=${apnsReady ? 'ON' : 'OFF'}  FCM=${fcmReady ? 'ON' : 'OFF'}`);
     });
 }
-module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume };
+module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume,
+    initializePush: () => Promise.all([initApns(), initFcm()]) };
 
 if (require.main === module) {
     start().catch((err) => {

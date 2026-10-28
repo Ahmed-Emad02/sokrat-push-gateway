@@ -550,17 +550,29 @@ test('unlisted existing allocation blocks the whole run without writes', (t) => 
     assert.deepEqual(fs.readFileSync(path.join(fixture.state, 'tenant-plan.json')), planBefore);
 });
 
-test('allocation without a dashboard record blocks the run', (t) => {
+test('a retired PBX keeps its slot but never blocks the other PBXs', (t) => {
+    // A PBX whose control record was deleted keeps its allocation slot on
+    // purpose (slots are never reused). The sync tears that relay down, so
+    // the run must continue for every other PBX instead of refusing to touch
+    // anything at all.
+    const beta = defaultRecord({ id: 'pbx_beta' });
     const fixture = makeFixture(t, {
-        records: [],
+        records: [beta],
         extraPins: { pbx_alpha: makePin(defaultRecord()) },
-        plan: { pbx_alpha: allocationFor('pbx_alpha', 0, ['100.64.0.10']) },
+        plan: {
+            pbx_alpha: allocationFor('pbx_alpha', 0, ['100.64.0.10']),
+            pbx_beta: allocationFor('pbx_beta', 1, ['100.64.0.11']),
+        },
     });
     const result = fixture.run(['--apply']);
 
-    assert.equal(result.status, 2);
-    assert.equal(fixture.readStatus().pbx.pbx_alpha.reason, 'not_configured');
-    assert.equal(fixture.syncCount(), 0);
+    assert.ok(result.status === 0, result.stderr + result.stdout);
+    const status = fixture.readStatus();
+    assert.equal(status.pbx.pbx_alpha.state, 'blocked');
+    assert.equal(status.pbx.pbx_alpha.reason, 'not_configured');
+    assert.equal(status.pbx.pbx_alpha.stages.relay, 'blocked');
+    assert.equal(status.pbx.pbx_beta.state, 'ready');
+    assert.equal(fixture.syncCount(), 1, 'the teardown of the retired PBX must still run');
 });
 
 test('configured PBX missing from the dashboard is blocked, others still run', (t) => {

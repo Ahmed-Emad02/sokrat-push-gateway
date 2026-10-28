@@ -946,9 +946,13 @@ def evaluate(config):
             else:
                 kind = "disabled"
 
-        if reason is not None and allocation is not None and global_reason is None:
-            # sync revokes every allocation that is not an enabled record in its
-            # input, so an unpinned/drifted allocation must stop the whole run.
+        if reason is not None and allocation is not None and record is not None and global_reason is None:
+            # A retired PBX (no control record) keeps its allocation slot on
+            # purpose: slots are never reused, and the sync tears the relay
+            # down (unit stopped, manifest entry dropped) for exactly that
+            # case. Only a live record whose pin is missing or drifted is a
+            # real drift that must stop the whole run before anything is
+            # touched.
             global_reason = reason
         entries[pbx_id] = {
             "kind": kind,

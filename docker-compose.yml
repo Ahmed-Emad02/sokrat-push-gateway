@@ -1,0 +1,33 @@
+services:
+  sokrat-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sokrat/push-gateway:latest
+    container_name: sokrat-gateway
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - NODE_ENV=production
+      - PORT=8095
+      - CONTROL_PORT=9096
+      - TENANT_PORT=9097
+      - GATEWAY_PUBLIC_HOST=${GATEWAY_PUBLIC_HOST:-127.0.0.1}
+      - GATEWAY_LISTEN_IP=${GATEWAY_LISTEN_IP:-0.0.0.0}
+      - GATEWAY_PRIVATE_IP=${GATEWAY_PRIVATE_IP:-127.0.0.1}
+      - DB_HOST=${DB_HOST:-127.0.0.1}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASS=${DB_PASS:-}
+      - DB_NAME=${DB_NAME:-asterisk}
+      - FCM_ENABLED=${FCM_ENABLED:-true}
+      - APNS_ENABLED=${APNS_ENABLED:-false}
+    volumes:
+      - /etc/sokrat:/etc/sokrat
+      - /var/lib/sokrat-gateway:/var/lib/sokrat-gateway
+      - /var/lib/sokrat-tenant-provisioning:/var/lib/sokrat-tenant-provisioning
+      - /var/log/sokrat:/var/log/sokrat
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

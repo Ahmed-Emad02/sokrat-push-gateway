@@ -18,7 +18,10 @@ rm -f /etc/nginx/sites-enabled/default
 chown -R sokrat-push:sokrat-push /var/lib/sokrat-gateway
 chmod 0700 /var/lib/sokrat-gateway
 
-chown -R root:root /etc/sokrat
+# /etc/sokrat is a host bind mount. Never recurse here: per-file ownership such
+# as the group-readable FCM service account must survive container restarts.
+mkdir -p /etc/sokrat/ssh /etc/sokrat/turn
+chown root:root /etc/sokrat
 chmod 0755 /etc/sokrat
 chmod 0700 /etc/sokrat/ssh
 

@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        SOKRAT_UID: ${SOKRAT_UID:-999}
+        SOKRAT_GID: ${SOKRAT_GID:-999}
     image: sokrat/push-gateway:latest
     container_name: sokrat-gateway
     restart: unless-stopped

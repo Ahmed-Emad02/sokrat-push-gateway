@@ -183,19 +183,29 @@ mkdir -p /etc/sokrat/ssh \
          /var/lib/sokrat-tenant-provisioning \
          /var/log/sokrat
 
-if ! id -u sokrat-push &>/dev/null; then
-    groupadd -g 999 sokrat-push 2>/dev/null || true
-    useradd -u 999 -g 999 -s /usr/sbin/nologin -d /opt/sokrat-push-gateway sokrat-push 2>/dev/null || true
+# Dedicated service account. GIDs are chosen dynamically because low system
+# GIDs such as 999 are frequently already taken (systemd-journal on Ubuntu).
+if ! getent group sokrat-push > /dev/null; then
+    groupadd --system sokrat-push
 fi
+SOKRAT_GID=$(getent group sokrat-push | cut -d: -f3)
+if ! id -u sokrat-push > /dev/null 2>&1; then
+    useradd --system -g "$SOKRAT_GID" -s /usr/sbin/nologin \
+        -d /opt/sokrat-push-gateway sokrat-push
+fi
+SOKRAT_UID=$(id -u sokrat-push)
+SOKRAT_GID=$(id -g sokrat-push)
+export SOKRAT_UID SOKRAT_GID
+echo -e "Service account sokrat-push: uid=${SOKRAT_UID} gid=${SOKRAT_GID}"
 
-chown -R 999:999 /var/lib/sokrat-gateway
+chown -R "${SOKRAT_UID}:${SOKRAT_GID}" /var/lib/sokrat-gateway
 chmod 0700 /var/lib/sokrat-gateway
 
 chown -R root:root /etc/sokrat
 chmod 0755 /etc/sokrat
 chmod 0700 /etc/sokrat/ssh
 
-chown root:999 /var/lib/sokrat-tenant-provisioning
+chown "root:${SOKRAT_GID}" /var/lib/sokrat-tenant-provisioning
 chmod 0750 /var/lib/sokrat-tenant-provisioning
 
 echo -e "${GREEN}[5/8] Writing Production Environment & Configs...${NC}"
@@ -254,6 +264,8 @@ GATEWAY_HTTP_PORT=${HTTP_PORT}
 GATEWAY_WS_PORT=${WS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
+SOKRAT_UID=${SOKRAT_UID}
+SOKRAT_GID=${SOKRAT_GID}
 EOF
 chmod 0600 .env
 

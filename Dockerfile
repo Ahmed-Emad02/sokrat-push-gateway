@@ -37,8 +37,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -g 999 sokrat-push && \
-    useradd -u 999 -g sokrat-push -s /usr/sbin/nologin -d /opt/sokrat-push-gateway sokrat-push
+ARG SOKRAT_UID=999
+ARG SOKRAT_GID=999
+
+RUN groupadd -g ${SOKRAT_GID} sokrat-push && \
+    useradd -u ${SOKRAT_UID} -g ${SOKRAT_GID} -s /usr/sbin/nologin -d /opt/sokrat-push-gateway sokrat-push
 
 RUN mkdir -p /opt/sokrat-push-gateway \
              /usr/local/lib/sokrat-tenant-provisioning \

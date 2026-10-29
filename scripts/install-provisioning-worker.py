@@ -27,6 +27,8 @@ FILES = (
 )
 UNITS = ('sokrat-tenant-provisioning.service', 'sokrat-tenant-provisioning.timer',
          'sokrat-tenant-onboarding.service')
+TIMER = 'sokrat-tenant-provisioning.timer'
+ONBOARDING = 'sokrat-tenant-onboarding.service'
 
 
 def safe_target(path):
@@ -89,18 +91,31 @@ def main(argv=None):
         safe_target(destination)
     if not args.apply:
         print('Dry-run: validated root bundle and systemd destinations; no writes.')
-        print('Timer will remain disabled until explicitly enabled by the operator.')
+        print('Dry-run does not change unit states or enable the timer.')
         return 0
     if os.geteuid() != 0:
         raise ValueError('--apply requires root')
-    # Do not replace code while a provisioning job may be running. Stop only
-    # this dedicated worker/timer; never restart the call runtime or Asterisk.
-    for unit in reversed(UNITS):
+    # Snapshot all states before stopping anything. Never enable units as part of
+    # promotion: only restore units that were already active after it succeeds.
+    restore = []
+    loaded_units = []
+    for unit in (TIMER, UNITS[0], ONBOARDING):
         loaded = subprocess.run(['systemctl', 'show', unit, '--property=LoadState', '--value'],
                                 check=True, capture_output=True, text=True, timeout=30)
         if loaded.stdout.strip() != 'not-found':
-            subprocess.run(['systemctl', 'stop', unit], check=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+            loaded_units.append(unit)
+            if unit in (TIMER, ONBOARDING):
+                state = subprocess.run(['systemctl', 'show', unit, '--property=ActiveState', '--value'],
+                                       check=True, capture_output=True, text=True, timeout=30)
+                if state.stdout.strip() not in ('active', 'inactive', 'failed'):
+                    raise ValueError('unit state is changing; retry promotion')
+                if state.stdout.strip() == 'active':
+                    restore.append(unit)
+    # Stop the timer first so it cannot start another job during promotion.
+    # Never restart the call runtime or Asterisk.
+    for unit in loaded_units:
+        subprocess.run(['systemctl', 'stop', unit], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
     # Refuse replacement if a manual invocation still holds the worker lock.
     lock_dir = Path('/run/sokrat-tenant-provisioning')
     safe_target(lock_dir)
@@ -115,6 +130,11 @@ def main(argv=None):
     # Hold the descriptor in a context so failed backup/promotion closes it too.
     with os.fdopen(lock_fd, 'r+b', closefd=True):
         promote(installs)
+    # Do not restart the oneshot worker directly: its timer will run it normally.
+    # A failure during promotion intentionally leaves stopped units stopped.
+    for unit in reversed(restore):
+        subprocess.run(['systemctl', 'start', unit], check=True, timeout=30)
+    print('Restored previously active onboarding and timer units; no units enabled.')
     return 0
 
 
@@ -135,15 +155,15 @@ def promote(installs):
     for destination, payload, mode in installs:
         atomic_install(destination, payload, mode)
     subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=30)
-    print('Installed root-owned provisioning bundle. Timer is stopped.')
+    print('Installed root-owned provisioning bundle.')
     print('Prior files backed up in ' + str(backup))
-    print('Configure authorized access before enabling sokrat-tenant-provisioning.timer.')
+    print('Previously inactive units remain stopped; configure authorized access before enabling the timer.')
 
 
 if __name__ == '__main__':
     try:
         sys.exit(main())
     except (OSError, ValueError, SyntaxError, subprocess.SubprocessError):
-        print('Provisioning bundle installation refused or failed; timer was not enabled.',
+        print('Provisioning bundle installation refused or failed; check timer and onboarding unit states.',
               file=sys.stderr)
         sys.exit(2)

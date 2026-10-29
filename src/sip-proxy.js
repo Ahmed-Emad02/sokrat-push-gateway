@@ -54,7 +54,8 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
                     if (!alive) { client.terminate(); upstream.terminate(); return; }
                     alive = false; client.ping();
                 };
-                const close = () => {
+                const close = (why) => {
+                    console.warn(`[sip-proxy][${route.extension}] close: ${why || 'unknown'}`);
                     sessions.delete(session);
                     client.terminate(); upstream.terminate();
                 };
@@ -62,8 +63,8 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
                 const incomingDialogs = new Map();
                 let queued = 0;
                 const send = (target, data, binary) => {
-                    if (target.bufferedAmount > 1024 * 1024) return close();
-                    if (target.readyState === WebSocket.OPEN) target.send(data, { binary }, err => { if (err) close(); });
+                    if (target.bufferedAmount > 1024 * 1024) return close('buffer_overflow');
+                    if (target.readyState === WebSocket.OPEN) target.send(data, { binary }, err => { if (err) close('send_error: ' + (err?.message || 'unknown')); });
                 };
                 client.on('message', (data, binary) => {
                     // Bind all client-originated requests to the assigned
@@ -71,33 +72,41 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
                     const message = data.toString().replace(/^(?:\r\n)+/, '');
                     if (message === '') { send(upstream, data, binary); return; }
                     const split = message.indexOf('\r\n\r\n');
-                    if (split < 0) return close();
+                    if (split < 0) return close('no_crlfcrlf');
                     const headerBlock = message.slice(0, split);
                     const lengths = [...headerBlock.matchAll(/^(?:Content-Length|l):\s*(\d+)\s*$/gmi)];
                     const bodyLength = Buffer.byteLength(message.slice(split + 4));
-                    if (lengths.length > 1 || bodyLength !== (lengths.length ? Number(lengths[0][1]) : 0)) return close();
-                    if (!/^(?:[A-Z]+\s+sips?:\S+\s+SIP\/2\.0|SIP\/2\.0\s+\d{3}[^\r\n]*)\r\n/.test(message)) return close();
+                    if (lengths.length > 1 || bodyLength !== (lengths.length ? Number(lengths[0][1]) : 0)) return close(`content_length_mismatch: declared=${lengths[0]?.[1]} body=${bodyLength}`);
+                    if (!/^(?:[A-Z]+\s+sips?:\S+\s+SIP\/2\.0|SIP\/2\.0\s+\d{3}[^\r\n]*)\r\n/.test(message)) return close('bad_sip_format: ' + message.slice(0, 40));
                     if (/^[A-Z]+\s+sips?:\S+\s+SIP\/2\.0\r?\n/.test(message)) {
                         const headers = message.split(/\r?\n\r?\n/, 1)[0].replace(/\r?\n[ \t]+/g, ' ');
                         const fromHeaders = [...headers.matchAll(/^(?:From|f):[ \t]*(.*)$/gmi)];
                         const from = fromHeaders.length === 1 && /(?:<|^)sips?:([^@>\s]+)@/i.exec(fromHeaders[0][1]);
+                        const toHeaders = [...headers.matchAll(/^(?:To|t):[ \t]*(.*)$/gmi)];
+                        const to = toHeaders.length === 1 && /(?:<|^)sips?:([^@>\s]+)@/i.exec(toHeaders[0][1]);
                         const callIds = [...headers.matchAll(/^(?:Call-ID|i):[ \t]*([^\r\n]+)$/gmi)];
                         const incoming = callIds.length === 1 && incomingDialogs.get(callIds[0][1].trim());
-                        // In an incoming SIP dialog the caller remains From,
-                        // even on BYE/re-INVITE originated by the called client.
-                        // Only allow that identity for a dialog observed from
-                        // the authenticated upstream; REGISTER is never exempt.
+                        // In an incoming SIP dialog observed from the authenticated upstream,
+                        // an in-dialog request (such as BYE or re-INVITE) originated by the
+                        // called client has a To header with tag= pointing to the caller (incoming).
+                        // The From header may contain the route extension OR the client's contact URI user.
+                        // For any client-originated request outside an incoming dialog (like outgoing INVITE/REGISTER),
+                        // From MUST match route.extension.
                         const incomingRequest = !/^REGISTER\s/.test(message) && incoming &&
-                            /^To:[^\r\n]*;\s*tag=/mi.test(headers) && from && from[1] === incoming;
-                        if (!from || (from[1] !== route.extension && !incomingRequest)) return close();
+                            /^(?:To|t):[^\r\n]*;\s*tag=/mi.test(headers) && to && to[1] === incoming;
+                        const validFrom = from && (from[1] === route.extension || incomingRequest);
+                        if (!validFrom) {
+                            console.warn(`[sip-proxy][${route.extension}] rejected message: ${message.split('\r\n')[0]} | From: ${fromHeaders[0]?.[1]} | To: ${toHeaders[0]?.[1]}`);
+                            return close(`from_mismatch: from=${from?.[1]} expected=${route.extension} incoming=${incoming}`);
+                        }
                         for (const auth of headers.matchAll(/^(?:Proxy-Authorization|Authorization):[ \t]*(.*)$/gmi)) {
                             const user = /\busername\s*=\s*"([^"]*)"/i.exec(auth[1]);
-                            if (!user || user[1] !== route.extension) return close();
+                            if (!user || user[1] !== route.extension) return close('auth_username_mismatch');
                         }
                     }
                     if (upstream.readyState === WebSocket.CONNECTING) {
                         queued += data.length;
-                        if (queued > 256 * 1024) return close();
+                        if (queued > 256 * 1024) return close('queue_overflow');
                         queue.push([data, binary]);
                     } else send(upstream, data, binary);
                 });
@@ -112,8 +121,10 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
                     }
                     send(client, data, binary);
                 });
-                client.on('close', close); upstream.on('close', close);
-                client.on('error', close); upstream.on('error', close);
+                client.on('close', (code, reason) => close(`client_close: code=${code} reason=${reason}`));
+                upstream.on('close', (code, reason) => close(`upstream_close: code=${code} reason=${reason}`));
+                client.on('error', err => close('client_error: ' + (err?.message || 'unknown')));
+                upstream.on('error', err => close('upstream_error: ' + (err?.message || 'unknown')));
             });
         } catch (_) {
             if (!socket.destroyed) socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
@@ -123,9 +134,13 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
         for (const session of sessions) {
             try {
                 if (!await isAuthorized(session.device, session.route, session.token)) {
+                    console.warn(`[sip-proxy][${session.route?.extension}] terminated: authorization_revoked`);
                     session.client.terminate(); session.upstream.terminate();
                 } else session.heartbeat();
-            } catch (_) { session.client.terminate(); session.upstream.terminate(); }
+            } catch (err) {
+                console.warn(`[sip-proxy][${session.route?.extension}] terminated: heartbeat_exception:`, err?.message);
+                session.client.terminate(); session.upstream.terminate();
+            }
         }
     }, 10000);
     timer.unref();

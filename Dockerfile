@@ -90,7 +90,7 @@ COPY docker/nginx-gateway.conf.template /etc/nginx/templates/sokrat.conf.templat
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-EXPOSE 80 8088 8095 9096 9097 3478/tcp 3478/udp 3479/tcp 3479/udp
+EXPOSE 80 8002 8088 8095 9096 9097 3478/tcp 3478/udp 3479/tcp 3479/udp
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

@@ -2,26 +2,35 @@
 const net = require('node:net');
 const dns = require('node:dns').promises;
 
+function isDisallowedIp(ipStr) {
+    if (net.isIP(ipStr) !== 4) return true;
+    const parts = ipStr.split('.').map(Number);
+    if (parts[0] === 0 || parts[0] === 127) return true; // zero & loopback
+    if (parts[0] === 169 && parts[1] === 254) return true; // link-local
+    if (parts[0] >= 224) return true; // multicast & reserved
+    return false;
+}
+
 async function resolvePbxAddress(value, lookup = dns.lookup) {
     const address = String(value || '').trim().toLowerCase().replace(/\.$/, '');
-    const invalid = () => Object.assign(new Error('Enter a Tailscale IPv4 or a hostname resolving only to one Tailscale IPv4. Public addresses, URLs and ambiguous hosts are not supported for automatic setup.'), { status: 400 });
+    const invalid = (msg) => Object.assign(new Error(msg || 'Enter a valid IP address or domain.'), { status: 400 });
     if (!address || address.length > 253 || !/^[a-z0-9.-]+$/.test(address) || address.split('.').some(label => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) throw invalid();
     let hosts;
-    if (net.isIP(address) === 4) hosts = [address];
-    else {
+    if (net.isIP(address) === 4) {
+        if (isDisallowedIp(address)) throw invalid('Loopback, link-local, multicast and reserved IP addresses are not supported.');
+        hosts = [address];
+    } else {
         let timer;
         try {
             const answers = await Promise.race([lookup(address, { all: true }), new Promise((_, reject) => {
-                timer = setTimeout(() => reject(invalid()), 3000);
+                timer = setTimeout(() => reject(invalid('DNS lookup timed out')), 3000);
             })]);
-            hosts = [...new Set(answers.map(answer => answer.address))];
-        } catch { throw invalid(); }
+            hosts = [...new Set(answers.filter(a => a.family === 4).map(answer => answer.address))];
+        } catch { throw invalid('Could not resolve domain name.'); }
         finally { clearTimeout(timer); }
     }
-    if (hosts.length !== 1 || net.isIP(hosts[0]) !== 4) throw invalid();
+    if (hosts.length !== 1 || isDisallowedIp(hosts[0])) throw invalid('Enter a domain resolving to exactly one valid IPv4 address.');
     const host = hosts[0];
-    const parts = host.split('.').map(Number);
-    if (parts[0] !== 100 || parts[1] < 64 || parts[1] > 127) throw invalid();
     return { host, wsURL: `ws://${host}:8088/ws`, apiURL: `http://${host}:8080`, mediaIps: host };
 }
 

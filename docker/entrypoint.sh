@@ -15,25 +15,15 @@ envsubst '${GATEWAY_HTTP_PORT} ${GATEWAY_WS_PORT}' \
 ln -sf /etc/nginx/sites-available/sokrat /etc/nginx/sites-enabled/sokrat
 rm -f /etc/nginx/sites-enabled/default
 
-chown -R sokrat-push:sokrat-push /var/lib/sokrat-gateway
-chmod 0700 /var/lib/sokrat-gateway
-
-# /etc/sokrat is a host bind mount. Never recurse here: per-file ownership such
-# as the group-readable FCM service account must survive container restarts.
+# Host bind mounts are provisioned by the installer. Do not change their
+# ownership or modes on startup: upgrades must preserve operator permissions.
 mkdir -p /etc/sokrat/ssh /etc/sokrat/turn
-chown root:root /etc/sokrat
-chmod 0755 /etc/sokrat
-chmod 0700 /etc/sokrat/ssh
-
-chown root:sokrat-push /var/lib/sokrat-tenant-provisioning
-chmod 0750 /var/lib/sokrat-tenant-provisioning
 
 mkdir -p /run/sokrat-tenant-onboarding /run/sokrat-tenant-provisioning /run/sokrat-turn
 chown root:sokrat-push /run/sokrat-tenant-onboarding
 chmod 0750 /run/sokrat-tenant-onboarding
 
 mkdir -p /var/log/sokrat /var/log/supervisor
-chown -R root:root /var/log/sokrat
 
 if [ ! -f "/var/lib/sokrat-gateway/control.json" ]; then
     echo "[entrypoint] Initializing empty control store..."

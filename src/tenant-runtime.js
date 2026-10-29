@@ -15,7 +15,8 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         const pbx = device && control.store.getPbx(device.pbxId);
         if (!device || !pbx?.enabled) return null;
         return { deviceId: device.id, deviceUuid: device.deviceUuid,
-            pbxId: pbx.id, extension: device.extension, wsUrl: pbx.wsURL, apiUrl: pbx.apiURL };
+            pbxId: pbx.id, extension: device.extension, wsUrl: pbx.wsURL, apiUrl: pbx.apiURL,
+            authorizationRevision: device.authorizationRevision || 0 };
     }
     async function authorize(deviceId, token) {
         if (!control.store.verifyDeviceSecret(deviceId, token).ok) return null;
@@ -52,7 +53,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             const route = await authorizeDevice(req);
             if (!route) return res.status(403).json({ error: 'Device approval required' });
             const token = req.get('Authorization').slice(7);
-            const ticket = tickets.issue(route.deviceId, token);
+            const ticket = tickets.issue(route.deviceId, token, route);
             return ticket ? res.json({ ticket, expiresIn: 30 }) : res.status(429).json({ error: 'Ticket limit reached' });
         } catch (_) { return res.status(503).json({ error: 'Ticket unavailable' }); }
     });
@@ -65,7 +66,8 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             return attachSipProxy(server, { authorize, consumeTicket: tickets.consume,
                 isAuthorized: async (id, previous, token) => {
                     const current = await authorize(id, token);
-                    return !!current && current.pbxId === previous.pbxId && current.extension === previous.extension && current.wsUrl === previous.wsUrl;
+                    return !!current && current.pbxId === previous.pbxId && current.extension === previous.extension
+                        && current.wsUrl === previous.wsUrl && current.authorizationRevision === previous.authorizationRevision;
                 } });
         }
     };

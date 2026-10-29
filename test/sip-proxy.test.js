@@ -29,6 +29,18 @@ test('SIP proxy fails closed, forwards approved sessions and blocks extension su
         const response = 'SIP/2.0 200 OK\r\nFrom: <sip:caller@gateway>\r\n\r\n';
         client.send(response);
         assert.equal((await once(client, 'message'))[0].toString(), response);
+
+        // Incoming dialog test: upstream sends INVITE, client replies with BYE with ephemeral contact URI
+        const invite = 'INVITE sip:fixture@gateway SIP/2.0\r\nFrom: "Caller" <sip:102@gateway>;tag=t1\r\nCall-ID: test-call-123\r\n\r\n';
+        // Send from upstream to proxy/client
+        for (const ws of upstream.clients) ws.send(invite);
+        assert.equal((await once(client, 'message'))[0].toString(), invite);
+
+        // Client hangs up with BYE where From is ephemeral contact user (e.g. n45ubo3e) and To is caller (102)
+        const bye = 'BYE sip:102@gateway SIP/2.0\r\nFrom: <sip:n45ubo3e@gateway>;tag=t2\r\nTo: "Caller" <sip:102@gateway>;tag=t1\r\nCall-ID: test-call-123\r\n\r\n';
+        client.send(bye);
+        assert.equal((await once(client, 'message'))[0].toString(), bye);
+
         client.send('REGISTER sip:gateway SIP/2.0\r\nFrom: <sip:other@gateway>\r\n\r\n');
         await once(client, 'close');
     } finally {

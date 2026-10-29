@@ -34,8 +34,12 @@ def validate_request(req):
     if not isinstance(req, dict) or set(req) - {'action', 'host', 'username', 'password', 'fingerprint', 'pbxId'}:
         raise ValueError('request')
     host = req.get('host')
-    if not isinstance(host, str) or str(ipaddress.ip_address(host)) != host or ipaddress.ip_address(host) not in ipaddress.ip_network('100.64.0.0/10'):
-        raise ValueError('Tailscale IPv4 required')
+    try:
+        ip = ipaddress.ip_address(host)
+    except Exception:
+        raise ValueError('valid IPv4 required')
+    if ip.version != 4 or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        raise ValueError('valid unicast IPv4 required')
     if req.get('username') != 'root' or req.get('action') not in ('probe', 'enroll'):
         raise ValueError('root SSH required')
     if req['action'] == 'enroll':

@@ -57,6 +57,12 @@
  * definition in JavaScript would be a cross-language dependency we do not want.
  * Identity freshness is enforced by `capturedUpdatedAt` plus the two-minute
  * staleness bound, not by the fingerprint.
+ *
+ * Schema 1's hook stage only verifies that the sender is visible in Asterisk;
+ * it does not verify that an extension call invokes it or waits for a mobile
+ * contact. The worker can reuse an old ready result without rerunning the hook
+ * adapter. Therefore neither fresh nor cached schema 1 results prove wake
+ * readiness. The API reports that limitation independently of the snapshot.
  */
 
 const fs = require('node:fs');
@@ -339,7 +345,7 @@ async function getProvisioningStatus(options = {}) {
         }
 
         // Never claim "ready" for a snapshot that is stale, pending or absent.
-        const effectiveState = reconciliation === 'current'
+        const infrastructureState = reconciliation === 'current'
             ? entry.state
             : document.status === 'unavailable'
                 ? 'unavailable'
@@ -347,12 +353,20 @@ async function getProvisioningStatus(options = {}) {
                     ? 'not_configured'
                     : reconciliation;
 
+        // No supported extension-call adapter or wake evidence contract exists
+        // yet. Do not trust additional fields in the schema 1 snapshot to lift
+        // this guard. In particular, an installed sender is not a call path.
+        const effectiveState = infrastructureState === 'ready' ? 'blocked' : infrastructureState;
+        const reason = entry.state === 'ready' ? 'wake_unverified' : entry.reason;
+
         return {
             id,
-            state: entry.state,
+            state: entry.state === 'ready' ? 'blocked' : entry.state,
+            infrastructureState: entry.state,
             effectiveState,
             stages: entry.stages,
-            reason: entry.reason,
+            reason,
+            wake: 'unverified',
             fingerprint: entry.fingerprint,
             reconciliation
         };

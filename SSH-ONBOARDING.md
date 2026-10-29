@@ -80,6 +80,11 @@ The adapter also repairs the older installer's unreadable `root:root 0640`
 dialplan to `root:asterisk 0640`, then verifies the loaded context. This does not
 loosen the separate credential-bearing hook configuration.
 
+The hook check proves only that the push sender is loaded, not that extension
+calls invoke it or can reach a newly registered phone. Push-to-wake remains
+unverified; see `PBX-WAKE-COMPATIBILITY.md` for the fail-closed diagnostic and
+readiness distinction.
+
 If a later stage fails, an added authorized key may remain on the PBX. Retry is
 idempotent, not a cross-host atomic rollback. Retiring access requires revoking
 the dedicated key on the PBX. PBX responses are treated as untrusted discovery

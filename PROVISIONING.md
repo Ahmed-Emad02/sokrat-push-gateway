@@ -69,10 +69,15 @@ The installer (owned by the deployment agent) copies:
 /etc/systemd/system/sokrat-tenant-provisioning.{service,timer}
 ```
 
-It stops only these units, backs up prior files under
+It stops only these units (timer first), backs up prior files under
 `/var/backups/sokrat-gateway/provisioning-*`, runs `systemctl daemon-reload`,
-and **does not enable the timer**. It refuses to promote while a manual run holds
-the worker lock.
+and **does not enable the timer**. After successful promotion it restarts the
+onboarding service and timer only if each was already active; it never directly
+starts the oneshot worker. On a failed promotion, stopped units remain stopped
+and an operator must inspect and recover them. It refuses to promote while a
+manual run holds the worker lock or while either persistent unit is changing state.
+Restoring the timer preserves reconciliation, but does not establish that a PBX
+call path invokes push or that mobile wake works.
 
 The adapters are trusted root executables. They are referenced by the root
 config (`firewallAdapter` globally, `hookAdapter` per PBX) and are the explicit

@@ -145,12 +145,14 @@ test('valid 0600 snapshot returns only sanitized enumerated fields', async (t) =
     assert.equal(result.pbx.length, 1);
     const entry = result.pbx[0];
     assert.deepEqual(Object.keys(entry).sort(), [
-        'effectiveState', 'fingerprint', 'id', 'reason', 'reconciliation', 'stages', 'state'
+        'effectiveState', 'fingerprint', 'id', 'infrastructureState', 'reason', 'reconciliation', 'stages', 'state', 'wake'
     ]);
-    assert.equal(entry.state, 'ready');
-    assert.equal(entry.effectiveState, 'ready');
+    assert.equal(entry.state, 'blocked');
+    assert.equal(entry.infrastructureState, 'ready');
+    assert.equal(entry.effectiveState, 'blocked');
     assert.equal(entry.reconciliation, 'current');
-    assert.equal(entry.reason, 'ready');
+    assert.equal(entry.reason, 'wake_unverified');
+    assert.equal(entry.wake, 'unverified');
     assert.equal(entry.fingerprint, 'a'.repeat(64));
     assert.deepEqual(entry.stages, { relay: 'ready', firewall: 'ready', hook: 'ready' });
 
@@ -190,6 +192,26 @@ test('unknown enum values degrade to safe enumerated values', async (t) => {
     assert.deepEqual(entry.stages, { relay: 'ready', firewall: 'unknown', hook: 'unknown' });
     assert.equal(entry.fingerprint, null);
     assert.ok(!JSON.stringify(result).includes('/etc/shadow'));
+});
+
+test('sender visibility or forged snapshot fields cannot lift the wake readiness guard', async (t) => {
+    const dir = await workspace(t);
+    const updatedAt = new Date().toISOString();
+    const entry = readyEntry(updatedAt, {
+        wake: 'ready', wakeReady: true,
+        stages: { relay: 'ready', firewall: 'ready', hook: 'ready', wake: 'ready' }
+    });
+    const filePath = await writeStatus(dir, documentFor('pbx_test', entry, updatedAt));
+    const result = await getProvisioningStatus({
+        filePath, ownerUids: [CURRENT_UID], pbx: [{ id: 'pbx_test', updatedAt }]
+    });
+    assert.equal(result.pbx[0].state, 'blocked');
+    assert.equal(result.pbx[0].infrastructureState, 'ready', 'worker infrastructure result remains visible');
+    assert.equal(result.pbx[0].stages.hook, 'ready', 'sender remains distinguishable');
+    assert.equal(result.pbx[0].effectiveState, 'blocked');
+    assert.equal(result.pbx[0].wake, 'unverified');
+    assert.equal(result.pbx[0].reason, 'wake_unverified');
+    assert.equal(Object.hasOwn(result.pbx[0].stages, 'wake'), false);
 });
 
 test('the agreed worker stage vocabulary is accepted verbatim', async (t) => {
@@ -278,7 +300,8 @@ test('a snapshot older than two minutes is stale and never reports ready', async
     assert.equal(result.status, 'stale');
     assert.equal(result.code, 'stale');
     assert.ok(result.ageMs > STALE_AFTER_MS);
-    assert.equal(result.pbx[0].state, 'ready', 'the reported value is preserved for context');
+    assert.equal(result.pbx[0].state, 'blocked');
+    assert.equal(result.pbx[0].infrastructureState, 'ready');
     assert.equal(result.pbx[0].reconciliation, 'stale');
     assert.equal(result.pbx[0].effectiveState, 'stale', 'ready must not be claimed when stale');
 });
@@ -323,7 +346,8 @@ test('a ready entry without capturedUpdatedAt is downgraded to pending', async (
         ownerUids: [CURRENT_UID],
         pbx: [{ id: pbx.id, updatedAt: pbx.updatedAt }]
     });
-    assert.equal(result.pbx[0].state, 'ready', 'reported value is preserved for context');
+    assert.equal(result.pbx[0].state, 'blocked');
+    assert.equal(result.pbx[0].infrastructureState, 'ready');
     assert.equal(result.pbx[0].reconciliation, 'pending');
     assert.equal(result.pbx[0].effectiveState, 'pending', 'old-schema ready must not be claimed');
 });
@@ -512,7 +536,9 @@ test('GET /api/provisioning is session protected, read-only and sanitized', asyn
     assert.equal(body.provisioning.status, 'ok');
     assert.equal(body.provisioning.pbx.length, 1);
     assert.equal(body.provisioning.pbx[0].id, pbx.id);
-    assert.equal(body.provisioning.pbx[0].effectiveState, 'ready');
+    assert.equal(body.provisioning.pbx[0].effectiveState, 'blocked');
+    assert.equal(body.provisioning.pbx[0].reason, 'wake_unverified');
+    assert.equal(body.provisioning.pbx[0].wake, 'unverified');
     assert.ok(!JSON.stringify(body).includes('SUPER-SECRET-TOKEN'));
     assert.ok(!JSON.stringify(body).includes('root:x:'));
 
@@ -538,6 +564,8 @@ test('dashboard renders provisioning with textContent and an explicit timestamp'
     assert.match(script, /\/api\/provisioning/);
     assert.match(script, /provisioningCell/);
     assert.match(script, /Last reconciliation/);
+    assert.match(script, /Push-to-wake call path not verified/);
+    assert.match(script, /name === 'hook' \? 'Push sender'/);
     assert.ok(!script.includes('.innerHTML'), 'provisioning values must be written as text');
     for (const state of ['ready', 'blocked', 'error', 'planned', 'not_configured', 'pending', 'stale', 'unavailable']) {
         assert.ok(script.includes(`${state}:`), `UI should label the ${state} state`);

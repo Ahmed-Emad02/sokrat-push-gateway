@@ -123,3 +123,69 @@ with patch.object(m, 'safe_target'), \\
 `], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
 });
+
+test('upgrade restores only previously active timer and onboarding after successful promotion', () => {
+    const script = path.resolve(__dirname, '../scripts/install-provisioning-worker.py');
+    const result = spawnSync('python3', ['-c', `
+import importlib.util, os, tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('installer', ${JSON.stringify(script)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+for active, expected in [({m.TIMER, m.ONBOARDING}, [m.ONBOARDING, m.TIMER]),
+                         ({m.TIMER}, [m.TIMER]), (set(), [])]:
+    events = []
+    def run(argv, **kwargs):
+        events.append(tuple(argv))
+        if '--property=LoadState' in argv: return SimpleNamespace(stdout='loaded\\n')
+        if '--property=ActiveState' in argv:
+            return SimpleNamespace(stdout=('active' if argv[2] in active else 'inactive') + '\\n')
+        return SimpleNamespace(stdout='')
+    with tempfile.TemporaryFile() as lock, \\
+         patch.object(m, 'reviewed_source', return_value=b'# reviewed'), \\
+         patch.object(m, 'safe_target'), patch.object(m.os, 'geteuid', return_value=0), \\
+         patch.object(Path, 'mkdir'), patch.object(m.os, 'open', side_effect=lambda *a: os.dup(lock.fileno())), \\
+         patch.object(m.subprocess, 'run', side_effect=run), \\
+         patch.object(m, 'promote', side_effect=lambda installs: events.append(('promote',))):
+        assert m.main(['--apply']) == 0
+    stops = [x[2] for x in events if x[:2] == ('systemctl', 'stop')]
+    starts = [x[2] for x in events if x[:2] == ('systemctl', 'start')]
+    assert stops == [m.TIMER, m.UNITS[0], m.ONBOARDING]
+    assert starts == expected
+    assert all(events.index(('systemctl', 'start', unit)) > events.index(('promote',)) for unit in starts)
+    assert not any(x[:2] == ('systemctl', 'enable') for x in events)
+`], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+});
+
+test('failed promotion leaves stopped units stopped and changing unit state refuses before stops', () => {
+    const script = path.resolve(__dirname, '../scripts/install-provisioning-worker.py');
+    const result = spawnSync('python3', ['-c', `
+import importlib.util, os, tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('installer', ${JSON.stringify(script)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+for state in ('active', 'activating'):
+    events = []
+    def run(argv, **kwargs):
+        events.append(tuple(argv))
+        if '--property=LoadState' in argv: return SimpleNamespace(stdout='loaded\\n')
+        if '--property=ActiveState' in argv: return SimpleNamespace(stdout=state + '\\n')
+        return SimpleNamespace(stdout='')
+    with tempfile.TemporaryFile() as lock, \\
+         patch.object(m, 'reviewed_source', return_value=b'# reviewed'), \\
+         patch.object(m, 'safe_target'), patch.object(m.os, 'geteuid', return_value=0), \\
+         patch.object(Path, 'mkdir'), patch.object(m.os, 'open', side_effect=lambda *a: os.dup(lock.fileno())), \\
+         patch.object(m.subprocess, 'run', side_effect=run), \\
+         patch.object(m, 'promote', side_effect=ValueError('promotion failed')):
+        try: m.main(['--apply'])
+        except ValueError: pass
+        else: raise AssertionError('expected refusal')
+    assert not any(x[:2] == ('systemctl', 'start') for x in events)
+    if state == 'activating': assert not any(x[:2] == ('systemctl', 'stop') for x in events)
+`], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+});

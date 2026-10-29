@@ -1,0 +1,10 @@
+<module>
+  <rawname>sokratwake</rawname>
+  <name>Sokrat Wake Prototype</name>
+  <version>0.0.1</version>
+  <type>setup</type>
+  <category>Connectivity</category>
+  <description>Experimental, fail-closed extension-call insertion point.</description>
+  <license>GPLv3+</license>
+  <depends><module>core</module></depends>
+</module>

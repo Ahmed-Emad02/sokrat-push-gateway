@@ -14,6 +14,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             if (req.body.extension && req.body.extension !== assignment.extension) return res.status(403).json({ error: 'Extension does not match approval' });
             await store.savePush({ deviceId: assignment.deviceId, deviceUuid: assignment.deviceUuid, pbxId: assignment.pbxId,
                 extension: assignment.extension, platform, token, voipToken: platform === 'ios' ? voipToken : '',
+                authorizationRevision: assignment.authorizationRevision || 0,
                 appVersion: String(appVersion || '').slice(0, 64), updatedAt: Date.now() });
             res.json({ success: true });
         } catch (error) { res.status(error.status === 409 ? 409 : 503).json({ error: error.status === 409 ? 'Push token already registered' : 'Device registry unavailable' }); }

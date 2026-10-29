@@ -78,13 +78,23 @@
         <p class="hint" id="pbx-provisioning-summary" role="status" aria-live="polite">
           Provisioning status has not been loaded yet.
         </p>
+        <div class="row-actions">
+          <button id="show-tunnel-token-btn" class="btn btn-ghost btn-sm" type="button">Show Tunnel Token</button>
+        </div>
+        <div id="tunnel-token-panel" class="notice notice-token" hidden>
+          <p class="hint">PBX Reverse TLS Tunnel Pre-Shared Key:</p>
+          <div class="secret-row">
+            <code id="tunnel-token-value"></code>
+            <button id="copy-tunnel-token-btn" class="btn btn-ghost btn-sm" type="button">Copy</button>
+          </div>
+        </div>
       </div>
       <form id="pbx-form" class="form-grid">
         <input type="hidden" id="pbx-id" value="">
         <div class="field">
           <label for="pbx-address">PBX address</label>
           <input id="pbx-address" name="address" type="text" maxlength="253" autocomplete="off" spellcheck="false" aria-describedby="pbx-address-hint">
-          <span id="pbx-address-hint" class="hint">Enter the server's Tailscale IP or a domain resolving to it. Connection settings are filled automatically.</span>
+          <span id="pbx-address-hint" class="hint">Enter the server's IP address or domain. Connection settings are filled automatically.</span>
           <label class="check" for="pbx-auto-address" hidden><input id="pbx-auto-address" name="autoAddress" type="checkbox" checked> Derive standard connection settings</label>
           <button id="pbx-resolve" class="btn btn-ghost" type="button" hidden>Resolve address</button>
           <output id="pbx-address-status" role="status" aria-live="polite"></output>
@@ -145,7 +155,7 @@
         </div>
         <div class="field field-inline" hidden>
           <label class="check" for="pbx-policy-required">
-            <input id="pbx-policy-required" name="extensionPolicyRequired" type="checkbox" checked>
+            <input id="pbx-policy-required" name="extensionPolicyRequired" type="checkbox">
             <span>Extension policy required</span>
           </label>
         </div>
@@ -213,12 +223,10 @@
       <div class="card-head">
         <h2 id="extensions-title">Extensions</h2>
         <p class="hint">
-          Register the extensions this gateway may serve and which platforms may bind devices to
-          them. Extensions belong to a managed PBX, and registering one does not approve a device;
-          every device is still reviewed in the pending list.
+          Extensions are registered automatically when you approve devices for a managed PBX.
         </p>
       </div>
-      <form id="ext-form" class="form-grid">
+      <form id="ext-form" class="form-grid" hidden>
         <input type="hidden" id="ext-id" value="">
         <div class="field">
           <label for="ext-pbx">PBX</label>
@@ -306,7 +314,7 @@
           <tbody id="ext-rows"></tbody>
         </table>
       </div>
-      <p id="ext-empty" class="empty" hidden>No extensions registered yet. Add one above.</p>
+      <p id="ext-empty" class="empty" hidden>No extensions registered yet. Extensions appear automatically when devices are approved.</p>
     </section>
 
     <section class="card" aria-labelledby="invite-title">

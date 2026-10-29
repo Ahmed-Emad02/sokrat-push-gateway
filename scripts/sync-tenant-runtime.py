@@ -146,7 +146,7 @@ RELAY_SPAN = 100
 MAX_SLOTS = min(LISTENER_SLOTS, (65535 - RELAY_BASE + 1) // RELAY_SPAN)
 
 # Ports owned by other Sokrat services on the gateway; never allocate them.
-RESERVED_LISTENER_PORTS = {22, 80, 443, 3478, 8088, 8095, 9096, 9097}
+RESERVED_LISTENER_PORTS = {22, 80, 443, 3478, 8002, 8088, 8095, 9096, 9097}
 
 PBX_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,18}$")

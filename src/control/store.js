@@ -372,6 +372,7 @@ function publicDevice(device) {
         reviewReason: device.reviewReason,
         pbxId: device.pbxId,
         extension: device.extension,
+        authorizationRevision: device.authorizationRevision || 0,
         secretIssuedAt: device.secretIssuedAt,
         hasSecret: Boolean(device.secretHash),
         lastSeenAt: device.lastSeenAt
@@ -665,6 +666,8 @@ class ControlStore {
                 reviewReason: record.reviewReason || null,
                 pbxId: record.pbxId || null,
                 extension: record.extension || null,
+                authorizationRevision: Number.isSafeInteger(record.authorizationRevision) && record.authorizationRevision >= 0
+                    ? record.authorizationRevision : 0,
                 secretHash: typeof record.secretHash === 'string' ? record.secretHash : null,
                 secretIssuedAt: isoOrNull(record.secretIssuedAt),
                 lastSeenAt: isoOrNull(record.lastSeenAt)
@@ -1095,6 +1098,9 @@ class ControlStore {
 
             const at = isoAt(this._now());
             Object.assign(record, next, { updatedAt: at });
+            if (next.management?.approvalStatus === 'retired') {
+                this._retirePbxAccess(draft, id, at, meta, 'pbx-retired');
+            }
             pushAudit(
                 draft,
                 {
@@ -1112,6 +1118,24 @@ class ControlStore {
         });
     }
 
+    _retirePbxAccess(draft, id, at, meta, reason) {
+        let revokedDevices = 0;
+        for (const device of draft.devices) {
+            if (device.pbxId !== id && !(device.status === 'pending' && device.suggestedPbxId === id)) continue;
+            if (device.status !== 'approved' && device.status !== 'pending') continue;
+            Object.assign(device, { status: 'revoked', secretHash: null,
+                reviewedAt: at, reviewedBy: sanitizeActor(meta.actor), reviewReason: reason });
+            revokedDevices += 1;
+        }
+        let revokedInvites = 0;
+        for (const token of draft.enrollmentTokens) {
+            if (token.pbxId !== id || token.revokedAt) continue;
+            token.revokedAt = at;
+            revokedInvites += 1;
+        }
+        return { revokedDevices, revokedInvites };
+    }
+
     removePbx(id, meta = {}) {
         return this._mutate((draft) => {
             const index = draft.pbx.findIndex((p) => p.id === id);
@@ -1120,23 +1144,7 @@ class ControlStore {
             draft.extensions = draft.extensions.filter(e => e.pbxId !== id);
             const at = isoAt(this._now());
 
-            let revokedDevices = 0;
-            for (const device of draft.devices) {
-                if (device.pbxId !== id) continue;
-                if (device.status !== 'approved' && device.status !== 'pending') continue;
-                device.status = 'revoked';
-                device.secretHash = null;
-                device.reviewedAt = at;
-                device.reviewedBy = sanitizeActor(meta.actor);
-                device.reviewReason = 'pbx-removed';
-                revokedDevices += 1;
-            }
-            let revokedInvites = 0;
-            for (const token of draft.enrollmentTokens) {
-                if (token.pbxId !== id || token.revokedAt) continue;
-                token.revokedAt = at;
-                revokedInvites += 1;
-            }
+            const { revokedDevices, revokedInvites } = this._retirePbxAccess(draft, id, at, meta, 'pbx-removed');
 
             pushAudit(
                 draft,
@@ -1387,6 +1395,10 @@ class ControlStore {
             const platform = normalizePlatform(input.platform);
             const deviceUuid = normalizeDeviceUuid(input.deviceUuid);
             const extension = normalizeExtension(input.extension);
+            const suggestedPbxId = optionalText(input.pbxId, 'pbxId', 64);
+            if (suggestedPbxId && !draft.pbx.some(p => p.id === suggestedPbxId)) {
+                throw fail('pbx_not_found', 'PBX not found', 404);
+            }
             const instanceId = optionalText(input.instanceId, 'instanceId', 128);
             const appVersion = optionalText(input.appVersion, 'appVersion', 40);
             const deviceName = optionalText(input.deviceName, 'deviceName', 80);
@@ -1414,8 +1426,33 @@ class ControlStore {
                         403
                     );
                 }
-                // Same claim, same device: refresh the review hints. An approved
-                // device keeps its approval; the device just calls /claim again.
+                // A claim belongs to one installation identity. Possession of it
+                // must not transfer an existing approval to another platform/UUID.
+                if (existing.platform !== platform || existing.deviceUuid !== deviceUuid) {
+                    throw fail('claim_identity_mismatch', 'Claim belongs to a different device identity', 409);
+                }
+                const assignmentChanged = existing.suggestedExtension !== extension
+                    || (suggestedPbxId && suggestedPbxId !== (existing.suggestedPbxId || existing.pbxId));
+                if (existing.status === 'approved' && assignmentChanged) {
+                    const pendingCount = draft.devices.filter(d => d.status === 'pending' && this._visibleDevice(d)).length;
+                    if (pendingCount >= this.limits.maxPendingDevices) {
+                        throw fail('pending_cap_reached', 'Pending device limit reached', 409);
+                    }
+                    // Account changes are new requests, never implicit approval.
+                    // Keep the claim for retry-safe polling but retire the old
+                    // credential and all tickets/sockets from its authorization.
+                    Object.assign(existing, {
+                        suggestedPbxId: suggestedPbxId || existing.suggestedPbxId || existing.pbxId,
+                        status: 'pending', pbxId: null, extension: null,
+                        secretHash: null, secretIssuedAt: null, claimRedeemedAt: null,
+                        reviewedAt: null, reviewedBy: null, reviewReason: null,
+                        authorizationRevision: (existing.authorizationRevision || 0) + 1
+                    });
+                    pushAudit(draft, { at, actor: `device:${platform}`, action: 'claim.reapproval_requested',
+                        target: existing.id, detail: `extension ${extension}` }, this.limits.auditEntries);
+                }
+                // Metadata-only retries preserve approval. Request identity
+                // changes above must pass through administrator review again.
                 Object.assign(existing, {
                     platform,
                     deviceUuid,
@@ -1426,6 +1463,7 @@ class ControlStore {
                     osVersion,
                     requestIp,
                     suggestedExtension: extension,
+                    ...(Object.hasOwn(input, 'pbxId') ? { suggestedPbxId } : {}),
                     lastSeenAt: at
                 });
                 if (existing.status === 'pending') {
@@ -1491,7 +1529,7 @@ class ControlStore {
                 osVersion,
                 requestIp,
                 enrollmentTokenId: null,
-                suggestedPbxId: null,
+                suggestedPbxId,
                 suggestedExtension: extension,
                 claimHash: digest,
                 claimExpiresAt: isoAt(now + this.limits.claimTtlMs),
@@ -1642,12 +1680,37 @@ class ControlStore {
                 throw fail('pbx_disabled', 'PBX is disabled; enable it before approving devices', 409);
             }
             const extension = normalizeExtension(input.extension);
+            const at = isoAt(this._now());
+            let policy = draft.extensions.find(e => e.pbxId === pbx.id && e.extension === extension);
+            if (!policy && pbx.management && !pbx.management.extensionPolicyRequired) {
+                policy = {
+                    id: `ext_${randomHex(8)}`,
+                    pbxId: pbx.id,
+                    extension,
+                    name: `Extension ${extension}`,
+                    status: 'enabled',
+                    maxDevices: 5,
+                    allowedPlatforms: ['android', 'desktop', 'chrome', 'ios'],
+                    createdAt: at,
+                    updatedAt: at,
+                };
+                draft.extensions.push(policy);
+                pushAudit(
+                    draft,
+                    {
+                        at,
+                        actor: meta.actor,
+                        action: 'extension.added',
+                        target: policy.id,
+                        detail: `${pbx.name} / ${extension} (auto-created on device approval)`
+                    },
+                    this.limits.auditEntries
+                );
+            }
             this._assertManagedAccess(draft, { ...device, extension }, pbx);
-            const policy = draft.extensions.find(e => e.pbxId === pbx.id && e.extension === extension);
             if (policy && draft.devices.filter(d => d.status === 'approved' && d.pbxId === pbx.id && d.extension === extension).length >= policy.maxDevices) {
                 throw fail('extension_device_limit', 'Extension device limit reached', 409);
             }
-            const at = isoAt(this._now());
 
             if (device.enrollmentMode === 'claim') {
                 if (this._claimExpired(device, this._now())) {
@@ -1785,7 +1848,9 @@ class ControlStore {
         if (!timingSafeEqualHex(device.secretHash, hashSecret(secret))) {
             return { ok: false };
         }
-        try { this._assertManagedAccess(this.state, device, this.state.pbx.find(p => p.id === device.pbxId)); }
+        const pbx = this.state.pbx.find(p => p.id === device.pbxId);
+        if (!pbx?.enabled) return { ok: false };
+        try { this._assertManagedAccess(this.state, device, pbx); }
         catch { return { ok: false }; }
         return { ok: true, device: publicDevice(device) };
     }
@@ -1796,7 +1861,9 @@ class ControlStore {
             (d) => d.id === deviceId && d.status === 'approved'
         );
         if (!device) return null;
-        try { this._assertManagedAccess(this.state, device, this.state.pbx.find(p => p.id === device.pbxId)); }
+        const pbx = this.state.pbx.find(p => p.id === device.pbxId);
+        if (!pbx?.enabled) return null;
+        try { this._assertManagedAccess(this.state, device, pbx); }
         catch { return null; }
         return publicDevice(device);
     }

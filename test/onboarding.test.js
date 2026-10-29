@@ -10,16 +10,18 @@ const express = require('express');
 const crypto = require('node:crypto');
 const { requestOnboarding, resolvePbxAddress } = require('../src/control/onboarding');
 
-test('one PBX address derives standard settings and pins hostnames to one Tailscale IPv4', async () => {
+test('one PBX address derives standard settings and pins hostnames to one IPv4', async () => {
     const direct = await resolvePbxAddress('100.64.0.12');
     assert.deepEqual(direct, { host: '100.64.0.12', wsURL: 'ws://100.64.0.12:8088/ws', apiURL: 'http://100.64.0.12:8080', mediaIps: '100.64.0.12' });
+    const ztDirect = await resolvePbxAddress('10.236.251.59');
+    assert.deepEqual(ztDirect, { host: '10.236.251.59', wsURL: 'ws://10.236.251.59:8088/ws', apiURL: 'http://10.236.251.59:8080', mediaIps: '10.236.251.59' });
     assert.deepEqual(await resolvePbxAddress('PBX.example.', async host => {
-        assert.equal(host, 'pbx.example'); return [{ address: '100.64.0.12', family: 4 }];
-    }), direct);
-    for (const address of ['127.0.0.1', '169.254.169.254', '192.0.2.1', '100.63.0.1', '100.128.0.1', 'http://pbx.example', 'pbx.example:22', '-option', 'x;id', '::1']) {
+        assert.equal(host, 'pbx.example'); return [{ address: '10.236.251.59', family: 4 }];
+    }), ztDirect);
+    for (const address of ['127.0.0.1', '169.254.169.254', '224.0.0.1', '0.0.0.0', 'http://pbx.example', 'pbx.example:22', '-option', 'x;id', '::1']) {
         await assert.rejects(resolvePbxAddress(address, async () => []));
     }
-    for (const answers of [[], [{ address: '192.0.2.1' }], [{ address: '100.64.0.12' }, { address: '100.64.0.13' }], [{ address: '100.64.0.12' }, { address: '::1' }]]) {
+    for (const answers of [[], [{ address: '127.0.0.1' }], [{ address: '100.64.0.12' }, { address: '100.64.0.13' }], [{ address: '100.64.0.12' }, { address: '::1' }]]) {
         await assert.rejects(resolvePbxAddress('pbx.example', async () => answers));
     }
 });
@@ -69,13 +71,13 @@ test('dashboard API always creates managed pending PBXs and rejects legacy or ma
         const created = await send('', 'POST', { ...base, name: `Fixture ${store.listPbx().length}`, management });
         assert.equal(created.status, 201);
         assert.equal(created.body.pbx.management.approvalStatus, 'pending');
-        assert.equal(created.body.pbx.management.extensionPolicyRequired, true);
+        assert.equal(created.body.pbx.management.extensionPolicyRequired, Boolean(management?.extensionPolicyRequired));
         const url = '/' + created.body.pbx.id;
         assert.equal((await send(url, 'PATCH', { management: null })).status, 400);
         assert.equal((await send(url, 'PATCH', { management: { approvalStatus: 'approved' } })).body.error, 'ssh_setup_required');
         const updated = await send(url, 'PATCH', { management: { extensionPolicyRequired: false } });
         assert.equal(updated.status, 200);
-        assert.equal(updated.body.pbx.management.extensionPolicyRequired, true);
+        assert.equal(updated.body.pbx.management.extensionPolicyRequired, false);
     }
 });
 
@@ -92,7 +94,7 @@ assert m.validate_request(enroll)=='100.64.0.12'
 try:m.validate_request({**enroll,'fingerprint':'invalid'})
 except ValueError:pass
 else:raise AssertionError('invalid optional fingerprint accepted')
-for patch in [{'host':'127.0.0.1'},{'host':'192.0.2.1'},{'host':'example.com'},{'host':'100.64.0.12;id'}, {'username':'-oProxyCommand=id'},{'command':'id'},{'password':'should-not-be-probed'}]:
+for patch in [{'host':'127.0.0.1'},{'host':'169.254.169.254'},{'host':'example.com'},{'host':'100.64.0.12;id'}, {'username':'-oProxyCommand=id'},{'command':'id'},{'password':'should-not-be-probed'}]:
  try:m.validate_request({**valid,**patch})
  except ValueError:pass
  else:raise AssertionError(patch)

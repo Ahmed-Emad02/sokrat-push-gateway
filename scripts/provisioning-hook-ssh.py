@@ -874,19 +874,30 @@ def ensure_dialplan_loaded(dialplan, reload_requested, stamp):
         return False
     source_text = source.decode('utf-8')
     headers = re.findall(r'^\s*\[([^\]\r\n]+)\][^\r\n]*$', source_text, re.M)
-    if (headers != ['sub-sokrat-push-send']
-            or re.search(r'^\s*(?:#|include\s*=>|switch\s*=>|eswitch\s*=>)', source_text, re.M | re.I)
+    allowed_contexts = {'sub-sokrat-push-send', 'macro-dial-one', 'sokrat-wake-dial',
+                        'macro-dial', 'sokrat-wake-group', 'sub-sokrat-push-hook'}
+    if (not set(headers).issubset(allowed_contexts) or 'sub-sokrat-push-send' not in headers
+            or re.search(r'^\s*(?:#|switch\s*=>|eswitch\s*=>)', source_text, re.M | re.I)
             or re.search(r'^\s*\[sub-sokrat-push-send\]', main_text + '\n' + custom_text, re.M)):
         fail('dialplan_include_unsafe', 'orphaned Sokrat file is not an isolated shared push context')
     if reload_requested is not True:
         fail('reload_required', 'reloadDialplan must be true before adding the shared push include')
-    ending = '\r\n' if '\r\n' in custom_text else '\n'
-    rendered = custom + (b'' if not custom or custom.endswith(b'\n') else ending.encode())
-    rendered += ('; Sokrat gateway shared push context' + ending
-                 + '#include extensions_sokrat.conf' + ending).encode('utf-8')
-    info = os.lstat(custom_path)
-    install(custom_path, rendered, info.st_mode & 0o7777, info.st_uid, info.st_gid, stamp,
-            allow_asterisk=True)
+
+    override_issabel = os.path.join(directory, 'extensions_override_issabelpbx.conf')
+    override_freepbx = os.path.join(directory, 'extensions_override_freepbx.conf')
+    target_include_path = override_issabel if os.path.isfile(override_issabel) else (
+        override_freepbx if os.path.isfile(override_freepbx) else custom_path
+    )
+    target_data = read_existing(target_include_path) or b''
+    target_text = target_data.decode('utf-8', 'replace')
+    if not includes(target_text, 'extensions_sokrat.conf'):
+        ending = '\r\n' if '\r\n' in target_text else '\n'
+        rendered = target_data + (b'' if not target_data or target_data.endswith(b'\n') else ending.encode())
+        rendered += ('; Sokrat gateway shared push context' + ending
+                     + '#include extensions_sokrat.conf' + ending).encode('utf-8')
+        info = os.lstat(target_include_path)
+        install(target_include_path, rendered, info.st_mode & 0o7777, info.st_uid, info.st_gid, stamp,
+                allow_asterisk=True)
     return True
 
 

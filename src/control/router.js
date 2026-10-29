@@ -371,6 +371,24 @@ function createControlRouter(options = {}) {
         });
     });
 
+    router.get('/api/tunnel-token', requireSession, (req, res) => {
+        const fs = require('node:fs');
+        const tokenPath = '/etc/sokrat/gateway-tunnel.token';
+        let token = '';
+        try {
+            if (fs.existsSync(tokenPath)) {
+                token = fs.readFileSync(tokenPath, 'utf8').trim();
+            } else if (process.env.GATEWAY_TUNNEL_TOKEN) {
+                token = process.env.GATEWAY_TUNNEL_TOKEN.trim();
+            } else if (fs.existsSync('/etc/frp/frps.toml')) {
+                const frpConf = fs.readFileSync('/etc/frp/frps.toml', 'utf8');
+                const m = frpConf.match(/auth\.token\s*=\s*["']([^"']+)["']/i);
+                if (m) token = m[1].trim();
+            }
+        } catch (_) {}
+        res.json({ success: true, token });
+    });
+
     // --- provisioning status (read-only worker snapshot) --------------------
 
     // The provisioning worker publishes its reconciliation snapshot to a private
@@ -463,7 +481,8 @@ function createControlRouter(options = {}) {
     }));
 
     router.post('/api/pbx', requireSession, requireCsrf, wrap(async (req, res) => {
-        const input = { ...req.body, management: { ...(req.body.management || {}), approvalStatus: 'pending', extensionPolicyRequired: true } };
+        const extensionPolicyRequired = req.body.management?.extensionPolicyRequired === true;
+        const input = { ...req.body, management: { ...(req.body.management || {}), approvalStatus: 'pending', extensionPolicyRequired } };
         const pbx = await store.addPbx(input, { actor: actorFor(req) });
         res.status(201).json({ success: true, pbx, limits: { ...store.limits } });
     }));
@@ -477,7 +496,9 @@ function createControlRouter(options = {}) {
             if (req.body.management.approvalStatus === 'approved' && current?.management?.approvalStatus !== 'approved') {
                 return res.status(400).json({ success: false, error: 'ssh_setup_required', message: 'Complete automatic SSH setup to approve this server.' });
             }
-            req.body.management.extensionPolicyRequired = true;
+            if (Object.hasOwn(req.body.management, 'extensionPolicyRequired')) {
+                req.body.management.extensionPolicyRequired = Boolean(req.body.management.extensionPolicyRequired);
+            }
         }
         const pbx = await store.updatePbx(String(req.params.id), req.body, {
             actor: actorFor(req)

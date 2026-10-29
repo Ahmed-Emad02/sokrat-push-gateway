@@ -25,6 +25,13 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# This is a first-install path, not an upgrader: it creates credentials and
+# changes host permissions. Never run those steps against an existing gateway.
+if [ -e /etc/sokrat/gateway-control.env ] || [ -e /etc/sokrat/gateway-runtime.env ]; then
+    echo -e "${RED}Existing gateway configuration found. Use the documented container upgrade path; this installer will not overwrite it.${NC}" >&2
+    exit 1
+fi
+
 # Detect distribution
 if [ -f /etc/os-release ]; then
     . /etc/os-release
@@ -82,6 +89,27 @@ if ! command -v python3 &> /dev/null; then
         apt-get update && apt-get install -y python3
     else
         yum install -y python3
+    fi
+fi
+
+# Ensure reverse tunnel binaries (frpc / frps) are installed on host
+if ! command -v frpc &> /dev/null || ! command -v frps &> /dev/null; then
+    echo -e "${YELLOW}Installing Sokrat Reverse Tunnel binaries (frpc / frps)...${NC}"
+    ARCH="amd64"
+    case "$(uname -m)" in
+        x86_64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+    esac
+    FRP_TMP="/tmp/frp_install"
+    rm -rf "$FRP_TMP" && mkdir -p "$FRP_TMP"
+    if curl -fsSL --connect-timeout 5 --max-time 30 -o "$FRP_TMP/frp.tar.gz" "https://github.com/fatedier/frp/releases/download/v0.71.1/frp_0.71.1_linux_${ARCH}.tar.gz" 2>/dev/null; then
+        tar -xzf "$FRP_TMP/frp.tar.gz" -C "$FRP_TMP"
+        install -m 0755 "$FRP_TMP"/frp_*/frpc /usr/local/bin/frpc
+        install -m 0755 "$FRP_TMP"/frp_*/frps /usr/local/bin/frps
+        rm -rf "$FRP_TMP"
+        echo -e "${GREEN}✓ Installed frpc and frps $(/usr/local/bin/frpc -v 2>/dev/null).${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not download frp binaries; tunnel tools can be installed later.${NC}"
     fi
 fi
 
@@ -201,7 +229,8 @@ echo -e "Service account sokrat-push: uid=${SOKRAT_UID} gid=${SOKRAT_GID}"
 chown -R "${SOKRAT_UID}:${SOKRAT_GID}" /var/lib/sokrat-gateway
 chmod 0700 /var/lib/sokrat-gateway
 
-chown -R root:root /etc/sokrat
+# Other Sokrat components may already own files under this shared directory.
+chown root:root /etc/sokrat
 chmod 0755 /etc/sokrat
 chmod 0700 /etc/sokrat/ssh
 
@@ -278,13 +307,15 @@ echo -e "${GREEN}[6/8] Opening Host Firewall Ports...${NC}"
 if command -v ufw > /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow "${HTTP_PORT}/tcp" > /dev/null
     ufw allow "${WS_PORT}/tcp" > /dev/null
+    ufw allow 8002/tcp > /dev/null
+    ufw allow 7000/tcp > /dev/null
     ufw allow 3478/tcp > /dev/null
     ufw allow 3478/udp > /dev/null
     ufw allow 3500:3654/tcp > /dev/null
     ufw allow 3500:3654/udp > /dev/null
-    echo -e "${GREEN}✓ UFW rules added for ${HTTP_PORT}, ${WS_PORT}, 3478 and 3500-3654.${NC}"
+    echo -e "${GREEN}✓ UFW rules added for ${HTTP_PORT}, ${WS_PORT}, 8002, 7000, 3478 and 3500-3654.${NC}"
 else
-    echo -e "${YELLOW}⚠ UFW is not active; ensure your provider firewall allows ${HTTP_PORT}, ${WS_PORT}, 3478 and 3500-3654.${NC}"
+    echo -e "${YELLOW}⚠ UFW is not active; ensure your provider firewall allows ${HTTP_PORT}, ${WS_PORT}, 8002, 7000, 3478 and 3500-3654.${NC}"
 fi
 
 echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
@@ -316,15 +347,14 @@ echo -e "${BLUE}================================================================
 echo -e "${GREEN}  Installation Complete! Sokrat Gateway Container is Running.      ${NC}"
 echo -e "${BLUE}===================================================================${NC}"
 echo -e "Public Web Ingress:      ${GREEN}${GATEWAY_URL}${NC}"
+echo -e "Control Dashboard:       ${GREEN}http://${PUBLIC_HOST}:8002/control/${NC}"
 echo -e "SIP WebSocket Ingress:   ${GREEN}ws://${PUBLIC_HOST}:${WS_PORT}/ws${NC}"
+echo -e "Reverse Tunnel Ingress:  ${GREEN}${PUBLIC_HOST}:7000 (TLS)${NC}"
 echo -e "CoTURN STUN/TURN:        ${GREEN}${PUBLIC_HOST}:3478 (UDP/TCP)${NC}"
 echo
-echo -e "${YELLOW}To access the private Admin Control Dashboard:${NC}"
-echo -e "1. Create an SSH tunnel from your local machine:"
-echo -e "   ${GREEN}ssh -L 9096:127.0.0.1:9096 root@${PUBLIC_HOST}${NC}"
-echo -e "2. Open your web browser to:"
-echo -e "   ${GREEN}http://localhost:9096/control/${NC}"
-echo -e "3. Log in with your admin password."
+echo -e "Access the Control Dashboard directly in your browser:"
+echo -e "   ${GREEN}http://${PUBLIC_HOST}:8002/control/${NC}"
+echo -e "Log in with your admin password."
 echo
 echo -e "Useful Commands:"
 echo -e "  View container status:  ${BLUE}docker compose ps${NC}"

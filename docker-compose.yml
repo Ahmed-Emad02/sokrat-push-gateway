@@ -13,7 +13,8 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8095
-      - CONTROL_PORT=9096
+      - CONTROL_PORT=${CONTROL_PORT:-8002}
+      - CONTROL_ALLOW_PUBLIC=true
       - TENANT_PORT=9097
       - GATEWAY_PUBLIC_HOST=${GATEWAY_PUBLIC_HOST:-127.0.0.1}
       - GATEWAY_HTTP_PORT=${GATEWAY_HTTP_PORT:-80}

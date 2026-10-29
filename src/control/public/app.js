@@ -100,7 +100,11 @@
         approvedRows: document.getElementById('approved-rows'),
         approvedEmpty: document.getElementById('approved-empty'),
         activityList: document.getElementById('activity-list'),
-        activityEmpty: document.getElementById('activity-empty')
+        activityEmpty: document.getElementById('activity-empty'),
+        showTunnelTokenBtn: document.getElementById('show-tunnel-token-btn'),
+        tunnelTokenPanel: document.getElementById('tunnel-token-panel'),
+        tunnelTokenValue: document.getElementById('tunnel-token-value'),
+        copyTunnelTokenBtn: document.getElementById('copy-tunnel-token-btn')
     };
 
     if (!refs.main || !refs.loginForm || !refs.pbxRows || !refs.extForm || !refs.extRows) return;
@@ -323,6 +327,7 @@
         firewall_failed: 'Firewall permit failed',
         hook_required: 'PBX hook required',
         hook_failed: 'PBX hook failed',
+        wake_unverified: 'Push-to-wake call path not verified',
         ready: 'Ready',
         planned: 'Planned',
         stale: 'Stale snapshot',
@@ -631,7 +636,8 @@
         const stages = PROVISIONING_STAGE_NAMES.map((name) => {
             const raw = entry.stages && typeof entry.stages === 'object' ? entry.stages[name] : undefined;
             const value = typeof raw === 'string' ? raw : 'unknown';
-            return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${labelFrom(PROVISIONING_STAGE_LABELS, value)}`;
+            const label = name === 'hook' ? 'Push sender' : `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+            return `${label} ${labelFrom(PROVISIONING_STAGE_LABELS, value)}`;
         }).join(' · ');
 
         const reconciliation = typeof entry.reconciliation === 'string' ? entry.reconciliation : 'unknown';
@@ -969,7 +975,7 @@
         refs.pbxForm.reset();
         invalidateAddress(); syncAddressMode();
         refs.pbxEnabled.checked = true;
-        refs.pbxPolicyRequired.checked = true;
+        refs.pbxPolicyRequired.checked = false;
         refs.sshEnable.checked = true;
         refs.sshPassword.required = true;
         refs.pbxSubmit.textContent = 'Add server';
@@ -1097,6 +1103,7 @@
         const allowed = Array.isArray(record.allowedPlatforms) ? record.allowedPlatforms : [];
         for (const field of PLATFORM_FIELDS) field.checked = allowed.includes(field.value);
         clearPlatformValidity();
+        refs.extForm.hidden = false;
         refs.extSubmit.textContent = 'Save extension';
         refs.extCancel.hidden = false;
         clearMessages();
@@ -1107,6 +1114,7 @@
     function resetExtensionForm() {
         editingExtensionId = null;
         refs.extForm.reset();
+        refs.extForm.hidden = true;
         refs.extId.value = '';
         refs.extPbx.disabled = false;
         refs.extNumber.disabled = false;
@@ -1413,6 +1421,34 @@
             refs.secretPanel.hidden = true;
             refs.secretValue.textContent = '';
         });
+
+        if (refs.showTunnelTokenBtn) {
+            refs.showTunnelTokenBtn.addEventListener('click', async () => {
+                if (!refs.tunnelTokenPanel.hidden) {
+                    refs.tunnelTokenPanel.hidden = true;
+                    refs.showTunnelTokenBtn.textContent = 'Show Tunnel Token';
+                    return;
+                }
+                try {
+                    const res = await api('/api/tunnel-token');
+                    if (res && res.token) {
+                        refs.tunnelTokenValue.textContent = res.token;
+                        refs.tunnelTokenPanel.hidden = false;
+                        refs.showTunnelTokenBtn.textContent = 'Hide Tunnel Token';
+                    } else {
+                        refs.tunnelTokenValue.textContent = 'No token configured';
+                        refs.tunnelTokenPanel.hidden = false;
+                    }
+                } catch (e) {
+                    alert('Could not fetch tunnel token: ' + (e.message || e));
+                }
+            });
+        }
+        if (refs.copyTunnelTokenBtn) {
+            refs.copyTunnelTokenBtn.addEventListener('click', () => {
+                copyFrom(refs.tunnelTokenValue, refs.copyTunnelTokenBtn);
+            });
+        }
 
         document.addEventListener('blur', syncValidity, true);
         document.addEventListener('input', syncValidity, true);

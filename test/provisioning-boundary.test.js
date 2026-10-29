@@ -10,5 +10,5 @@ test('bundle promotion neither enables the timer nor restarts call services', ()
     assert.match(installer, /os\.fchown\(stream\.fileno\(\), 0, 0\)/);
     assert.match(installer, /compile\(payload/);
     assert.doesNotMatch(installer, /\['systemctl', '(?:enable|restart|reload)'/);
-    assert.match(installer, /Timer is stopped/);
+    assert.match(installer, /Previously inactive units remain stopped/);
 });

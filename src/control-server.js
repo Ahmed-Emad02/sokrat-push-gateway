@@ -4,8 +4,12 @@ const express = require('express');
 const { createControl } = require('./control');
 
 async function start() {
-    const control = createControl({ filePath: process.env.CONTROL_DATA_FILE,
-        maxEnabledPbx: Number(process.env.CONTROL_MAX_ENABLED_PBX) || 5 });
+    const isPublic = process.env.CONTROL_ALLOW_PUBLIC === 'true';
+    const control = createControl({
+        filePath: process.env.CONTROL_DATA_FILE,
+        maxEnabledPbx: Number(process.env.CONTROL_MAX_ENABLED_PBX) || 10,
+        allowPublic: isPublic
+    });
     await control.init();
     const app = express();
     app.disable('x-powered-by');
@@ -13,10 +17,10 @@ async function start() {
     app.get('/', (req, res) => res.redirect('/control/'));
     const tenant = process.env.TENANT_RUNTIME_FILE
         ? await require('./tenant-server').startTenantServer(control) : null;
-    // Admin remains reachable only through an SSH tunnel. Never bind this
-    // bootstrap administrative listener to a public interface over HTTP.
-    const server = app.listen(Number(process.env.CONTROL_PORT) || 9096, '127.0.0.1', () => {
-        console.log('[control] administrative dashboard listening on loopback');
+    const port = Number(process.env.CONTROL_PORT) || 8002;
+    const host = process.env.CONTROL_LISTEN_HOST || (isPublic ? '0.0.0.0' : '127.0.0.1');
+    const server = app.listen(port, host, () => {
+        console.log(`[control] administrative dashboard listening on ${host}:${port}`);
     });
     const stop = () => { tenant?.close(); server.close(() => { control.close(); process.exit(0); }); };
     process.on('SIGTERM', stop); process.on('SIGINT', stop);

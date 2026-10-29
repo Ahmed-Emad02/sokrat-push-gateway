@@ -1682,7 +1682,7 @@ class ControlStore {
             const extension = normalizeExtension(input.extension);
             const at = isoAt(this._now());
             let policy = draft.extensions.find(e => e.pbxId === pbx.id && e.extension === extension);
-            if (!policy && pbx.management && !pbx.management.extensionPolicyRequired) {
+            if (!policy && input.autoCreatePolicy && pbx.management) {
                 policy = {
                     id: `ext_${randomHex(8)}`,
                     pbxId: pbx.id,

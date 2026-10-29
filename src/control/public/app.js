@@ -510,6 +510,7 @@
     }
 
     function onUnauthenticated(message) {
+        stopRealtimePolling();
         csrfToken = null;
         snapshot = null;
         provisioning = null;
@@ -518,15 +519,36 @@
         showLoginMessage(message || 'Sign in to continue.');
     }
 
+    let pollInterval = null;
+
+    function startRealtimePolling() {
+        if (pollInterval) return;
+        pollInterval = setInterval(async () => {
+            if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                try {
+                    await refresh(true);
+                } catch (_) {}
+            }
+        }, 3000);
+    }
+
+    function stopRealtimePolling() {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    }
+
     async function enterDashboard() {
         refs.loginView.hidden = true;
         refs.dashboard.hidden = false;
         refs.signOut.hidden = false;
         await refresh();
+        startRealtimePolling();
     }
 
-    async function refresh() {
-        refs.main.setAttribute('aria-busy', 'true');
+    async function refresh(isBackground = false) {
+        if (!isBackground) refs.main.setAttribute('aria-busy', 'true');
         try {
             snapshot = await api('/api/state');
             // Read-only, separate fetch: a provisioning read failure must never
@@ -541,7 +563,7 @@
             }
             render();
         } finally {
-            refs.main.removeAttribute('aria-busy');
+            if (!isBackground) refs.main.removeAttribute('aria-busy');
         }
     }
 
@@ -1452,6 +1474,11 @@
 
         document.addEventListener('blur', syncValidity, true);
         document.addEventListener('input', syncValidity, true);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                refresh(true).catch(() => {});
+            }
+        });
 
         syncManagementFields();
     }

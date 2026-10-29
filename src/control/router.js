@@ -500,6 +500,15 @@ function createControlRouter(options = {}) {
             console.warn('[tunnel-register] Could not auto-pin in provisioning.json:', provErr.message);
         }
 
+        let hookToken = null;
+        try {
+            const tokensPath = '/var/lib/sokrat-gateway/hook-tokens.json';
+            if (fs.existsSync(tokensPath)) {
+                const tokens = JSON.parse(fs.readFileSync(tokensPath, 'utf8'));
+                hookToken = tokens[existingPbx.id] || null;
+            }
+        } catch (_) {}
+
         res.json({
             success: true,
             pbxId: existingPbx.id,
@@ -507,6 +516,7 @@ function createControlRouter(options = {}) {
             remoteWsPort: wsPort,
             remoteApiPort: apiPort,
             publicHost,
+            hookToken,
             message: 'PBX automatically registered and approved on Gateway'
         });
     }));
@@ -709,7 +719,8 @@ function createControlRouter(options = {}) {
     // --- device decisions --------------------------------------------------
 
     router.post('/api/devices/:id/approve', requireSession, requireCsrf, wrap(async (req, res) => {
-        const result = await store.approveDevice(String(req.params.id), req.body || {}, {
+        const approveBody = { autoCreatePolicy: true, ...(req.body || {}) };
+        const result = await store.approveDevice(String(req.params.id), approveBody, {
             actor: actorFor(req)
         });
         if (!result.secret) {

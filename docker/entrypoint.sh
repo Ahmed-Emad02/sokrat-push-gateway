@@ -88,4 +88,15 @@ EOF
 fi
 
 echo "[entrypoint] Environment verified. Starting supervisor..."
+
+# Firebase is optional: when a service account is mounted, hand its path to the
+# push gateway (supervisord children inherit this environment). Without it the
+# gateway still serves and simply reports fcm:false on /health.
+if [ -f /etc/sokrat/firebase-service-account.json ]; then
+    export GOOGLE_APPLICATION_CREDENTIALS=/etc/sokrat/firebase-service-account.json
+    echo "[entrypoint] FCM service account detected"
+fi
+export FCM_ENABLED="${FCM_ENABLED:-true}"
+export APNS_ENABLED="${APNS_ENABLED:-false}"
+
 exec "$@"

@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    gettext-base \
     procps \
     net-tools \
     iproute2 \
@@ -82,7 +83,7 @@ COPY docker/reconcile-loop.sh /usr/local/bin/reconcile-loop.sh
 RUN chmod 0755 /usr/local/bin/reconcile-loop.sh
 
 COPY docker/supervisord.conf /etc/supervisor/supervisord.conf
-COPY docker/nginx-gateway.conf /etc/nginx/sites-available/default
+COPY docker/nginx-gateway.conf.template /etc/nginx/templates/sokrat.conf.template
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 

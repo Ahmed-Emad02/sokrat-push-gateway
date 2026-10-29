@@ -2,8 +2,8 @@ limit_conn_zone $binary_remote_addr zone=sokrat_ws:10m;
 limit_req_zone $binary_remote_addr zone=push_reg:10m rate=10r/s;
 
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
+    listen ${GATEWAY_HTTP_PORT} default_server;
+    listen [::]:${GATEWAY_HTTP_PORT} default_server;
 
     location = /health {
         proxy_pass http://127.0.0.1:8095/health;
@@ -70,7 +70,7 @@ server {
 }
 
 server {
-    listen 8088 default_server;
+    listen ${GATEWAY_WS_PORT} default_server;
 
     location = /ws {
         access_log off;

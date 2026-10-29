@@ -57,7 +57,7 @@ if [ ! -f "Dockerfile" ]; then
     cd "$INSTALL_DIR"
 fi
 
-echo -e "${GREEN}[1/7] Checking and installing dependencies (Docker, Compose, Python)...${NC}"
+echo -e "${GREEN}[1/8] Checking and installing dependencies (Docker, Compose, Python)...${NC}"
 
 # Install Docker if missing
 if ! command -v docker &> /dev/null; then
@@ -85,7 +85,7 @@ if ! command -v python3 &> /dev/null; then
     fi
 fi
 
-echo -e "${GREEN}[2/7] Detecting Network Configuration...${NC}"
+echo -e "${GREEN}[2/8] Detecting Network Configuration...${NC}"
 
 # Auto-detect Public IPv4
 DETECTED_PUBLIC_IP=$(curl -4 -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || curl -4 -s --connect-timeout 5 https://icanhazip.com 2>/dev/null || echo "")
@@ -117,7 +117,33 @@ else
     LISTEN_IP=${GATEWAY_LISTEN_IP:-$DETECTED_LISTEN_IP}
 fi
 
-echo -e "${GREEN}[3/7] Setting Up Control Dashboard Credentials...${NC}"
+# HTTP/WS ports. Port 80 is frequently already taken on a general-purpose VPS,
+# so detect a conflict and fall back to 8080 instead of failing to bind later.
+port_in_use() {
+    ss -ltnH "sport = :$1" 2>/dev/null | grep -q . && return 0
+    return 1
+}
+if [ -n "${GATEWAY_HTTP_PORT:-}" ]; then
+    HTTP_PORT=$GATEWAY_HTTP_PORT
+elif port_in_use 80; then
+    HTTP_PORT=8080
+    echo -e "${YELLOW}Port 80 is already in use; using ${HTTP_PORT} for the gateway API.${NC}"
+else
+    HTTP_PORT=80
+fi
+WS_PORT=${GATEWAY_WS_PORT:-8088}
+if port_in_use "$WS_PORT"; then
+    echo -e "${RED}Port ${WS_PORT} (SIP WebSocket) is already in use. Set GATEWAY_WS_PORT to a free port.${NC}" >&2
+    exit 1
+fi
+if [ "$HTTP_PORT" = "80" ]; then
+    GATEWAY_URL="http://${PUBLIC_HOST}"
+else
+    GATEWAY_URL="http://${PUBLIC_HOST}:${HTTP_PORT}"
+fi
+echo -e "Gateway API will be served at ${GREEN}${GATEWAY_URL}${NC}"
+
+echo -e "${GREEN}[3/8] Setting Up Control Dashboard Credentials...${NC}"
 
 ADMIN_PASS="${CONTROL_ADMIN_PASSWORD:-}"
 if [ -z "$ADMIN_PASS" ]; then
@@ -149,7 +175,7 @@ print(f"scrypt\$16384\$8\$1\${b64_salt}\${b64_hash}")
 PY
 )
 
-echo -e "${GREEN}[4/7] Creating Host Directories & Permissions...${NC}"
+echo -e "${GREEN}[4/8] Creating Host Directories & Permissions...${NC}"
 
 mkdir -p /etc/sokrat/ssh \
          /etc/sokrat/turn \
@@ -172,10 +198,12 @@ chmod 0700 /etc/sokrat/ssh
 chown root:999 /var/lib/sokrat-tenant-provisioning
 chmod 0750 /var/lib/sokrat-tenant-provisioning
 
-echo -e "${GREEN}[5/7] Writing Production Environment & Configs...${NC}"
+echo -e "${GREEN}[5/8] Writing Production Environment & Configs...${NC}"
 
 cat << EOF > /etc/sokrat/gateway-runtime.env
 GATEWAY_PUBLIC_HOST=${PUBLIC_HOST}
+GATEWAY_HTTP_PORT=${HTTP_PORT}
+GATEWAY_WS_PORT=${WS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
 EOF
@@ -201,7 +229,7 @@ if [ ! -f /etc/sokrat/gateway-provisioning.json ]; then
   "runtime": {
     "syncScript": "/usr/local/lib/sokrat-tenant-provisioning/sync-tenant-runtime.py",
     "envFile": "/etc/sokrat/gateway-runtime.env",
-    "gatewayUrl": "http://${PUBLIC_HOST}",
+    "gatewayUrl": "${GATEWAY_URL}",
     "serviceUser": "sokrat-push"
   },
   "firewallAdapter": "/usr/local/lib/sokrat-tenant-provisioning/provisioning-firewall-local.py",
@@ -222,21 +250,39 @@ fi
 
 cat << EOF > .env
 GATEWAY_PUBLIC_HOST=${PUBLIC_HOST}
+GATEWAY_HTTP_PORT=${HTTP_PORT}
+GATEWAY_WS_PORT=${WS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
 CONTROL_ADMIN_PASSWORD_HASH=${ADMIN_HASH}
 EOF
 
-echo -e "${GREEN}[6/7] Building and Starting Container...${NC}"
+echo -e "${GREEN}[6/8] Opening Host Firewall Ports...${NC}"
+
+# The container uses host networking, so the host firewall is authoritative.
+# Tenant relay ports (3500-3654) are opened per-PBX by the local adapter.
+if command -v ufw > /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow "${HTTP_PORT}/tcp" > /dev/null
+    ufw allow "${WS_PORT}/tcp" > /dev/null
+    ufw allow 3478/tcp > /dev/null
+    ufw allow 3478/udp > /dev/null
+    ufw allow 3500:3654/tcp > /dev/null
+    ufw allow 3500:3654/udp > /dev/null
+    echo -e "${GREEN}✓ UFW rules added for ${HTTP_PORT}, ${WS_PORT}, 3478 and 3500-3654.${NC}"
+else
+    echo -e "${YELLOW}⚠ UFW is not active; ensure your provider firewall allows ${HTTP_PORT}, ${WS_PORT}, 3478 and 3500-3654.${NC}"
+fi
+
+echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
 
 docker compose build
 docker compose up -d
 
-echo -e "${GREEN}[7/7] Verifying System Health...${NC}"
+echo -e "${GREEN}[8/8] Verifying System Health...${NC}"
 
 HEALTH_OK=false
 for i in {1..15}; do
-    if curl -s -f http://127.0.0.1:8095/health > /dev/null 2>&1; then
+    if curl -s -f "http://127.0.0.1:${HTTP_PORT}/health" > /dev/null 2>&1; then
         HEALTH_OK=true
         break
     fi
@@ -246,7 +292,7 @@ done
 echo
 
 if [ "$HEALTH_OK" = true ]; then
-    echo -e "${GREEN}✓ Push Gateway is healthy on port 8095.${NC}"
+    echo -e "${GREEN}✓ Push Gateway is healthy at ${GATEWAY_URL}/health${NC}"
 else
     echo -e "${YELLOW}⚠ Push Gateway did not respond immediately. Check logs with: docker logs sokrat-gateway${NC}"
 fi
@@ -255,8 +301,8 @@ echo
 echo -e "${BLUE}===================================================================${NC}"
 echo -e "${GREEN}  Installation Complete! Sokrat Gateway Container is Running.      ${NC}"
 echo -e "${BLUE}===================================================================${NC}"
-echo -e "Public Web Ingress:      ${GREEN}http://${PUBLIC_HOST}${NC}"
-echo -e "SIP WebSocket Ingress:   ${GREEN}ws://${PUBLIC_HOST}:8088/ws${NC}"
+echo -e "Public Web Ingress:      ${GREEN}${GATEWAY_URL}${NC}"
+echo -e "SIP WebSocket Ingress:   ${GREEN}ws://${PUBLIC_HOST}:${WS_PORT}/ws${NC}"
 echo -e "CoTURN STUN/TURN:        ${GREEN}${PUBLIC_HOST}:3478 (UDP/TCP)${NC}"
 echo
 echo -e "${YELLOW}To access the private Admin Control Dashboard:${NC}"

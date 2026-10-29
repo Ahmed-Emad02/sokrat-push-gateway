@@ -3,6 +3,18 @@ set -euo pipefail
 
 echo "[entrypoint] Initializing Sokrat Push Gateway environment..."
 
+# Render the nginx site from the shipped template. Only the two port variables
+# are substituted, so nginx's own $host/$remote_addr stay intact.
+GATEWAY_HTTP_PORT="${GATEWAY_HTTP_PORT:-80}"
+GATEWAY_WS_PORT="${GATEWAY_WS_PORT:-8088}"
+export GATEWAY_HTTP_PORT GATEWAY_WS_PORT
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+envsubst '${GATEWAY_HTTP_PORT} ${GATEWAY_WS_PORT}' \
+    < /etc/nginx/templates/sokrat.conf.template \
+    > /etc/nginx/sites-available/sokrat
+ln -sf /etc/nginx/sites-available/sokrat /etc/nginx/sites-enabled/sokrat
+rm -f /etc/nginx/sites-enabled/default
+
 chown -R sokrat-push:sokrat-push /var/lib/sokrat-gateway
 chmod 0700 /var/lib/sokrat-gateway
 

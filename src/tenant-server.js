@@ -57,6 +57,7 @@ async function startTenantServer(control, env = process.env) {
     // The listener is loopback-only; nginx must overwrite X-Forwarded-For
     // rather than append untrusted client headers. Admin proxy trust is separate.
     app.use('/api/gateway/enrollment', createEnrollmentRouter({ store: control.store, trustProxy: true }));
+    app.post('/api/gateway/tunnel/register', control.router);
     app.use('/api/gateway', runtime.router);
     app.use((error, req, res, next) => {
         if (res.headersSent) return next(error);

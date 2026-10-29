@@ -14,6 +14,8 @@ async function start() {
     const app = express();
     app.disable('x-powered-by');
     app.use('/control', control.router);
+    app.post('/api/tunnel/register', control.router);
+    app.post('/api/gateway/tunnel/register', control.router);
     app.get('/', (req, res) => res.redirect('/control/'));
     const tenant = process.env.TENANT_RUNTIME_FILE
         ? await require('./tenant-server').startTenantServer(control) : null;

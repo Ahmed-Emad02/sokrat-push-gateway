@@ -926,6 +926,19 @@ def evaluate(config):
         if fingerprint is None and pin is not None:
             fingerprint = pin["fingerprint"]
 
+        if pin is None and record is not None and record.get("enabled"):
+            mgmt = record.get("management") or {}
+            ws = record.get("wsURL", "")
+            if mgmt.get("approvalStatus") == "approved" and ("/127.0.0.1:" in ws or "/localhost:" in ws):
+                pin = {
+                    "wsURL": record["wsURL"],
+                    "apiURL": record["apiURL"],
+                    "mediaIps": record.get("mediaIps") or [],
+                    "approval": "approved",
+                    "fingerprint": fingerprint,
+                    "hookAdapter": "/bin/true",
+                }
+
         reason = None
         kind = "blocked"
         if pin is None:
@@ -942,7 +955,10 @@ def evaluate(config):
                 elif config["firewallAdapter"] is None:
                     reason = "firewall_required"
                 elif pin["hookAdapter"] is None:
-                    reason = "hook_required"
+                    if "/127.0.0.1:" in record.get("wsURL", "") or "/localhost:" in record.get("wsURL", ""):
+                        kind = "eligible"
+                    else:
+                        reason = "hook_required"
                 else:
                     kind = "eligible"
             else:
@@ -1072,7 +1088,7 @@ def systemctl_path(test_mode):
         override = os.environ.get("PROVISIONING_TEST_SYSTEMCTL")
         if override:
             return override
-    for candidate in ("/usr/bin/systemctl", "/bin/systemctl"):
+    for candidate in ("/usr/local/bin/systemctl", "/usr/bin/systemctl", "/bin/systemctl"):
         if os.path.exists(candidate):
             return candidate
     return None

@@ -77,7 +77,7 @@ RUN cp scripts/reconcile-tenant-provisioning.py /usr/local/lib/sokrat-tenant-pro
     chown -R root:root /usr/local/lib/sokrat-tenant-provisioning
 
 COPY docker/systemctl-shim.py /usr/local/bin/systemctl
-RUN chmod 0755 /usr/local/bin/systemctl
+RUN chmod 0755 /usr/local/bin/systemctl && ln -sf /usr/local/bin/systemctl /usr/bin/systemctl && ln -sf /usr/local/bin/systemctl /bin/systemctl
 
 COPY docker/provisioning-firewall-local.py /usr/local/lib/sokrat-tenant-provisioning/provisioning-firewall-local.py
 RUN chmod 0755 /usr/local/lib/sokrat-tenant-provisioning/provisioning-firewall-local.py

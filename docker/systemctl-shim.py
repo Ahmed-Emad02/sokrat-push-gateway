@@ -50,7 +50,7 @@ def start_tenant(slug):
         return 0  # Already running
 
     user = f"sokrat-turn-{slug}"
-    cmd = ["/usr/bin/turnserver", "-c", str(conf_file), "--pidfile=", "-o"]
+    cmd = ["/usr/bin/turnserver", "-c", str(conf_file), "--pidfile="]
     try:
         import pwd
         try:

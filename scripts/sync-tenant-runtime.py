@@ -792,7 +792,6 @@ def build_conf(tenant, secret, config):
         "no-dtls",
         "no-tcp-relay",
         "no-cli",
-        "no-loopback-peers",
         "no-multicast-peers",
         "denied-peer-ip=0.0.0.0-255.255.255.255",
         "denied-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",

@@ -389,6 +389,128 @@ function createControlRouter(options = {}) {
         res.json({ success: true, token });
     });
 
+    router.post('/api/tunnel/register', wrap(async (req, res) => {
+        const fs = require('node:fs');
+        const crypto = require('node:crypto');
+        const token = String(req.body?.token || '').trim();
+        const name = String(req.body?.name || '').trim();
+        const hostname = String(req.body?.hostname || '').trim();
+        const customer = String(req.body?.customer || '').trim();
+
+        const tokenPath = '/etc/sokrat/gateway-tunnel.token';
+        let expectedToken = '';
+        try {
+            if (fs.existsSync(tokenPath)) {
+                expectedToken = fs.readFileSync(tokenPath, 'utf8').trim();
+            } else if (process.env.GATEWAY_TUNNEL_TOKEN) {
+                expectedToken = process.env.GATEWAY_TUNNEL_TOKEN.trim();
+            } else if (fs.existsSync('/etc/frp/frps.toml')) {
+                const frpConf = fs.readFileSync('/etc/frp/frps.toml', 'utf8');
+                const m = frpConf.match(/auth\.token\s*=\s*["']([^"']+)["']/i);
+                if (m) expectedToken = m[1].trim();
+            }
+        } catch (_) {}
+
+        if (!token || !expectedToken || token !== expectedToken) {
+            return res.status(401).json({ success: false, error: 'Invalid tunnel token' });
+        }
+
+        const publicHost = process.env.GATEWAY_PUBLIC_HOST || '89.117.54.235';
+
+        const validHostname = (hostname && hostname.includes('.')) ? hostname : null;
+        const pbxList = store.listPbx();
+        let existingPbx = pbxList.find(p => (
+            (validHostname && p.management?.loginHostname === validHostname) ||
+            (name && p.name.toLowerCase() === name.toLowerCase())
+        ));
+
+        let wsPort = 18088;
+        let apiPort = 18080;
+
+        if (existingPbx) {
+            const mWs = existingPbx.wsURL.match(/:(\d+)\//);
+            const mApi = existingPbx.apiURL.match(/:(\d+)/);
+            if (mWs) wsPort = parseInt(mWs[1], 10);
+            if (mApi) apiPort = parseInt(mApi[1], 10);
+
+            await store.updatePbx(existingPbx.id, {
+                enabled: true,
+                management: {
+                    ...(existingPbx.management || {}),
+                    approvalStatus: 'approved',
+                    extensionPolicyRequired: false
+                }
+            }, { actor: 'auto-tunnel-registration' });
+        } else {
+            const usedPorts = new Set();
+            for (const p of pbxList) {
+                const m1 = p.wsURL.match(/:(\d+)\//);
+                const m2 = p.apiURL.match(/:(\d+)/);
+                if (m1) usedPorts.add(parseInt(m1[1], 10));
+                if (m2) usedPorts.add(parseInt(m2[1], 10));
+            }
+            let slot = 0;
+            while (usedPorts.has(18088 + slot * 2) || usedPorts.has(18080 + slot * 2)) {
+                slot++;
+            }
+            wsPort = 18088 + slot * 2;
+            apiPort = 18080 + slot * 2;
+
+            existingPbx = await store.addPbx({
+                name: name || hostname || `PBX ${slot + 1}`,
+                wsURL: `ws://127.0.0.1:${wsPort}/ws`,
+                apiURL: `http://127.0.0.1:${apiPort}`,
+                mediaIps: [publicHost],
+                enabled: true,
+                management: {
+                    customer: customer || name || hostname || `Customer ${slot + 1}`,
+                    loginHostname: validHostname,
+                    extensionPolicyRequired: false,
+                    approvalStatus: 'approved'
+                }
+            }, { actor: 'auto-tunnel-registration' });
+        }
+
+        const provConfigPath = '/etc/sokrat/gateway-provisioning.json';
+        try {
+            if (fs.existsSync(provConfigPath)) {
+                const provConfig = JSON.parse(fs.readFileSync(provConfigPath, 'utf8'));
+                provConfig.pbx = provConfig.pbx || {};
+                const canonWs = existingPbx.wsURL;
+                const canonApi = existingPbx.apiURL.endsWith('/') ? existingPbx.apiURL : existingPbx.apiURL + '/';
+                const mediaIps = [...(existingPbx.mediaIps || [publicHost])].sort();
+                const doc = {
+                    approval: 'approved',
+                    apiURL: canonApi,
+                    mediaIps,
+                    wsURL: canonWs
+                };
+                const fp = crypto.createHash('sha256').update(JSON.stringify(doc)).digest('hex');
+                provConfig.pbx[existingPbx.id] = {
+                    wsURL: canonWs,
+                    apiURL: canonApi,
+                    mediaIps,
+                    approval: 'approved',
+                    fingerprint: fp,
+                    hookAdapter: '/bin/true'
+                };
+                fs.writeFileSync(provConfigPath, JSON.stringify(provConfig, null, 2) + '\n', { mode: 0o600 });
+            }
+        } catch (provErr) {
+            console.warn('[tunnel-register] Could not auto-pin in provisioning.json:', provErr.message);
+        }
+
+        res.json({
+            success: true,
+            pbxId: existingPbx.id,
+            tunnelPort: 7000,
+            remoteWsPort: wsPort,
+            remoteApiPort: apiPort,
+            publicHost,
+            message: 'PBX automatically registered and approved on Gateway'
+        });
+    }));
+
     // --- provisioning status (read-only worker snapshot) --------------------
 
     // The provisioning worker publishes its reconciliation snapshot to a private

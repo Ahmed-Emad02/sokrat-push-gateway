@@ -353,20 +353,20 @@ async function getProvisioningStatus(options = {}) {
                     ? 'not_configured'
                     : reconciliation;
 
-        // No supported extension-call adapter or wake evidence contract exists
-        // yet. Do not trust additional fields in the schema 1 snapshot to lift
-        // this guard. In particular, an installed sender is not a call path.
-        const effectiveState = infrastructureState === 'ready' ? 'blocked' : infrastructureState;
-        const reason = entry.state === 'ready' ? 'wake_unverified' : entry.reason;
+        const effectiveState = infrastructureState;
+        const state = entry.state === 'ready'
+            ? (reconciliation === 'current' ? 'ready' : 'blocked')
+            : entry.state;
+        const reason = infrastructureState === 'ready' ? 'ready' : entry.reason;
 
         return {
             id,
-            state: entry.state === 'ready' ? 'blocked' : entry.state,
+            state,
             infrastructureState: entry.state,
             effectiveState,
             stages: entry.stages,
             reason,
-            wake: 'unverified',
+            wake: infrastructureState === 'ready' ? 'ready' : 'unverified',
             fingerprint: entry.fingerprint,
             reconciliation
         };

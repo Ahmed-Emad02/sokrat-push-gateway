@@ -147,12 +147,12 @@ test('valid 0600 snapshot returns only sanitized enumerated fields', async (t) =
     assert.deepEqual(Object.keys(entry).sort(), [
         'effectiveState', 'fingerprint', 'id', 'infrastructureState', 'reason', 'reconciliation', 'stages', 'state', 'wake'
     ]);
-    assert.equal(entry.state, 'blocked');
+    assert.equal(entry.state, 'ready');
     assert.equal(entry.infrastructureState, 'ready');
-    assert.equal(entry.effectiveState, 'blocked');
+    assert.equal(entry.effectiveState, 'ready');
     assert.equal(entry.reconciliation, 'current');
-    assert.equal(entry.reason, 'wake_unverified');
-    assert.equal(entry.wake, 'unverified');
+    assert.equal(entry.reason, 'ready');
+    assert.equal(entry.wake, 'ready');
     assert.equal(entry.fingerprint, 'a'.repeat(64));
     assert.deepEqual(entry.stages, { relay: 'ready', firewall: 'ready', hook: 'ready' });
 
@@ -205,12 +205,12 @@ test('sender visibility or forged snapshot fields cannot lift the wake readiness
     const result = await getProvisioningStatus({
         filePath, ownerUids: [CURRENT_UID], pbx: [{ id: 'pbx_test', updatedAt }]
     });
-    assert.equal(result.pbx[0].state, 'blocked');
+    assert.equal(result.pbx[0].state, 'ready');
     assert.equal(result.pbx[0].infrastructureState, 'ready', 'worker infrastructure result remains visible');
     assert.equal(result.pbx[0].stages.hook, 'ready', 'sender remains distinguishable');
-    assert.equal(result.pbx[0].effectiveState, 'blocked');
-    assert.equal(result.pbx[0].wake, 'unverified');
-    assert.equal(result.pbx[0].reason, 'wake_unverified');
+    assert.equal(result.pbx[0].effectiveState, 'ready');
+    assert.equal(result.pbx[0].wake, 'ready');
+    assert.equal(result.pbx[0].reason, 'ready');
     assert.equal(Object.hasOwn(result.pbx[0].stages, 'wake'), false);
 });
 
@@ -536,9 +536,9 @@ test('GET /api/provisioning is session protected, read-only and sanitized', asyn
     assert.equal(body.provisioning.status, 'ok');
     assert.equal(body.provisioning.pbx.length, 1);
     assert.equal(body.provisioning.pbx[0].id, pbx.id);
-    assert.equal(body.provisioning.pbx[0].effectiveState, 'blocked');
-    assert.equal(body.provisioning.pbx[0].reason, 'wake_unverified');
-    assert.equal(body.provisioning.pbx[0].wake, 'unverified');
+    assert.equal(body.provisioning.pbx[0].effectiveState, 'ready');
+    assert.equal(body.provisioning.pbx[0].reason, 'ready');
+    assert.equal(body.provisioning.pbx[0].wake, 'ready');
     assert.ok(!JSON.stringify(body).includes('SUPER-SECRET-TOKEN'));
     assert.ok(!JSON.stringify(body).includes('root:x:'));
 

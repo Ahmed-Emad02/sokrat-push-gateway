@@ -489,7 +489,7 @@ def serve():
                     if not allowed:response['reject_reason']='Installation or proxy scope refused'
                 elif self.path == '/register':
                     response = register(config,body)
-                elif self.path == '/api/gateway/incoming-call':
+                elif self.path in ('/api/gateway/incoming-call', '/api/gateway/cancel-call'):
                     # HTTPS push entry point shares the operator-pinned gateway
                     # certificate. Runtime still verifies token/replay headers.
                     headers = {'Content-Type':'application/json'}
@@ -497,7 +497,7 @@ def serve():
                         if self.headers.get(name):headers[name]=self.headers[name]
                     upstream = http.client.HTTPConnection('127.0.0.1',config.get('runtimePort',9097),timeout=5)
                     try:
-                        upstream.request('POST','/api/gateway/incoming-call',json.dumps(body),headers)
+                        upstream.request('POST',self.path,json.dumps(body),headers)
                         result=upstream.getresponse();raw=result.read(8193)
                         if result.status!=200 or len(raw)>8192:raise ValueError('Push refused')
                         response=json.loads(raw)

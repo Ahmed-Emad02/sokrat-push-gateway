@@ -128,6 +128,30 @@ test('failed image build never recreates the running gateway', t => {
     assert.ok(result.log.every(row => !row.args.includes('up')));
 });
 
+test('older deployments accept only newly introduced TLS defaults', t => {
+    const { root, fixture } = setup(t);
+    Object.assign(fixture.service.environment, { GATEWAY_TLS_ENABLED: 'auto', GATEWAY_HTTPS_PORT: '443', GATEWAY_WSS_PORT: '8089' });
+    const result = upgrade(root, fixture);
+    assert.equal(result.status, 0, result.stderr);
+});
+
+test('new non-default TLS settings still require reviewed configuration changes', t => {
+    const { root, fixture } = setup(t);
+    fixture.service.environment.GATEWAY_HTTPS_PORT = '9443';
+    const result = upgrade(root, fixture, true);
+    assert.equal(result.status, 2);
+    assert.ok(result.log.every(row => !row.args.includes('build') && !row.args.includes('up')));
+});
+
+test('recreation re-runs authority-aware tenant reconciliation', t => {
+    const { root, fixture } = setup(t);
+    const result = upgrade(root, fixture, true);
+    assert.equal(result.status, 0, result.stderr);
+    const up = result.log.findIndex(row => row.args.includes('up'));
+    const reconcile = result.log.findIndex(row => row.args.some(arg => arg.includes('reconcile-tenant-provisioning.py')));
+    assert.ok(reconcile > up);
+});
+
 test('container replaced during build is not recreated', t => {
     const { root, fixture } = setup(t);
     fixture.replaceDuringBuild = true;

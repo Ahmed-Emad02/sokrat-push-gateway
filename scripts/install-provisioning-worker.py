@@ -24,11 +24,15 @@ FILES = (
     'provisioning-hook-ssh.py', 'provisioning-firewall-aws.py',
     'install-tenant-push-hook.py', 'pbx-tenant-push-hook.py',
     'provisioning-onboarding.py',
+    'tunnel_media.py', 'tunnel_media_material.py', 'install-media-link.py',
+    'tunnel-enrollment.py',
+    'check-tunnel-readiness.py',
 )
 UNITS = ('sokrat-tenant-provisioning.service', 'sokrat-tenant-provisioning.timer',
-         'sokrat-tenant-onboarding.service')
+         'sokrat-tenant-onboarding.service', 'sokrat-tunnel-enrollment.service')
 TIMER = 'sokrat-tenant-provisioning.timer'
 ONBOARDING = 'sokrat-tenant-onboarding.service'
+ENROLLMENT = 'sokrat-tunnel-enrollment.service'
 
 
 def safe_target(path):
@@ -99,12 +103,12 @@ def main(argv=None):
     # promotion: only restore units that were already active after it succeeds.
     restore = []
     loaded_units = []
-    for unit in (TIMER, UNITS[0], ONBOARDING):
+    for unit in (TIMER, UNITS[0], ONBOARDING, ENROLLMENT):
         loaded = subprocess.run(['systemctl', 'show', unit, '--property=LoadState', '--value'],
                                 check=True, capture_output=True, text=True, timeout=30)
         if loaded.stdout.strip() != 'not-found':
             loaded_units.append(unit)
-            if unit in (TIMER, ONBOARDING):
+            if unit in (TIMER, ONBOARDING, ENROLLMENT):
                 state = subprocess.run(['systemctl', 'show', unit, '--property=ActiveState', '--value'],
                                        check=True, capture_output=True, text=True, timeout=30)
                 if state.stdout.strip() not in ('active', 'inactive', 'failed'):
@@ -118,6 +122,12 @@ def main(argv=None):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
     # Refuse replacement if a manual invocation still holds the worker lock.
     lock_dir = Path('/run/sokrat-tenant-provisioning')
+    config_path = Path('/etc/sokrat/gateway-provisioning.json')
+    if config_path.exists():
+        safe_target(config_path)
+        config = json.loads(reviewed_source(config_path))
+        lock_dir = Path(config.get('lockDir',str(lock_dir)))
+        if not lock_dir.is_absolute():raise ValueError('invalid provisioning lock directory')
     safe_target(lock_dir)
     lock_dir.mkdir(mode=0o700, exist_ok=True)
     safe_target(lock_dir / 'lock')

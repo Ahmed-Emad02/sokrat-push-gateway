@@ -10,6 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE = 'sokrat-gateway'
+NEW_TLS_DEFAULTS = {'GATEWAY_TLS_ENABLED': 'auto', 'GATEWAY_HTTPS_PORT': '443',
+                    'GATEWAY_WSS_PORT': '8089'}
 
 
 class Refusal(Exception):
@@ -100,7 +102,13 @@ def validate(service, container, image):
     if not isinstance(variables, dict) or any(value is None for value in variables.values()):
         raise Refusal('Compose environment contains unresolved variables')
     expected.update({key: str(value) for key, value in variables.items()})
-    if env_map(config.get('Env')) != expected:
+    actual = env_map(config.get('Env'))
+    # Older images predate these optional Compose settings. Admit only their
+    # exact shipped defaults when absent; never absorb arbitrary env drift.
+    for key, value in NEW_TLS_DEFAULTS.items():
+        if key not in actual and key not in env_map(base.get('Env')) and expected.get(key) == value:
+            expected.pop(key)
+    if actual != expected:
         raise Refusal('existing container environment differs from Compose; no values displayed')
     check_mounts(service, container)
 
@@ -154,6 +162,11 @@ def main():
     if not args.apply:
         print('Dry run only: no build, recreation, or host-state changes.')
         return
+    # Reverse media runs on the host, not in a NET_ADMIN-enabled container.
+    # Only opted-in reverse-TLS installations need these host packages.
+    etc_source = next(Path(m['source']) for m in service['volumes'] if m['target'] == '/etc/sokrat')
+    if (etc_source / 'tunnel-enrollment' / 'config.json').exists():
+        run(['bash', str(ROOT / 'scripts/install-reverse-tls-deps.sh')], env, capture=False)
     run(compose + ['build', SERVICE], env, capture=False)
     # Do not recreate a replacement container or apply a changed .env/Compose
     # configuration if another operator changed it while the image was building.
@@ -166,7 +179,13 @@ def main():
             or current.get('Image') != image_id or not current.get('State', {}).get('Running')):
         raise Refusal('gateway or Compose configuration changed during build; no recreation performed')
     run(compose + ['up', '-d', '--no-deps', '--no-build', SERVICE], env, capture=False)
-    print('Compose recreation completed. Check service logs, provider status, and PBX wake separately.')
+    # Tenant coturn processes are not managed by supervisor. A recreated
+    # container must re-evaluate current authority and restart eligible relays,
+    # not merely reuse a persisted pre-recreation "ready" status.
+    run(['docker', 'exec', SERVICE, '/bin/sh', '-ec',
+         'if [ -f /etc/sokrat/gateway-provisioning.json ]; then '
+         'exec /usr/bin/python3 /usr/local/lib/sokrat-tenant-provisioning/reconcile-tenant-provisioning.py --apply; fi'], env)
+    print('Compose recreation and tenant reconciliation completed. Verify provider status and real PBX wake; no production acceptance is implied.')
 
 
 if __name__ == '__main__':

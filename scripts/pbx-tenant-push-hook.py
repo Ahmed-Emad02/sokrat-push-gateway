@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import ssl
 import sys
 import time
 import urllib.parse
@@ -39,7 +40,12 @@ try:
         headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + config['token'],
                  'X-Sokrat-Pbx': config['pbxId'], 'X-Sokrat-Timestamp': str(int(time.time() * 1000)),
                  'X-Sokrat-Nonce': secrets.token_hex(16)}, method='POST')
-    with urllib.request.urlopen(request, timeout=3) as response:
+    context = None
+    if config.get('caFile'):
+        if not config['gatewayUrl'].startswith('https://') or config['caFile'] != '/etc/frp/gateway-ca.crt':
+            raise ValueError('Invalid pinned gateway TLS configuration')
+        context = ssl.create_default_context(cafile=config['caFile'])
+    with urllib.request.urlopen(request, timeout=3, context=context) as response:
         print('Gateway push hook HTTP', response.status)
 except Exception:
     # Never print HTTP request headers, body, tokens or provider details.

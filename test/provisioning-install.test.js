@@ -151,7 +151,7 @@ for active, expected in [({m.TIMER, m.ONBOARDING}, [m.ONBOARDING, m.TIMER]),
         assert m.main(['--apply']) == 0
     stops = [x[2] for x in events if x[:2] == ('systemctl', 'stop')]
     starts = [x[2] for x in events if x[:2] == ('systemctl', 'start')]
-    assert stops == [m.TIMER, m.UNITS[0], m.ONBOARDING]
+    assert stops == [m.TIMER, m.UNITS[0], m.ONBOARDING, m.ENROLLMENT]
     assert starts == expected
     assert all(events.index(('systemctl', 'start', unit)) > events.index(('promote',)) for unit in starts)
     assert not any(x[:2] == ('systemctl', 'enable') for x in events)

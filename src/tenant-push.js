@@ -1,4 +1,5 @@
 'use strict';
+const { tenantCallId } = require('./tenant-call-id');
 
 // Tenant registries are local to the gateway; never combine PBX-local rows by
 // extension alone. The approved assignment supplies pbxId and extension.
@@ -36,7 +37,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             if (typeof callee !== 'string' || !/^[A-Za-z0-9*#._-]{1,64}$/.test(callee)) return res.status(400).json({ error: 'Invalid callee' });
             if (typeof callId !== 'string' || !callId || callId.length > 96) return res.status(400).json({ error: 'Invalid callId' });
             let id;
-            try { id = normalizeCallId(`${pbx.id}:${callId}`); if (!callId) throw new Error(); }
+            try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
             catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
             const devices = await store.listPush(pbx.id, callee);
             let count = 0;
@@ -58,6 +59,33 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                 }
             }
             res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed });
+        } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
+    });
+    router.post('/cancel-call', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            const pbx = await authorizePbx(req);
+            if (!pbx) return res.status(403).json({ error: 'PBX authentication required' });
+            const { callee, callId } = req.body || {};
+            if (typeof callee !== 'string' || !/^[A-Za-z0-9*#._-]{1,64}$/.test(callee)) return res.status(400).json({ error: 'Invalid callee' });
+            if (typeof callId !== 'string' || !callId || callId.length > 96) return res.status(400).json({ error: 'Invalid callId' });
+            let id;
+            try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
+            catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
+            const devices = await store.listPush(pbx.id, callee);
+            let count = 0;
+            for (const device of devices) {
+                const assignment = await store.approvedAssignment(device.deviceId);
+                if (!assignment || assignment.pbxId !== pbx.id || assignment.extension !== callee) continue;
+                try {
+                    await sendToDevice({ ...device, device_uuid: assignment.deviceUuid, voip_token: device.voipToken }, {
+                        msg: 'cancel-call', callerId: '', callerName: '',
+                        extension: callee, callId: id, timestamp: Date.now(), sipWss: ''
+                    });
+                    count++;
+                } catch (_) {}
+            }
+            res.json({ status: 'cancelled', callId: id, count });
         } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
     });
 }

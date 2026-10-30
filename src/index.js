@@ -123,7 +123,7 @@ async function initApns() {
                         callerName: payload.callerName || 'Incoming Call',
                         extension: payload.extension || '',
                         timestamp: payload.timestamp || Date.now(),
-                        msg: 'incoming-call',
+                        msg: payload.msg || 'incoming-call',
                         callId: payload.callId,
                         sipWss: payload.sipWss || ''
                     },
@@ -206,7 +206,7 @@ async function buildCtx() {
                 token: dev.token,
                 android: { priority: 'high' },
                 data: {
-                    msg: 'incoming-call',
+                    msg: call.msg || 'incoming-call',
                     callerId: call.callerId || '',
                     callerName: call.callerName || 'Incoming Call',
                     extension: call.extension || '',
@@ -387,6 +387,61 @@ app.get('/api/push/incoming-call', async (req, res) => {
         res.json({ status: 'dispatched', callId, count: dispatched, errors });
     } catch (err) {
         console.error('[push-gateway] incoming-call error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Asterisk dialplan triggers this when a caller hangs up before the mobile answers
+app.get('/api/push/cancel-call', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const callee = String(req.query.callee || '').trim();
+        let callId;
+        try {
+            callId = normalizeCallId(req.query.callId);
+        } catch (error) {
+            return res.status(400).json({ success: false, error: error.message });
+        }
+        if (!callee) {
+            return res.status(400).json({ success: false, error: 'callee is required' });
+        }
+        if (dbGuard(res)) return;
+
+        const [devices] = await pool.execute(
+            `SELECT * FROM mobile_devices
+             WHERE extension = ? AND updated_at > (NOW() - INTERVAL 90 DAY)
+             ORDER BY updated_at DESC`,
+            [callee]
+        );
+        const ctx = await buildCtx();
+        const callPayload = {
+            msg: 'cancel-call',
+            callerId: '',
+            callerName: '',
+            extension: callee,
+            timestamp: Date.now(),
+            callId,
+            sipWss: ''
+        };
+
+        console.log(`[callId=${callId}] cancel callee=${callee} devices=${devices.length}`);
+        let count = 0;
+        for (const dev of devices) {
+            try {
+                await ctx.sendToDevice(dev, callPayload);
+                count++;
+                console.log(
+                    `[callId=${callId} device=${dev.device_uuid || dev.id}] cancel accepted`
+                );
+            } catch (err) {
+                console.warn(
+                    `[callId=${callId} device=${dev.device_uuid || dev.id}] cancel push failed: ${err.message}`
+                );
+            }
+        }
+        res.json({ status: 'cancelled', callId, count });
+    } catch (err) {
+        console.error('[push-gateway] cancel-call error:', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });

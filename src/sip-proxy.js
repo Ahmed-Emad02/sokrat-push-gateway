@@ -3,7 +3,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 
 // Device authorization belongs to the control store. SIP passwords continue to
 // be checked upstream by the selected PBX; no password is parsed/stored here.
-function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
+function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeIncomingCallId }) {
     if (typeof authorize !== 'function' || typeof isAuthorized !== 'function') throw new Error('Authorization and revocation checks are required');
     const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024,
         perMessageDeflate: false, handleProtocols: protocols => protocols.has('sip') ? 'sip' : false });
@@ -118,6 +118,26 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket }) {
                         const id = /^(?:Call-ID|i):[ \t]*([^\r\n]+)$/mi.exec(headers);
                         const from = /^(?:From|f):[ \t]*.*?<sips?:([^@>\s]+)@/mi.exec(headers);
                         if (id && from && incomingDialogs.size < 128) incomingDialogs.set(id[1].trim(), from[1]);
+                    }
+                    if (scopeIncomingCallId && /^INVITE\s/.test(message)) {
+                        const split = message.indexOf('\r\n\r\n');
+                        const headers = split >= 0 ? message.slice(0, split) : '';
+                        const ids = [...headers.matchAll(/^X-Sokrat-Call-ID:[ \t]*([^\r\n]*)(?:\r\n[ \t]+[^\r\n]*)*/gmi)];
+                        if (ids.length > 1) return close('ambiguous_application_call_id');
+                        if (ids.length === 1) {
+                            try {
+                                const id = ids[0];
+                                if (id[0].includes('\r\n')) throw new Error('Folded application call id');
+                                const scoped = scopeIncomingCallId(id[1].trim(), route);
+                                if (typeof scoped !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(scoped)) throw new Error('Invalid scoped call id');
+                                // Rewrite only this application header, retaining the body as
+                                // bytes (including SDP) and the protocol's dialog identifiers.
+                                const before = Buffer.byteLength(message.slice(0, id.index));
+                                const after = before + Buffer.byteLength(id[0]);
+                                data = Buffer.concat([data.subarray(0, before),
+                                    Buffer.from(`X-Sokrat-Call-ID: ${scoped}`), data.subarray(after)]);
+                            } catch (_) { return close('invalid_application_call_id'); }
+                        }
                     }
                     send(client, data, binary);
                 });

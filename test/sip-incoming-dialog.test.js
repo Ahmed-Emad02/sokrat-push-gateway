@@ -6,7 +6,7 @@ const { once } = require('node:events');
 const { WebSocket, WebSocketServer } = require('ws');
 const { attachSipProxy } = require('../src/sip-proxy');
 
-test('incoming dialog keeps caller From for client BYE without allowing another registration', async () => {
+test('incoming dialog allows the called client contact in BYE From without allowing another registration', { timeout: 5000 }, async () => {
     const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await once(upstream, 'listening');
     upstream.on('connection', ws => {
         ws.send('INVITE sip:fixture@gateway SIP/2.0\r\nFrom: <sip:caller@pbx>;tag=remote\r\nCall-ID: incoming\r\n\r\n');
@@ -18,7 +18,7 @@ test('incoming dialog keeps caller From for client BYE without allowing another 
     const client = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws?device=fixture&token=secret`, 'sip');
     try {
         await once(client, 'message');
-        const bye = 'BYE sip:caller@pbx SIP/2.0\r\nFrom: <sip:caller@pbx>;tag=remote\r\nTo: <sip:fixture@pbx>;tag=local\r\nCall-ID: incoming\r\n\r\n';
+        const bye = 'BYE sip:caller@pbx SIP/2.0\r\nFrom: <sip:ephemeral-contact@pbx>;tag=local\r\nTo: <sip:caller@pbx>;tag=remote\r\nCall-ID: incoming\r\n\r\n';
         client.send(bye);
         assert.equal((await once(client, 'message'))[0].toString(), bye);
         client.send(bye.replace('BYE ', 'REGISTER '));

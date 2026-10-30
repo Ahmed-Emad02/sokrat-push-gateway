@@ -73,6 +73,7 @@ RUN cp scripts/reconcile-tenant-provisioning.py /usr/local/lib/sokrat-tenant-pro
     cp scripts/provisioning-hook-ssh.py /usr/local/lib/sokrat-tenant-provisioning/ && \
     cp scripts/install-tenant-push-hook.py /usr/local/lib/sokrat-tenant-provisioning/ && \
     cp scripts/pbx-tenant-push-hook.py /usr/local/lib/sokrat-tenant-provisioning/ && \
+    cp scripts/tunnel_media.py scripts/check-tunnel-readiness.py /usr/local/lib/sokrat-tenant-provisioning/ && \
     chmod 0755 /usr/local/lib/sokrat-tenant-provisioning/*.py && \
     chown -R root:root /usr/local/lib/sokrat-tenant-provisioning
 
@@ -87,10 +88,13 @@ RUN chmod 0755 /usr/local/bin/reconcile-loop.sh
 
 COPY docker/supervisord.conf /etc/supervisor/supervisord.conf
 COPY docker/nginx-gateway.conf.template /etc/nginx/templates/sokrat.conf.template
+COPY docker/nginx-wss.conf /etc/nginx/templates/sokrat-tls.conf.template
+COPY docker/configure-gateway-tls.sh /usr/local/bin/configure-gateway-tls.sh
+RUN chmod 0755 /usr/local/bin/configure-gateway-tls.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-EXPOSE 80 8002 8088 8095 9096 9097 3478/tcp 3478/udp 3479/tcp 3479/udp
+EXPOSE 80 443 8002 8088 8089 8095 9096 9097 3478/tcp 3478/udp 3479/tcp 3479/udp
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

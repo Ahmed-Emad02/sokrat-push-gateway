@@ -6,6 +6,7 @@ const { installTenantIce } = require('./tenant-ice');
 const { installTenantPush } = require('./tenant-push');
 const { createTenantPushStore } = require('./tenant-push-store');
 const { createDeviceTickets } = require('./device-tickets');
+const { tenantCallId } = require('./tenant-call-id');
 
 // Explicit integration factory: opt in only after enrollment clients have been
 // deployed. No fallback to the legacy/single-PBX route is permitted here.
@@ -64,6 +65,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         router, assignment, authorize, pushStore,
         attach(server) {
             return attachSipProxy(server, { authorize, consumeTicket: tickets.consume,
+                scopeIncomingCallId: (value, route) => tenantCallId(normalizeCallId, route.pbxId, value),
                 isAuthorized: async (id, previous, token) => {
                     const current = await authorize(id, token);
                     return !!current && current.pbxId === previous.pbxId && current.extension === previous.extension

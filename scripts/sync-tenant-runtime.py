@@ -130,6 +130,7 @@ import stat
 import subprocess
 import sys
 
+
 CONTROL_SCHEMA_VERSION = 2
 PLAN_SCHEMA_VERSION = 1
 
@@ -668,10 +669,10 @@ def load_config(args):
         "dry_run": bool(args.dry_run),
         "control_file": absolute(args.control or os.environ.get("GATEWAY_CONTROL_FILE") or state_dir / "control.json"),
         "state_dir": state_dir,
-        "plan_file": state_dir / "tenant-plan.json",
+        "plan_file": absolute(args.trusted_state_dir) / "tenant-plan.json" if getattr(args,'trusted_state_dir',None) else state_dir / "tenant-plan.json",
         "manifest_file": state_dir / "tenant-runtime.json",
         "secret_dir": state_dir / "secrets",
-        "token_file": state_dir / "hook-tokens.json",
+        "token_file": absolute(args.trusted_state_dir) / "hook-tokens.json" if getattr(args,'trusted_state_dir',None) else state_dir / "hook-tokens.json",
         "turn_root": absolute(args.turn_root or os.environ.get("GATEWAY_TURN_ROOT") or "/etc/sokrat/turn"),
         "unit_dir": absolute(args.unit_dir or os.environ.get("GATEWAY_UNIT_DIR") or "/etc/systemd/system"),
         "unit_name": UNIT_TEMPLATE,
@@ -687,6 +688,14 @@ def load_config(args):
 
 
 def validate_state_dir(config):
+    for field in ('plan_file','token_file'):
+        directory = config[field].parent
+        if directory != config['state_dir']:
+            ensure_no_symlink_ancestors(directory)
+            for parent in [directory,*directory.parents]:
+                info = parent.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                    fail('Trusted state requires root-owned, non-writable ancestors','unsafe_permissions')
     target = config["state_dir"]
     ensure_no_symlink_ancestors(target)
     try:
@@ -775,7 +784,7 @@ def build_conf(tenant, secret, config):
         f"# {CONF_MARKER} ({tenant['pbxId']}) — do not edit by hand.",
         f"listening-port={tenant['listenerPort']}",
         f"listening-ip={config['listen_ip']}",
-        f"relay-ip={config['relay_ip']}",
+        f"relay-ip={tenant.get('relayIp', config['relay_ip'])}",
         f"min-port={tenant['relayMinPort']}",
         f"max-port={tenant['relayMaxPort']}",
         "fingerprint",
@@ -857,6 +866,36 @@ def prepare(args):
             "confChanged": False,
             "actions": [],
         }
+        # A media link is accepted only from root-installed material. The web
+        # store cannot select an arbitrary relay bind address or interface.
+        media_dir = Path('/etc/sokrat/media') / pbx_id
+        media_plan = media_dir / 'plan.json'
+        if media_plan.exists():
+            ensure_no_symlink_ancestors(media_plan)
+            info = media_plan.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+                fail('Untrusted media link plan', 'unsafe_permissions')
+            try:
+                # Import beside this reviewed script, never from app/PYTHONPATH.
+                import importlib.util
+                spec = importlib.util.spec_from_file_location('sokrat_media', Path(__file__).with_name('tunnel_media.py'))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                link = module.validate_plan(json.loads(read_regular(media_plan, 'media link plan')))
+            except (ValueError, TypeError, KeyError):
+                fail('Invalid media link plan', 'control_corrupt')
+            if link['pbxId'] != pbx_id or link['slot'] != tenant['slot']:
+                fail('Media and TURN allocation mismatch', 'plan_corrupt')
+            # Keep the interface for removing old rules after disable/retire,
+            # when the dashboard no longer supplies any current peer list.
+            if allocation['peerIps'] == [link['pbxIp']]:
+                tenant['previousMediaIface'] = link['interface']
+                tenant['previousRelayIp'] = link['gatewayIp']
+            # Staging a media link must not switch a working tenant before its
+            # media identity is explicitly changed/reviewed in the dashboard.
+            if peers == [link['pbxIp']]:
+                tenant['relayIp'] = link['gatewayIp']
+                tenant['mediaIface'] = link['interface']
         tenant["secretDir"] = config["turn_root"] / allocation["slug"]
         tenant["secretFile"] = tenant["secretDir"] / "secret"
         tenant["confFile"] = tenant["secretDir"] / "turnserver.conf"
@@ -1039,24 +1078,24 @@ def listener_firewall(tenant, add, warnings):
     port = tenant["listenerPort"]
     for proto in ("tcp", "udp"):
         spec = ["allow", f"{port}/{proto}"] if add else ["delete", "allow", f"{port}/{proto}"]
-        ufw(spec, warnings, check=False, optional=not add)
+        ufw(spec, warnings, check=add, optional=not add)
 
 
-def peer_firewall(tenant, peer, add, warnings, config, relay_ip=None):
+def peer_firewall(tenant, peer, add, warnings, config, relay_ip=None, iface=None):
     spec = [
         "in",
         "on",
-        config["iface"],
+        iface or tenant.get("mediaIface", config["iface"]),
         "from",
         peer,
         "to",
-        relay_ip or config["relay_ip"],
+        relay_ip or tenant.get("relayIp", config["relay_ip"]),
         "port",
         f"{tenant['relayMinPort']}:{tenant['relayMaxPort']}",
         "proto",
         "udp",
     ]
-    ufw(["allow", *spec] if add else ["delete", "allow", *spec], warnings, check=False, optional=not add)
+    ufw(["allow", *spec] if add else ["delete", "allow", *spec], warnings, check=add, optional=not add)
 
 
 def provision_tenant(tenant, state, warnings):
@@ -1110,15 +1149,17 @@ def provision_tenant(tenant, state, warnings):
         current_peers = set(tenant["peerIps"])
         for peer in sorted(current_peers):
             peer_firewall(tenant, peer, True, warnings, config)
-        old_relay = state.get("previousRelayIp")
-        if old_relay and old_relay != config["relay_ip"]:
+        old_relay = tenant.get('previousRelayIp') or state.get("previousRelayIp") or config['relay_ip']
+        old_iface = tenant.get('previousMediaIface', config['iface'])
+        if (old_relay != tenant.get('relayIp', config['relay_ip'])
+                or old_iface != tenant.get('mediaIface', config['iface'])):
             # The relay address changed: every previous peer rule targets the
             # old address and must be removed there, not on the new one.
             for peer in sorted(previous):
-                peer_firewall(tenant, peer, False, warnings, config, relay_ip=old_relay)
+                peer_firewall(tenant, peer, False, warnings, config, relay_ip=old_relay, iface=old_iface)
         else:
             for peer in sorted(previous - current_peers):
-                peer_firewall(tenant, peer, False, warnings, config)
+                peer_firewall(tenant, peer, False, warnings, config, relay_ip=old_relay, iface=old_iface)
         # The plan records what ufw actually allows, so it is only updated when
         # firewall management is enabled for this run.
         state["allocations"][tenant["pbxId"]]["peerIps"] = list(tenant["peerIps"])
@@ -1129,9 +1170,10 @@ def revoke_tenant(tenant, state, warnings):
     systemctl(["disable", "--now", tenant["unit"]], warnings, optional=True)
     if config["firewall"]:
         listener_firewall(tenant, False, warnings)
-        old_relay = state.get("previousRelayIp") or config["relay_ip"]
+        old_relay = tenant.get('previousRelayIp') or state.get("previousRelayIp") or config["relay_ip"]
         for peer in sorted(set(tenant["previousPeers"])):
-            peer_firewall(tenant, peer, False, warnings, config, relay_ip=old_relay)
+            peer_firewall(tenant, peer, False, warnings, config, relay_ip=old_relay,
+                          iface=tenant.get('previousMediaIface', config['iface']))
     copy = tenant["secretCopy"]
     info = check_regular_or_absent(copy, "service secret copy")
     if info is not None:
@@ -1334,6 +1376,7 @@ def parse_args(argv):
     )
     parser.add_argument("--control", help="control store JSON (default /var/lib/sokrat-gateway/control.json)")
     parser.add_argument("--state-dir", help="state directory (default /var/lib/sokrat-gateway)")
+    parser.add_argument("--trusted-state-dir", help="root-owned directory for allocation plan and hook tokens")
     parser.add_argument("--turn-root", help="coturn config root (default /etc/sokrat/turn)")
     parser.add_argument("--unit-dir", help="systemd unit directory (default /etc/systemd/system)")
     parser.add_argument("--iface", dest="iface", help="private interface for peer ACLs (default tailscale0)")

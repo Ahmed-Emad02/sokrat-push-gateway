@@ -27,7 +27,8 @@ fi
 
 # This is a first-install path, not an upgrader: it creates credentials and
 # changes host permissions. Never run those steps against an existing gateway.
-if [ -e /etc/sokrat/gateway-control.env ] || [ -e /etc/sokrat/gateway-runtime.env ]; then
+if [ -e /etc/sokrat/gateway-control.env ] || [ -e /etc/sokrat/gateway-runtime.env ] ||
+   [ -e /var/lib/sokrat-gateway/control.json ] || [ -e /etc/sokrat/tunnel-enrollment/config.json ]; then
     echo -e "${RED}Existing gateway configuration found. Use the documented container upgrade path; this installer will not overwrite it.${NC}" >&2
     exit 1
 fi
@@ -160,6 +161,26 @@ else
     HTTP_PORT=80
 fi
 WS_PORT=${GATEWAY_WS_PORT:-8088}
+TLS_ENABLED=${GATEWAY_TLS_ENABLED:-auto}
+HTTPS_PORT=${GATEWAY_HTTPS_PORT:-443}
+WSS_PORT=${GATEWAY_WSS_PORT:-8089}
+case "$TLS_ENABLED" in auto|true|false) ;; *) echo 'Invalid GATEWAY_TLS_ENABLED' >&2; exit 1 ;; esac
+for port in "$HTTP_PORT" "$WS_PORT" "$HTTPS_PORT" "$WSS_PORT"; do
+    if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]] || ((port > 65535)); then
+        echo 'Invalid gateway port' >&2; exit 1
+    fi
+done
+TLS_READY=false
+if [ "$TLS_ENABLED" != false ]; then
+    if [ -f /etc/sokrat/tls/fullchain.pem ] && [ -f /etc/sokrat/tls/privkey.pem ]; then
+        TLS_READY=true
+        if port_in_use "$HTTPS_PORT" || port_in_use "$WSS_PORT"; then
+            echo 'HTTPS/WSS port occupied; use reviewed free ports' >&2; exit 1
+        fi
+    elif [ "$TLS_ENABLED" = true ] || [ -e /etc/sokrat/tls/fullchain.pem ] || [ -e /etc/sokrat/tls/privkey.pem ]; then
+        echo 'Trusted TLS certificate/key pair required before installation' >&2; exit 1
+    fi
+fi
 if port_in_use "$WS_PORT"; then
     echo -e "${RED}Port ${WS_PORT} (SIP WebSocket) is already in use. Set GATEWAY_WS_PORT to a free port.${NC}" >&2
     exit 1
@@ -187,21 +208,22 @@ if [ -z "$ADMIN_PASS" ]; then
     else
         # Non-interactive mode fallback: generate strong random password
         ADMIN_PASS=$(head -c 16 /dev/urandom | od -A n -v -t x1 | tr -d ' \n')
-        echo -e "${YELLOW}Generated random admin password: ${ADMIN_PASS}${NC}"
+        echo -e "${YELLOW}Generated admin password will be saved root-only in /etc/sokrat/gateway-admin-initial-password.${NC}"
+        SAVE_INITIAL_PASSWORD=true
     fi
 fi
 
 # Generate scrypt hash matching src/control/auth.js
-ADMIN_HASH=$(python3 - << PY
-import os, base64, hashlib
-pwd = """$ADMIN_PASS""".encode('utf-8')
+if [ ${#ADMIN_PASS} -lt 8 ]; then echo 'Admin password must contain at least 8 characters' >&2; exit 1; fi
+ADMIN_HASH=$(printf '%s' "$ADMIN_PASS" | python3 -c '
+import os, base64, hashlib, sys
+pwd = sys.stdin.buffer.read()
 salt = os.urandom(16)
 derived = hashlib.scrypt(pwd, salt=salt, n=16384, r=8, p=1, maxmem=32*1024*1024, dklen=64)
-b64_salt = base64.b64encode(salt).decode('ascii')
-b64_hash = base64.b64encode(derived).decode('ascii')
-print(f"scrypt\$16384\$8\$1\${b64_salt}\${b64_hash}")
-PY
-)
+b64_salt = base64.b64encode(salt).decode("ascii")
+b64_hash = base64.b64encode(derived).decode("ascii")
+print("scrypt$16384$8$1$" + b64_salt + "$" + b64_hash)
+')
 
 echo -e "${GREEN}[4/8] Creating Host Directories & Permissions...${NC}"
 
@@ -233,6 +255,13 @@ chmod 0700 /var/lib/sokrat-gateway
 chown root:root /etc/sokrat
 chmod 0755 /etc/sokrat
 chmod 0700 /etc/sokrat/ssh
+if [ "${SAVE_INITIAL_PASSWORD:-false}" = true ]; then
+    (umask 077; printf '%s\n' "$ADMIN_PASS" > /etc/sokrat/gateway-admin-initial-password)
+fi
+unset ADMIN_PASS
+mkdir -p /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-tenant-provisioning/locks
+chown root:root /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-tenant-provisioning/locks
+chmod 0700 /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-tenant-provisioning/locks
 
 chown "root:${SOKRAT_GID}" /var/lib/sokrat-tenant-provisioning
 chmod 0750 /var/lib/sokrat-tenant-provisioning
@@ -243,6 +272,9 @@ cat << EOF > /etc/sokrat/gateway-runtime.env
 GATEWAY_PUBLIC_HOST=${PUBLIC_HOST}
 GATEWAY_HTTP_PORT=${HTTP_PORT}
 GATEWAY_WS_PORT=${WS_PORT}
+GATEWAY_TLS_ENABLED=${TLS_ENABLED}
+GATEWAY_HTTPS_PORT=${HTTPS_PORT}
+GATEWAY_WSS_PORT=${WSS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
 EOF
@@ -267,7 +299,9 @@ if [ ! -f /etc/sokrat/gateway-provisioning.json ]; then
     cat << EOF > /etc/sokrat/gateway-provisioning.json
 {
   "schemaVersion": 1,
+  "lockDir": "/var/lib/sokrat-tenant-provisioning/locks",
   "runtime": {
+    "trustedStateDir": "/var/lib/sokrat-tenant-provisioning/runtime-state",
     "syncScript": "/usr/local/lib/sokrat-tenant-provisioning/sync-tenant-runtime.py",
     "envFile": "/etc/sokrat/gateway-runtime.env",
     "gatewayUrl": "${GATEWAY_URL}",
@@ -293,6 +327,9 @@ cat << EOF > .env
 GATEWAY_PUBLIC_HOST=${PUBLIC_HOST}
 GATEWAY_HTTP_PORT=${HTTP_PORT}
 GATEWAY_WS_PORT=${WS_PORT}
+GATEWAY_TLS_ENABLED=${TLS_ENABLED}
+GATEWAY_HTTPS_PORT=${HTTPS_PORT}
+GATEWAY_WSS_PORT=${WSS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
 SOKRAT_UID=${SOKRAT_UID}
@@ -309,6 +346,11 @@ if command -v ufw > /dev/null && ufw status 2>/dev/null | grep -q "Status: activ
     ufw allow "${WS_PORT}/tcp" > /dev/null
     ufw allow 8002/tcp > /dev/null
     ufw allow 7000/tcp > /dev/null
+    ufw allow 7443/tcp > /dev/null
+    if [ "$TLS_READY" = true ]; then
+        ufw allow "${HTTPS_PORT}/tcp" > /dev/null
+        ufw allow "${WSS_PORT}/tcp" > /dev/null
+    fi
     ufw allow 3478/tcp > /dev/null
     ufw allow 3478/udp > /dev/null
     ufw allow 3500:3654/tcp > /dev/null
@@ -319,6 +361,12 @@ else
 fi
 
 echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
+
+# Stage the host-only enrollment/firewall broker; never initialize credentials
+# or enable its privileged listeners implicitly during a container installation.
+bash scripts/install-reverse-tls-deps.sh
+python3 scripts/install-tunnel-enrollment.py --apply
+install -m 0755 scripts/deploy-public-certificate.sh /usr/local/bin/sokrat-public-certificate-deploy
 
 docker compose build
 docker compose up -d
@@ -349,6 +397,13 @@ echo -e "${BLUE}================================================================
 echo -e "Public Web Ingress:      ${GREEN}${GATEWAY_URL}${NC}"
 echo -e "Control Dashboard:       ${GREEN}http://${PUBLIC_HOST}:8002/control/${NC}"
 echo -e "SIP WebSocket Ingress:   ${GREEN}ws://${PUBLIC_HOST}:${WS_PORT}/ws${NC}"
+if [ "$TLS_READY" = true ]; then
+    echo "Employee HTTPS: https://${PUBLIC_HOST}:${HTTPS_PORT}"
+    echo "Employee WSS: wss://${PUBLIC_HOST}:${WSS_PORT}/ws"
+else
+    echo 'Employee public onboarding NOT READY: configure trusted HTTPS/WSS certificates and renewal first.'
+fi
+echo 'Reverse TLS enrollment bundle staged, NOT activated: follow REVERSE-TLS-ONBOARDING.md before distributing a pairing code.'
 echo -e "Reverse Tunnel Ingress:  ${GREEN}${PUBLIC_HOST}:7000 (TLS)${NC}"
 echo -e "CoTURN STUN/TURN:        ${GREEN}${PUBLIC_HOST}:3478 (UDP/TCP)${NC}"
 echo

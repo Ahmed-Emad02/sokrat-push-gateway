@@ -188,6 +188,16 @@ test('serves a self-contained login shell with a strict CSP', async (t) => {
     assert.equal(favicon.status, 204);
 });
 
+test('legacy enrollment and unauthenticated local bridge fail closed without throwing', async (t) => {
+    const harness = await createHarness();
+    t.after(() => harness.close());
+    const legacy = await harness.anonymous.request('/control/api/tunnel/register', { method: 'POST', body: {} });
+    assert.ok([401, 426].includes(legacy.status));
+    const bridge = await harness.anonymous.request('/control/api/tunnel/register-v2', { method: 'POST', body: {} });
+    assert.equal(bridge.status, 401);
+    assert.equal(harness.store.listPbx().length, 0);
+});
+
 test('unauthenticated callers cannot read state or mutate records', async (t) => {
     const harness = await createHarness();
     t.after(() => harness.close());

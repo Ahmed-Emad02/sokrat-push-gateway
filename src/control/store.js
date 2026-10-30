@@ -1005,6 +1005,62 @@ class ControlStore {
         });
     }
 
+    registerTunnel(input) {
+        // Called only by the authenticated local root enrollment bridge. Names
+        // are display labels; they never grant ownership of an existing PBX.
+        return this._mutateLazy(draft => {
+            if (!/^pbx_[a-f0-9]{16}$/.test(input.pbxId) || !/^[a-f0-9]{32}$/.test(input.installationId)) {
+                throw fail('invalid_tunnel_identity', 'Invalid installation identity');
+            }
+            const existing = draft.pbx.find(p => p.id === input.pbxId);
+            const normalized = normalizePbxInput(input);
+            if (existing) {
+                if (input.migrationExpected) {
+                    const matches = existing.management?.reviewedInstallationId === input.installationId
+                        && existing.wsURL === normalized.wsURL && existing.apiURL === normalized.apiURL
+                        && JSON.stringify(existing.mediaIps) === JSON.stringify(normalized.mediaIps);
+                    if (matches) return { commit: false, value: publicPbx(existing) };
+                    const digest = crypto.createHash('sha256').update(JSON.stringify(publicPbx(existing))).digest('hex');
+                    if (digest !== input.migrationExpected || existing.enabled !== true
+                        || existing.management?.approvalStatus !== 'approved'
+                        || (existing.management?.reviewedInstallationId &&
+                            existing.management.reviewedInstallationId !== input.installationId)) {
+                        throw fail('tunnel_migration_conflict', 'PBX changed or is not approved for migration', 409);
+                    }
+                    const at = isoAt(this._now());
+                    Object.assign(existing, { wsURL: normalized.wsURL, apiURL: normalized.apiURL,
+                        mediaIps: normalized.mediaIps, updatedAt: at,
+                        management: this._normalizeManagement({ reviewedInstallationId: input.installationId }, existing.management) });
+                    pushAudit(draft, { at, actor: 'root-tunnel-migration', action: 'pbx.tunnel-migrated',
+                        target: existing.id, detail: existing.name }, this.limits.auditEntries);
+                    return { commit: true, value: publicPbx(existing) };
+                }
+                if (existing.management?.reviewedInstallationId !== input.installationId
+                    || existing.wsURL !== normalized.wsURL || existing.apiURL !== normalized.apiURL
+                    || JSON.stringify(existing.mediaIps) !== JSON.stringify(normalized.mediaIps)) {
+                    throw fail('tunnel_identity_mismatch', 'Installation or route changed', 409);
+                }
+                // A retry cannot enable a disabled/retired PBX or reapprove it.
+                return { commit: false, value: publicPbx(existing) };
+            }
+            if (input.existingRequired || input.migrationExpected) {
+                throw fail('tunnel_identity_removed', 'Previously enrolled PBX was removed; explicit operator review required', 409);
+            }
+            if (draft.pbx.length >= this.limits.maxPbx) throw fail('pbx_limit_reached', 'PBX limit reached', 409);
+            this._assertEnabledCapacity(draft, null);
+            this._assertPbxNameFree(draft, normalized.name, null);
+            const at = isoAt(this._now());
+            const record = { id: input.pbxId, ...normalized, enabled: true,
+                management: this._normalizeManagement({ customer: normalized.name,
+                    reviewedInstallationId: input.installationId, approvalStatus: 'approved',
+                    extensionPolicyRequired: false }), createdAt: at, updatedAt: at };
+            draft.pbx.push(record);
+            pushAudit(draft, { at, actor: 'root-tunnel-enrollment', action: 'pbx.tunnel-enrolled',
+                target: record.id, detail: record.name }, this.limits.auditEntries);
+            return { commit: true, value: publicPbx(record) };
+        });
+    }
+
     addPbx(input, meta = {}) {
         return this._mutate((draft) => {
             const normalized = normalizePbxInput(input);

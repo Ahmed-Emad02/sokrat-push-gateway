@@ -14,6 +14,7 @@ envsubst '${GATEWAY_HTTP_PORT} ${GATEWAY_WS_PORT}' \
     > /etc/nginx/sites-available/sokrat
 ln -sf /etc/nginx/sites-available/sokrat /etc/nginx/sites-enabled/sokrat
 rm -f /etc/nginx/sites-enabled/default
+/usr/local/bin/configure-gateway-tls.sh
 
 # Host bind mounts are provisioned by the installer. Do not change their
 # ownership or modes on startup: upgrades must preserve operator permissions.

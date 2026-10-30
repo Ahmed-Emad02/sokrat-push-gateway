@@ -545,8 +545,8 @@ def load_config(path, test_mode):
     runtime = data.get("runtime")
     if not isinstance(runtime, dict):
         refuse("configuration_invalid", 'worker config field "runtime" must be an object')
-    runtime_allowed = {"syncScript", "envFile", "gatewayUrl", "stateDir", "turnRoot",
-                       "unitDir", "iface", "serviceUser"}
+    runtime_allowed = {"syncScript", "envFile", "gatewayUrl", "stateDir", "trustedStateDir", "turnRoot",
+                        "unitDir", "iface", "serviceUser", "manageFirewall"}
     unknown = sorted(set(runtime) - runtime_allowed)
     if unknown:
         refuse("configuration_invalid", f"unsupported runtime field(s): {', '.join(unknown)}")
@@ -560,6 +560,10 @@ def load_config(path, test_mode):
     iface = runtime.get("iface", DEFAULT_IFACE)
     if not isinstance(iface, str) or not IFACE_RE.match(iface):
         refuse("configuration_invalid", "runtime.iface is not a valid interface name")
+    if type(runtime.get('manageFirewall',True)) is not bool:
+        refuse('configuration_invalid','runtime.manageFirewall must be boolean')
+    if runtime.get('manageFirewall') is False and not data.get('firewallAdapter'):
+        refuse('configuration_invalid','External firewall adapter required when sync firewall management is disabled')
 
     def path_field(value, label, default):
         if value is None:
@@ -583,12 +587,15 @@ def load_config(path, test_mode):
         "gatewayUrl": canonical_url(runtime.get("gatewayUrl"), {"http", "https"},
                                     "runtime.gatewayUrl").rstrip("/"),
         "stateDir": path_field(runtime.get("stateDir"), "runtime.stateDir", DEFAULT_STATE_DIR),
+        "trustedStateDir": path_field(runtime.get("trustedStateDir"), "runtime.trustedStateDir",
+                                      runtime.get('stateDir',DEFAULT_STATE_DIR)),
         "turnRoot": path_field(runtime.get("turnRoot"), "runtime.turnRoot", DEFAULT_TURN_ROOT),
         "unitDir": path_field(runtime.get("unitDir"), "runtime.unitDir", DEFAULT_UNIT_DIR),
         "iface": iface,
         "serviceUser": service_user,
         "serviceUid": service_uid,
         "serviceGid": service_gid,
+        "manageFirewall": runtime.get('manageFirewall',True),
         "firewallAdapter": None,
         "pbx": {},
     }
@@ -720,7 +727,10 @@ def load_plan(config):
     owners = trusted_owners(config["testMode"])
     if config["serviceUid"] is not None:
         owners.add(config["serviceUid"])
-    path = config["stateDir"] / "tenant-plan.json"
+    path = config.get('trustedStateDir',config['stateDir']) / "tenant-plan.json"
+    if path.parent != config['stateDir']:
+        owners = trusted_owners(config['testMode'])
+        check_dir_chain(path.parent, owners, 'trusted allocation directory')
     info = check_file(path, "allocation plan", owners, private=True, must_exist=False)
     if info is None:
         return {}
@@ -820,7 +830,10 @@ def load_tokens(config):
     # have to be root-owned, which the control service cannot write to.
     if config["serviceUid"] is not None:
         owners.add(config["serviceUid"])
-    path = config["stateDir"] / "hook-tokens.json"
+    path = config.get('trustedStateDir',config['stateDir']) / "hook-tokens.json"
+    if path.parent != config['stateDir']:
+        owners = trusted_owners(config['testMode'])
+        check_dir_chain(path.parent, owners, 'trusted hook directory')
     info = check_file(path, "hook token file", owners, private=True, must_exist=False)
     if info is None:
         return {}
@@ -925,19 +938,6 @@ def evaluate(config):
         fingerprint = record_fingerprint(record) if record is not None else None
         if fingerprint is None and pin is not None:
             fingerprint = pin["fingerprint"]
-
-        if pin is None and record is not None and record.get("enabled"):
-            mgmt = record.get("management") or {}
-            ws = record.get("wsURL", "")
-            if mgmt.get("approvalStatus") == "approved" and ("/127.0.0.1:" in ws or "/localhost:" in ws):
-                pin = {
-                    "wsURL": record["wsURL"],
-                    "apiURL": record["apiURL"],
-                    "mediaIps": record.get("mediaIps") or [],
-                    "approval": "approved",
-                    "fingerprint": fingerprint,
-                    "hookAdapter": "/bin/true",
-                }
 
         reason = None
         kind = "blocked"
@@ -1127,6 +1127,10 @@ def run_sync(config, snapshot):
         "--env-file", str(config["envFile"]),
         "--json",
     ]
+    if config.get('trustedStateDir',config['stateDir']) != config['stateDir']:
+        argv.extend(['--trusted-state-dir',str(config['trustedStateDir'])])
+    if not config.get('manageFirewall',True):
+        argv.append('--no-firewall')
     try:
         result = subprocess.Popen(
             argv,
@@ -1294,6 +1298,10 @@ def apply_run(state, previous):
     def skip_ready(pbx_id):
         prior = previous.get(pbx_id)
         entry = entries[pbx_id]
+        if str(entry.get('pin', {}).get('hookAdapter', '')).endswith('/check-tunnel-readiness.py'):
+            # Media and hook evidence expires every reconciliation; a running
+            # coturn process alone is not proof that this reverse link works.
+            return False
         if not prior or prior.get("state") != "ready":
             return False
         if prior.get("fingerprint") != entry["fingerprint"]:

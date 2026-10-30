@@ -376,7 +376,9 @@ function createControlRouter(options = {}) {
         const tokenPath = '/etc/sokrat/gateway-tunnel.token';
         let token = '';
         try {
-            if (fs.existsSync(tokenPath)) {
+            if (fs.existsSync('/etc/sokrat/gateway-tunnel-enrollment.token')) {
+                token = fs.readFileSync('/etc/sokrat/gateway-tunnel-enrollment.token', 'utf8').trim();
+            } else if (fs.existsSync(tokenPath)) {
                 token = fs.readFileSync(tokenPath, 'utf8').trim();
             } else if (process.env.GATEWAY_TUNNEL_TOKEN) {
                 token = process.env.GATEWAY_TUNNEL_TOKEN.trim();
@@ -389,8 +391,45 @@ function createControlRouter(options = {}) {
         res.json({ success: true, token });
     });
 
+    router.post('/api/tunnel/register-v2', wrap(async (req, res) => {
+        const crypto = require('node:crypto');
+        const peer = req.socket.remoteAddress;
+        if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)) {
+            return res.status(403).json({ success: false, error: 'local_bridge_required' });
+        }
+        let expected = '';
+        try { expected = fs.readFileSync('/etc/sokrat/gateway-tunnel-bridge.token', 'utf8').trim(); } catch {}
+        const supplied = req.get('x-sokrat-tunnel-bridge') || '';
+        if (!expected || !crypto.timingSafeEqual(crypto.createHash('sha256').update(expected).digest(),
+            crypto.createHash('sha256').update(supplied).digest())) {
+            return res.status(401).json({ success: false, error: 'invalid_bridge_credential' });
+        }
+        const { pbxId, installationId, name, ports, mediaIp, migrationExpected, existingRequired } = req.body || {};
+        if (existingRequired !== undefined && typeof existingRequired !== 'boolean') {
+            return res.status(400).json({ success: false, error: 'invalid_tunnel_retry' });
+        }
+        const slot = ports?.media - 22000;
+        if (!Number.isInteger(slot) || slot < 0 || slot >= 155
+            || ports.ws !== 23000 + slot * 2 || ports.api !== 23001 + slot * 2) {
+            return res.status(400).json({ success: false, error: 'invalid_tunnel_ports' });
+        }
+        if (migrationExpected !== undefined && !/^[a-f0-9]{64}$/.test(migrationExpected)) {
+            return res.status(400).json({ success: false, error: 'invalid_migration_review' });
+        }
+        const pbx = await store.registerTunnel({ pbxId, installationId, name, migrationExpected, existingRequired,
+            wsURL: `ws://127.0.0.1:${ports.ws}/ws`, apiURL: `http://127.0.0.1:${ports.api}`,
+            mediaIps: [mediaIp], enabled: true });
+        res.json({ success: true, pbxId: pbx.id,
+            approvalStatus: pbx.management?.approvalStatus,
+            enabled: pbx.enabled && pbx.management?.approvalStatus === 'approved' });
+    }));
+
     router.post('/api/tunnel/register', wrap(async (req, res) => {
         const fs = require('node:fs');
+        if (fs.existsSync('/etc/sokrat/gateway-tunnel-enrollment.token')) {
+            return res.status(426).json({ success: false, error: 'secure_enrollment_required',
+                message: 'Use the current pairing code and updated PBX reverse TLS installer' });
+        }
         const crypto = require('node:crypto');
         const token = String(req.body?.token || '').trim();
         const name = String(req.body?.name || '').trim();

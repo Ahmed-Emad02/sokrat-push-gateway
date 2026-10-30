@@ -1,5 +1,14 @@
 node_modules
 .git
 .env
+.env.*
+!.env.example
+config/firebase-service-account.json
+config/firebase-service-account.b64
+**/*.p8
+**/*.key
+**/*.pem
+backups
+**/__pycache__
 *.log
 scripts/__pycache__

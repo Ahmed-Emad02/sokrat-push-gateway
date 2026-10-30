@@ -1,0 +1,20 @@
+[Unit]
+Description=Sokrat secure reverse TLS enrollment and scoped FRP authorization
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/etc/sokrat/tunnel-enrollment/config.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/sokrat-tenant-provisioning/tunnel-enrollment.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+TasksMax=64
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target

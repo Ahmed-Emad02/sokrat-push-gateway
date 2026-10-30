@@ -1,9 +1,10 @@
 'use strict';
 const { WebSocket, WebSocketServer } = require('ws');
+const SIP_HANDOVER_GRACE_MS = 20000;
 
 // Device authorization belongs to the control store. SIP passwords continue to
 // be checked upstream by the selected PBX; no password is parsed/stored here.
-function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeIncomingCallId }) {
+function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeIncomingCallId, handoverGraceMs = SIP_HANDOVER_GRACE_MS }) {
     if (typeof authorize !== 'function' || typeof isAuthorized !== 'function') throw new Error('Authorization and revocation checks are required');
     const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024,
         perMessageDeflate: false, handleProtocols: protocols => protocols.has('sip') ? 'sip' : false });
@@ -39,34 +40,70 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
             if (!route || !/^wss?:\/\//.test(route.wsUrl) || !route.extension) {
                 socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
             }
+            // Opt-in per-UA flow identity, never an authorization credential.
+            // A fresh one-use ticket and unchanged assignment are still required.
+            const flow = url.searchParams.get('flow');
+            if (flow && (!consumeTicket || !/^[a-f0-9]{32}$/.test(flow))) {
+                socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
+            }
+            const previous = flow && [...sessions].find(session => session.device === device && session.flow === flow);
+            if (previous && (previous.token !== token || previous.route.pbxId !== route.pbxId ||
+                previous.route.extension !== route.extension || previous.route.wsUrl !== route.wsUrl ||
+                previous.route.authorizationRevision !== route.authorizationRevision ||
+                !await isAuthorized(device, previous.route, token))) {
+                socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
+            }
             if (socket.destroyed) return;
-            if ([...sessions].filter(session => session.device === device).length >= 3) {
+            if (!previous && [...sessions].filter(session => session.device === device).length >= 3) {
                 socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n'); return;
             }
-            wss.handleUpgrade(req, socket, head, client => {
+            wss.handleUpgrade(req, socket, head, initialClient => {
+                if (previous && sessions.has(previous)) {
+                    previous.bindClient(initialClient);
+                    return;
+                }
+                let client = initialClient;
                 const upstream = new WebSocket(route.wsUrl, 'sip', { maxPayload: 256 * 1024,
                     perMessageDeflate: false, handshakeTimeout: 8000, followRedirects: false });
-                const session = { client, upstream, device, route, token };
+                const session = { client, upstream, device, route, token, flow };
                 sessions.add(session);
                 let alive = true;
-                client.on('pong', () => { alive = true; });
                 session.heartbeat = () => {
-                    if (!alive) { client.terminate(); upstream.terminate(); return; }
+                    if (!client) return; // bounded handover timer owns detached flows
+                    if (!alive) { detach(client); return; }
                     alive = false; client.ping();
                 };
+                let handoverTimer;
+                let closed = false;
                 const close = (why) => {
+                    if (closed) return;
+                    closed = true;
+                    clearTimeout(handoverTimer);
                     console.warn(`[sip-proxy][${route.extension}] close: ${why || 'unknown'}`);
                     sessions.delete(session);
-                    client.terminate(); upstream.terminate();
+                    client?.terminate(); upstream.terminate();
+                };
+                session.close = close;
+                const detach = source => {
+                    if (client !== source || closed) return;
+                    client = session.client = null;
+                    source.terminate();
+                    if (!flow) { close('client_disconnected'); return; }
+                    // Preserve the original PBX WS/dialog only for this approved
+                    // flow. No grace on revocation, malformed SIP or PBX failure.
+                    handoverTimer = setTimeout(() => close('handover_expired'), handoverGraceMs);
+                    handoverTimer.unref();
                 };
                 const queue = [];
+                const downstreamQueue = [];
+                let downstreamBytes = 0;
                 const incomingDialogs = new Map();
                 let queued = 0;
                 const send = (target, data, binary) => {
                     if (target.bufferedAmount > 1024 * 1024) return close('buffer_overflow');
                     if (target.readyState === WebSocket.OPEN) target.send(data, { binary }, err => { if (err) close('send_error: ' + (err?.message || 'unknown')); });
                 };
-                client.on('message', (data, binary) => {
+                const onClientMessage = (data, binary) => {
                     // Bind all client-originated requests to the assigned
                     // extension. SIP responses to incoming calls are exempt.
                     const message = data.toString().replace(/^(?:\r\n)+/, '');
@@ -109,7 +146,22 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                         if (queued > 256 * 1024) return close('queue_overflow');
                         queue.push([data, binary]);
                     } else send(upstream, data, binary);
-                });
+                };
+                session.bindClient = next => {
+                    const old = client;
+                    clearTimeout(handoverTimer);
+                    client = session.client = next;
+                    alive = true;
+                    if (old && old !== next) old.terminate();
+                    next.on('pong', () => { if (client === next) alive = true; });
+                    next.on('message', (data, binary) => { if (client === next) onClientMessage(data, binary); });
+                    next.on('close', () => detach(next));
+                    next.on('error', () => detach(next));
+                    for (const [data, binary] of downstreamQueue) send(next, data, binary);
+                    downstreamQueue.length = 0;
+                    downstreamBytes = 0;
+                };
+                session.bindClient(initialClient);
                 upstream.on('open', () => { for (const [data, binary] of queue) send(upstream, data, binary); queue.length = 0; });
                 upstream.on('message', (data, binary) => {
                     const message = data.toString();
@@ -139,11 +191,14 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                             } catch (_) { return close('invalid_application_call_id'); }
                         }
                     }
-                    send(client, data, binary);
+                    if (client) send(client, data, binary);
+                    else {
+                        downstreamBytes += data.length;
+                        if (downstreamBytes > 256 * 1024) return close('handover_queue_overflow');
+                        downstreamQueue.push([data, binary]);
+                    }
                 });
-                client.on('close', (code, reason) => close(`client_close: code=${code} reason=${reason}`));
                 upstream.on('close', (code, reason) => close(`upstream_close: code=${code} reason=${reason}`));
-                client.on('error', err => close('client_error: ' + (err?.message || 'unknown')));
                 upstream.on('error', err => close('upstream_error: ' + (err?.message || 'unknown')));
             });
         } catch (_) {
@@ -155,15 +210,15 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
             try {
                 if (!await isAuthorized(session.device, session.route, session.token)) {
                     console.warn(`[sip-proxy][${session.route?.extension}] terminated: authorization_revoked`);
-                    session.client.terminate(); session.upstream.terminate();
+                    session.close('authorization_revoked');
                 } else session.heartbeat();
             } catch (err) {
                 console.warn(`[sip-proxy][${session.route?.extension}] terminated: heartbeat_exception:`, err?.message);
-                session.client.terminate(); session.upstream.terminate();
+                session.close('heartbeat_exception');
             }
         }
     }, 10000);
     timer.unref();
-    return { close() { clearInterval(timer); for (const s of sessions) { s.client.terminate(); s.upstream.terminate(); } wss.close(); } };
+    return { close() { clearInterval(timer); for (const s of sessions) s.close('shutdown'); wss.close(); } };
 }
-module.exports = { attachSipProxy };
+module.exports = { attachSipProxy, SIP_HANDOVER_GRACE_MS };

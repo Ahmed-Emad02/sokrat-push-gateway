@@ -78,6 +78,10 @@
         <p class="hint" id="pbx-provisioning-summary" role="status" aria-live="polite">
           Provisioning status has not been loaded yet.
         </p>
+        <p class="hint">
+          New PBX servers initialize themselves from <strong>Sokrat VOIP</strong> using the
+          gateway pairing code. Use <strong>Edit</strong> only to change an existing record.
+        </p>
         <div class="row-actions">
           <button id="show-tunnel-token-btn" class="btn btn-ghost btn-sm" type="button">Show Tunnel Token</button>
         </div>
@@ -89,8 +93,8 @@
           </div>
         </div>
       </div>
-      <details id="pbx-form-details" class="editor">
-        <summary>Add or edit a PBX server</summary>
+      <details id="pbx-form-details" class="editor" hidden>
+        <summary>Edit PBX server</summary>
       <form id="pbx-form" class="form-grid">
         <input type="hidden" id="pbx-id" value="">
         <div class="field">

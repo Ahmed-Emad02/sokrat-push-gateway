@@ -1031,7 +1031,10 @@
         refs.sshPassword.required = true;
         refs.pbxSubmit.textContent = 'Add server';
         refs.pbxCancel.hidden = true;
-        if (refs.pbxFormDetails) refs.pbxFormDetails.open = false;
+        if (refs.pbxFormDetails) {
+            refs.pbxFormDetails.open = false;
+            refs.pbxFormDetails.hidden = true;
+        }
         syncManagementFields();
     }
 
@@ -1066,7 +1069,10 @@
         syncManagementFields();
         refs.pbxSubmit.textContent = 'Save changes';
         refs.pbxCancel.hidden = false;
-        if (refs.pbxFormDetails) refs.pbxFormDetails.open = true;
+        if (refs.pbxFormDetails) {
+            refs.pbxFormDetails.hidden = false;
+            refs.pbxFormDetails.open = true;
+        }
         clearMessages();
         refs.pbxForm.scrollIntoView({ block: 'center', behavior: 'smooth' });
         refs.pbxAddress.focus({ preventScroll: true });

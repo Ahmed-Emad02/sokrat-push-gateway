@@ -132,7 +132,7 @@ def main():
             '    }',
             '',
             '    location @sokrat_login {',
-            f'        return 302 http://$host:{CONTROL_PORT}/control/;',
+            f'        return 302 https://$host:{CONTROL_TLS_PORT}/control/;',
             '    }',
             '}',
             '',

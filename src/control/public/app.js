@@ -764,6 +764,11 @@
                             onclick: () => startEditPbx(record)
                         }, 'Edit'),
                         el('button', {
+                            class: 'btn btn-ghost btn-sm',
+                            type: 'button',
+                            onclick: () => setPbxSuspended(record, record.enabled)
+                        }, record.enabled ? 'Suspend' : 'Resume'),
+                        el('button', {
                             class: 'btn btn-danger btn-sm',
                             type: 'button',
                             onclick: () => removePbx(record)
@@ -1166,6 +1171,26 @@
         } finally {
             refs.sshPassword.value = '';
             setBusy(refs.pbxSubmit, false);
+        }
+    }
+
+    async function setPbxSuspended(record, suspend) {
+        if (suspend) {
+            const confirmed = window.confirm(
+                `Suspend "${record.name}"? Its devices stop receiving pushes until resumed. ` +
+                'The server record, device approvals and invites are kept.'
+            );
+            if (!confirmed) return;
+        }
+        try {
+            await api(`/api/pbx/${encodeURIComponent(record.id)}`, {
+                method: 'PATCH',
+                body: { enabled: !suspend }
+            });
+            showStatus(suspend ? `Suspended ${record.name}.` : `Resumed ${record.name}.`);
+            await refresh();
+        } catch (error) {
+            handleError(error);
         }
     }
 

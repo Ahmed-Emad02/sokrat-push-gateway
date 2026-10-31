@@ -39,7 +39,13 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const INDEX_FILE = path.join(PUBLIC_DIR, 'index.html');
 const ASSETS = new Map([
     ['app.css', { file: path.join(PUBLIC_DIR, 'app.css'), type: 'text/css; charset=utf-8' }],
-    ['app.js', { file: path.join(PUBLIC_DIR, 'app.js'), type: 'text/javascript; charset=utf-8' }]
+    ['app.js', { file: path.join(PUBLIC_DIR, 'app.js'), type: 'text/javascript; charset=utf-8' }],
+    ['logo.svg', { file: path.join(PUBLIC_DIR, 'logo.svg'), type: 'image/svg+xml' }],
+    ['favicon.svg', { file: path.join(PUBLIC_DIR, 'favicon.svg'), type: 'image/svg+xml' }],
+    ['favicon.ico', { file: path.join(PUBLIC_DIR, 'favicon.ico'), type: 'image/x-icon' }],
+    ['favicon-32.png', { file: path.join(PUBLIC_DIR, 'favicon-32.png'), type: 'image/png' }],
+    ['favicon-192.png', { file: path.join(PUBLIC_DIR, 'favicon-192.png'), type: 'image/png' }],
+    ['apple-touch-icon.png', { file: path.join(PUBLIC_DIR, 'apple-touch-icon.png'), type: 'image/png' }]
 ]);
 const BASE_PLACEHOLDER = '__CONTROL_BASE__';
 
@@ -147,7 +153,7 @@ function createControlRouter(options = {}) {
     const indexTemplate = readIndex();
     const assetCache = new Map();
     for (const [name, asset] of ASSETS) {
-        assetCache.set(name, { body: readStatic(asset.file), type: asset.type });
+        assetCache.set(name, { body: fs.readFileSync(asset.file), type: asset.type });
     }
 
     if (allowPublic) {
@@ -258,7 +264,11 @@ function createControlRouter(options = {}) {
         res.type(asset.type).send(asset.body);
     });
 
-    router.get('/favicon.ico', (req, res) => res.status(204).end());
+    router.get('/favicon.ico', (req, res) => {
+        const asset = assetCache.get('favicon.ico');
+        if (!asset) return res.status(204).end();
+        res.type(asset.type).send(asset.body);
+    });
 
     // --- session -----------------------------------------------------------
 

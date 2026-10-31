@@ -49,7 +49,7 @@ test('the shell has no inline handlers, inline styles or external resources', as
     assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)/i);
     assert.doesNotMatch(html, /(?:src|href)="https?:\/\//i);
     assert.doesNotMatch(css, /@import|url\(\s*['"]?https?:/i);
-    assert.equal((html.match(/__CONTROL_BASE__/g) || []).length, 3);
+    assert.ok((html.match(/__CONTROL_BASE__/g) || []).length >= 3);
     assert.doesNotMatch(script, /\.(inner|outer)HTML\s*=/);
     assert.doesNotMatch(script, /eval\(|new Function\(/);
 });

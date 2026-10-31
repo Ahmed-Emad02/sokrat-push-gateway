@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Sokrat">
+  <rect width="1024" height="1024" rx="224" fill="#171b21"/>
+  <rect x="100" y="405" width="120" height="215" rx="60" fill="#ffffff"/>
+  <rect x="280" y="270" width="120" height="475" rx="60" fill="#ffffff"/>
+  <rect x="452" y="158" width="120" height="702" rx="60" fill="#c0392b"/>
+  <rect x="624" y="270" width="120" height="475" rx="60" fill="#ffffff"/>
+  <rect x="804" y="405" width="120" height="215" rx="60" fill="#ffffff"/>
+</svg>

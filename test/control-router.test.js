@@ -185,7 +185,14 @@ test('serves a self-contained login shell with a strict CSP', async (t) => {
     assert.equal(traversal.status, 404);
 
     const favicon = await harness.client.request('/control/favicon.ico');
-    assert.equal(favicon.status, 204);
+    assert.equal(favicon.status, 200);
+    assert.match(favicon.headers.get('content-type'), /image\/x-icon|image\/vnd\.microsoft\.icon/);
+    const mark = await harness.client.request('/control/asset/logo.svg');
+    assert.equal(mark.status, 200);
+    assert.match(mark.headers.get('content-type'), /image\/svg\+xml/);
+    const appIcon = await harness.client.request('/control/asset/favicon-32.png');
+    assert.equal(appIcon.status, 200);
+    assert.match(appIcon.headers.get('content-type'), /image\/png/);
 });
 
 test('legacy enrollment and unauthenticated local bridge fail closed without throwing', async (t) => {

@@ -197,12 +197,11 @@ async function buildCtx() {
     ctx.sendToDevice = async function (dev, call) {
         if (dev.platform === 'ios') {
             if (!apnsReady || !apnsProvider) throw new Error('APNs provider unavailable');
-            await apnsProvider.send(dev.voip_token, call);
-            return;
+            return await apnsProvider.send(dev.voip_token, call);
         }
         if (dev.platform === 'android') {
             if (!fcmReady || !fcmMessaging) throw new Error('FCM provider unavailable');
-            await fcmMessaging.send({
+            return await fcmMessaging.send({
                 token: dev.token,
                 android: { priority: 'high' },
                 data: {
@@ -215,7 +214,6 @@ async function buildCtx() {
                     sipWss: call.sipWss || ''
                 }
             });
-            return;
         }
         throw new Error(`Unsupported platform: ${dev.platform}`);
     };

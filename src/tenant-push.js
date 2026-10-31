@@ -42,22 +42,36 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             const devices = await store.listPush(pbx.id, callee);
             let count = 0;
             let failed = 0;
+            let skipped = 0;
+            if (!devices.length) {
+                console.warn(`[tenant-push] no approved push devices extension=${callee} callId=${id}`);
+            }
             for (const device of devices) {
                 const assignment = await store.approvedAssignment(device.deviceId);
-                if (!assignment || assignment.pbxId !== pbx.id || assignment.extension !== callee) continue;
+                if (!assignment || assignment.pbxId !== pbx.id || assignment.extension !== callee) {
+                    skipped++;
+                    continue;
+                }
                 try {
-                    await sendToDevice({ ...device, device_uuid: assignment.deviceUuid, voip_token: device.voipToken }, {
+                    const messageId = await sendToDevice({ ...device, device_uuid: assignment.deviceUuid, voip_token: device.voipToken }, {
                         callerId: String(caller || '').slice(0, 128), callerName: String(callerName || caller || '').slice(0, 256),
                         extension: callee, callId: id, timestamp: Date.now(), sipWss: ''
                     });
                     count++;
+                    // FCM accepts a message for delivery; this ID is not proof the
+                    // phone woke. It is intentionally free of tokens/caller data.
+                    if (messageId) {
+                        console.log(`[tenant-push] dispatched extension=${callee} callId=${id} messageId=${String(messageId).slice(0, 96)}`);
+                    }
                 } catch (error) {
                     failed++;
+                    console.warn(`[tenant-push] dispatch failed extension=${callee} callId=${id} code=${String(error.code || error.message || 'unknown').slice(0, 96)}`);
                     if (/registration-token-not-registered|unregistered|invalid-registration-token|baddevicetoken/i.test(String(error.code || error.message || ''))) {
                         await store.removePush(device.deviceId);
                     }
                 }
             }
+            console.log(`[tenant-push] incoming-call extension=${callee} callId=${id} devices=${devices.length} dispatched=${count} failed=${failed} skipped=${skipped}`);
             res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed });
         } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
     });

@@ -91,6 +91,8 @@ COPY docker/nginx-gateway.conf.template /etc/nginx/templates/sokrat.conf.templat
 COPY docker/nginx-wss.conf /etc/nginx/templates/sokrat-tls.conf.template
 COPY docker/configure-gateway-tls.sh /usr/local/bin/configure-gateway-tls.sh
 RUN chmod 0755 /usr/local/bin/configure-gateway-tls.sh
+COPY docker/configure-pbx-proxies.py /usr/local/bin/configure-pbx-proxies.py
+RUN chmod 0755 /usr/local/bin/configure-pbx-proxies.py
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 

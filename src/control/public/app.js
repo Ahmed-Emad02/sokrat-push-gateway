@@ -685,6 +685,20 @@
             }));
     }
 
+    function pbxDashboardUrl(record) {
+        try {
+            if (!record.enabled) return null;
+            const api = new URL(record.apiURL);
+            const apiPort = Number(api.port);
+            if (api.hostname !== '127.0.0.1' || !Number.isInteger(apiPort) ||
+                apiPort < 23000 || apiPort > 23099) return null;
+            const publicPort = 39000 + (apiPort % 100);
+            return `https://${location.hostname}:${publicPort}/`;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function renderPbx() {
         const pbx = snapshot.pbx || [];
         refs.pbxEmpty.hidden = pbx.length > 0;
@@ -728,6 +742,15 @@
                 provisioningCell(record),
                 el('td', { dataset: { label: 'Actions' } },
                     el('div', { class: 'row-actions' },
+                        pbxDashboardUrl(record)
+                            ? el('a', {
+                                class: 'btn btn-sm',
+                                href: pbxDashboardUrl(record),
+                                target: '_blank',
+                                rel: 'noopener noreferrer',
+                                title: 'Open this PBX dashboard through the gateway'
+                            }, 'Open Sokrat VOIP')
+                            : null,
                         el('button', {
                             class: 'btn btn-sm',
                             type: 'button',

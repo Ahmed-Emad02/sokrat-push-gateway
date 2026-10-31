@@ -42,6 +42,11 @@ EOF
     chmod 0600 /var/lib/sokrat-gateway/control.json
 fi
 
+# Root-owned nginx listeners for the PBX dashboards. This runs before nginx
+# starts; rerun it after adding a PBX and reload nginx to expose the new button.
+python3 /usr/local/bin/configure-pbx-proxies.py || \
+    echo "[entrypoint] WARNING: PBX dashboard proxy config generation failed" >&2
+
 if [ ! -f "/var/lib/sokrat-gateway/tenant-runtime.json" ]; then
     echo '{"relays":{},"hookHashes":{}}' > /var/lib/sokrat-gateway/tenant-runtime.json
     chown sokrat-push:sokrat-push /var/lib/sokrat-gateway/tenant-runtime.json

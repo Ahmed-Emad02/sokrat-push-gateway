@@ -21,6 +21,7 @@ TLS_DIR = os.environ.get('GATEWAY_TLS_DIR', '/etc/sokrat/tls')
 PORT_BASE = 39000
 API_BASE = 23000
 API_MAX = 23099
+CONTROL_TLS_PORT = int(os.environ.get('CONTROL_TLS_PORT', '39100'))
 
 
 def proxy_port(api_port):
@@ -66,6 +67,32 @@ def main():
     for public, api_port, _name in entries:
         lines.append(f'    {public} {api_port};')
     lines += ['}', '']
+    # The control dashboard needs HTTPS for its SameSite=Strict session cookie
+    # to be sent to the HTTPS per-PBX proxy ports. Keep it off the public 443
+    # API/WSS listener, which must not expose the dashboard.
+    lines += [
+        'server {',
+        f'    listen {CONTROL_TLS_PORT} ssl;',
+        '    server_name _;',
+        f'    ssl_certificate {TLS_DIR}/fullchain.pem;',
+        f'    ssl_certificate_key {TLS_DIR}/privkey.pem;',
+        '    ssl_protocols TLSv1.2 TLSv1.3;',
+        '    ssl_session_cache shared:sokrat_control_tls_cache:10m;',
+        '    ssl_session_timeout 1h;',
+        '',
+        '    location = /control { return 301 /control/; }',
+        '    location /control/ {',
+        f'        proxy_pass http://127.0.0.1:{CONTROL_PORT};',
+        '        proxy_set_header Host $http_host;',
+        '        proxy_set_header X-Real-IP $remote_addr;',
+        '        proxy_set_header X-Forwarded-For $remote_addr;',
+        '        proxy_set_header X-Forwarded-Proto https;',
+        '        add_header Cache-Control "no-store" always;',
+        '    }',
+        '    location / { return 404; }',
+        '}',
+        '',
+    ]
     if entries:
         listens = ' '.join(f'listen {public} ssl;' for public, _api, _name in entries)
         lines += [

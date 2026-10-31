@@ -33,6 +33,7 @@
         statApproved: document.getElementById('stat-approved'),
         statCap: document.getElementById('stat-cap'),
         pbxForm: document.getElementById('pbx-form'),
+        pbxFormDetails: document.getElementById('pbx-form-details'),
         pbxAddress: document.getElementById('pbx-address'),
         pbxAutoAddress: document.getElementById('pbx-auto-address'),
         pbxResolve: document.getElementById('pbx-resolve'),
@@ -714,14 +715,19 @@
                     management && management.loginHostname
                         ? el('span', { class: 'cell-sub', text: `Login · ${management.loginHostname}` })
                         : null),
-                el('td', { dataset: { label: 'WebSocket' } },
-                    el('span', { class: 'url', text: record.wsURL })),
-                el('td', { dataset: { label: 'API' } },
-                    el('span', { class: 'url', text: record.apiURL })),
-                el('td', { dataset: { label: 'Media IPs' } },
-                    record.mediaIps && record.mediaIps.length
-                        ? el('span', { class: 'url', text: record.mediaIps.join(', ') })
-                        : el('span', { class: 'empty', text: 'None' })),
+                el('td', { dataset: { label: 'Connection' } },
+                    el('div', { class: 'connection' },
+                        el('span', { class: 'conn-line' },
+                            el('span', { class: 'conn-label', text: 'WS' }),
+                            el('span', { class: 'url', text: record.wsURL })),
+                        el('span', { class: 'conn-line' },
+                            el('span', { class: 'conn-label', text: 'API' }),
+                            el('span', { class: 'url', text: record.apiURL })),
+                        record.mediaIps && record.mediaIps.length
+                            ? el('span', { class: 'conn-line' },
+                                el('span', { class: 'conn-label', text: 'Media' }),
+                                el('span', { class: 'url', text: record.mediaIps.join(', ') }))
+                            : null)),
                 el('td', { dataset: { label: 'State' } },
                     el('span', {
                         class: record.enabled ? 'pill pill-on' : 'pill pill-off',
@@ -1025,6 +1031,7 @@
         refs.sshPassword.required = true;
         refs.pbxSubmit.textContent = 'Add server';
         refs.pbxCancel.hidden = true;
+        if (refs.pbxFormDetails) refs.pbxFormDetails.open = false;
         syncManagementFields();
     }
 
@@ -1059,6 +1066,7 @@
         syncManagementFields();
         refs.pbxSubmit.textContent = 'Save changes';
         refs.pbxCancel.hidden = false;
+        if (refs.pbxFormDetails) refs.pbxFormDetails.open = true;
         clearMessages();
         refs.pbxForm.scrollIntoView({ block: 'center', behavior: 'smooth' });
         refs.pbxAddress.focus({ preventScroll: true });

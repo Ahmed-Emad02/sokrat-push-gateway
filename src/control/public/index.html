@@ -89,6 +89,8 @@
           </div>
         </div>
       </div>
+      <details id="pbx-form-details" class="editor">
+        <summary>Add or edit a PBX server</summary>
       <form id="pbx-form" class="form-grid">
         <input type="hidden" id="pbx-id" value="">
         <div class="field">
@@ -198,6 +200,7 @@
           <button id="pbx-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
         </div>
       </form>
+      </details>
 
       <div class="table-wrapper" role="region" aria-labelledby="pbx-caption" tabindex="0">
         <table>
@@ -205,9 +208,7 @@
           <thead>
             <tr>
               <th scope="col">Name</th>
-              <th scope="col">WebSocket</th>
-              <th scope="col">API</th>
-              <th scope="col">Media IPs</th>
+              <th scope="col">Connection</th>
               <th scope="col">State</th>
               <th scope="col">Provisioning</th>
               <th scope="col">Actions</th>

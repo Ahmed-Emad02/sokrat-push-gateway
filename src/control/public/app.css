@@ -140,7 +140,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.85rem clamp(1rem, 4vw, 2.5rem);
+  padding: 0.7rem clamp(1rem, 4vw, 2.5rem);
   background: var(--surface);
   border-block-end: 1px solid var(--border);
 }
@@ -189,11 +189,11 @@ a {
 /* ----------------------------------------------------------------- layout */
 
 main {
-  padding: clamp(1rem, 4vw, 2.5rem);
+  padding: clamp(1.15rem, 4vw, 2.75rem);
   padding-block-end: 4rem;
   display: grid;
-  gap: 1.25rem;
-  max-inline-size: 1200px;
+  gap: 1.5rem;
+  max-inline-size: 1080px;
   margin-inline: auto;
 }
 
@@ -203,7 +203,8 @@ main[aria-busy="true"] {
 
 .page-head {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.5rem;
+  max-inline-size: 75ch;
 }
 
 .hint {
@@ -217,9 +218,9 @@ main[aria-busy="true"] {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: clamp(1rem, 2.4vw, 1.5rem);
+  padding: clamp(1.15rem, 2.2vw, 1.6rem);
   display: grid;
-  gap: 1rem;
+  gap: 1.15rem;
   min-inline-size: 0;
 }
 
@@ -241,16 +242,77 @@ main[aria-busy="true"] {
 
 /* ------------------------------------------------------------------ forms */
 
+.editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.editor > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 650;
+  list-style: none;
+}
+
+.editor > summary::-webkit-details-marker {
+  display: none;
+}
+
+.editor > summary::after {
+  content: "+";
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.editor[open] > summary::after {
+  content: "\2212";
+}
+
+.editor[open] > summary {
+  border-block-end: 1px solid var(--border);
+}
+
+.editor > form {
+  padding: 1rem;
+  background: var(--surface);
+  border-end-start-radius: var(--radius-sm);
+  border-end-end-radius: var(--radius-sm);
+}
+
 .form-grid {
   display: grid;
-  gap: 0.85rem;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem 1.15rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   align-items: start;
+}
+
+.form-actions {
+  grid-column: 1 / -1;
+}
+
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+legend {
+  padding: 0;
+  margin-block-end: 0.35rem;
+  font-size: 0.84rem;
+  font-weight: 600;
 }
 
 .field {
   display: grid;
-  gap: 0.3rem;
+  gap: 0.35rem;
   min-inline-size: 0;
 }
 
@@ -457,20 +519,41 @@ select:user-invalid ~ .error-msg {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
 }
 
 .stats li {
   display: grid;
   gap: 0.1rem;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  padding: 0.9rem 1.1rem;
+  border-inline-end: 1px solid var(--border);
+  background: transparent;
+}
+
+.stats li:last-child {
+  border-inline-end: 0;
+}
+
+@media (max-width: 42rem) {
+  .stats {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .stats li:nth-child(2n) {
+    border-inline-end: 0;
+  }
+
+  .stats li:nth-child(-n + 2) {
+    border-block-end: 1px solid var(--border);
+  }
 }
 
 .stat-value {
@@ -490,7 +573,7 @@ select:user-invalid ~ .error-msg {
 .table-wrapper {
   overflow: auto;
   max-inline-size: 100%;
-  max-block-size: 30rem;
+  max-block-size: 26rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   container-type: inline-size;
@@ -518,7 +601,7 @@ thead th {
   letter-spacing: 0.05em;
   color: var(--muted);
   font-weight: 650;
-  padding: 0.55rem 0.75rem;
+  padding: 0.65rem 0.85rem;
   border-block-end: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -535,7 +618,7 @@ tbody th {
 
 tbody th,
 tbody td {
-  padding: 0.6rem 0.75rem;
+  padding: 0.8rem 0.85rem;
   border-block-end: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -562,6 +645,28 @@ tbody tr:hover td {
   font-family: var(--mono);
   font-size: 0.8rem;
   overflow-wrap: anywhere;
+}
+
+.connection {
+  display: grid;
+  gap: 0.2rem;
+  min-inline-size: 0;
+}
+
+.conn-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-inline-size: 0;
+}
+
+.conn-label {
+  flex: 0 0 2.7rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .pill {
@@ -607,8 +712,18 @@ tbody tr:hover td {
 
 .row-actions {
   display: flex;
-  gap: 0.4rem;
+  gap: 0.45rem;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.row-actions a.btn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.row-actions a.btn:hover:not(:disabled) {
+  background: var(--accent-soft);
 }
 
 /* Stacked cards when the table itself is narrow (container query). */

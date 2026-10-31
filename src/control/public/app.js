@@ -1475,7 +1475,7 @@
             refs.showTunnelTokenBtn.addEventListener('click', async () => {
                 if (!refs.tunnelTokenPanel.hidden) {
                     refs.tunnelTokenPanel.hidden = true;
-                    refs.showTunnelTokenBtn.textContent = 'Show Tunnel Token';
+                    refs.showTunnelTokenBtn.textContent = 'Show Pairing Code';
                     return;
                 }
                 try {
@@ -1483,9 +1483,9 @@
                     if (res && res.token) {
                         refs.tunnelTokenValue.textContent = res.token;
                         refs.tunnelTokenPanel.hidden = false;
-                        refs.showTunnelTokenBtn.textContent = 'Hide Tunnel Token';
+                        refs.showTunnelTokenBtn.textContent = 'Hide Pairing Code';
                     } else {
-                        refs.tunnelTokenValue.textContent = 'No token configured';
+                        refs.tunnelTokenValue.textContent = 'No pairing code configured';
                         refs.tunnelTokenPanel.hidden = false;
                     }
                 } catch (e) {

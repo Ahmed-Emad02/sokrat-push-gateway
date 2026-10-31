@@ -52,13 +52,6 @@
   <div id="dashboard-view" hidden>
     <div class="page-head">
       <h1>PBX &amp; device control</h1>
-      <p class="hint">
-        Register the PBX connections this gateway serves, then approve pending
-        devices against a PBX and extension. Devices can enroll themselves with
-        their extension and password (approve only) or redeem a one-time
-        enrollment token; invite tokens and device secrets are shown once and
-        stored only as hashes.
-      </p>
     </div>
 
     <p id="dashboard-alert" class="alert alert-error" role="alert" hidden></p>
@@ -76,10 +69,10 @@
         <h2 id="pbx-title">PBX connections</h2>
 
         <div class="row-actions">
-          <button id="show-tunnel-token-btn" class="btn btn-ghost btn-sm" type="button">Show Tunnel Token</button>
+          <button id="show-tunnel-token-btn" class="btn btn-ghost btn-sm" type="button">Show Pairing Code</button>
         </div>
         <div id="tunnel-token-panel" class="notice notice-token" hidden>
-          <p class="hint">PBX Reverse TLS Tunnel Pre-Shared Key:</p>
+          <p class="hint">PBX secure pairing code — paste it into Sokrat VOIP → Settings → Sokrat Gateway:</p>
           <div class="secret-row">
             <code id="tunnel-token-value"></code>
             <button id="copy-tunnel-token-btn" class="btn btn-ghost btn-sm" type="button">Copy</button>
@@ -214,7 +207,7 @@
           <tbody id="pbx-rows"></tbody>
         </table>
       </div>
-      <p id="pbx-empty" class="empty" hidden>No PBX connections yet. Add one above.</p>
+      <p id="pbx-empty" class="empty" hidden>No PBX connections yet. Pair one from Sokrat VOIP using the pairing code above.</p>
     </section>
 
     <section class="card" aria-labelledby="extensions-title">

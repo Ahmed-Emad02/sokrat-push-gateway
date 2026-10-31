@@ -27,6 +27,8 @@ print(json.dumps({r:m.media_config(p,r,'/etc/sokrat/media/pbx_0123456789abcdef')
     assert.match(configs.pbx, /local 127\.0\.0\.1/);
     assert.match(configs.gateway, /remote-cert-tls server/);
     assert.match(configs.pbx, /remote-cert-tls client/);
+    assert.match(configs.pbx, /^server-poll-timeout 0$/m);
+    assert.doesNotMatch(configs.gateway, /server-poll-timeout/);
     for (const config of Object.values(configs)) {
         assert.match(config, /verify-x509-name pbx_0123456789abcdef-/);
         assert.match(config, /tls-version-min 1\.2/);

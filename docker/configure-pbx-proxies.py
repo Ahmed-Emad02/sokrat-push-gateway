@@ -80,7 +80,7 @@ def main():
             '',
             '    location = /_sokrat_control_auth {',
             '        internal;',
-            f'        proxy_pass http://127.0.0.1:{CONTROL_PORT}/control/api/session;',
+            f'        proxy_pass http://127.0.0.1:{CONTROL_PORT}/control/api/state;',
             '        proxy_pass_request_body off;',
             '        proxy_set_header Content-Length "";',
             '        proxy_set_header Cookie $http_cookie;',

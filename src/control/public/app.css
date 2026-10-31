@@ -216,7 +216,7 @@ main {
 #dashboard-view > .stats,
 #dashboard-view > section[aria-labelledby="pbx-title"],
 #dashboard-view > section[aria-labelledby="extensions-title"],
-#dashboard-view > section[aria-labelledby="activity-title"] {
+#dashboard-view > section[aria-labelledby="pending-title"] {
   grid-column: 1 / -1;
 }
 

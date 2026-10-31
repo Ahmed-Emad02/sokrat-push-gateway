@@ -96,6 +96,14 @@
 
     if (!refs.main || !refs.loginForm || !refs.pbxRows || !refs.extForm || !refs.extRows) return;
 
+    refs.pendingRows.addEventListener('focusout', () => {
+        setTimeout(() => {
+            if (pendingHasFocus() || !pendingRenderDeferred || !snapshot) return;
+            pendingRenderDeferred = false;
+            renderPending();
+        }, 0);
+    });
+
     // PBX management fields stay out of the payload unless the operator opts in,
     // so legacy single-customer PBX records keep their original request shape.
     const MANAGEMENT_FIELDS = [
@@ -123,6 +131,11 @@
     let provisioningError = null;
     let editingPbxId = null;
     let editingExtensionId = null;
+    // Pending approval controls are edited while the dashboard polls every 3 s.
+    // Keep per-device drafts and defer the table rebuild while a control has
+    // focus so a refresh cannot reset the chosen PBX or the extension text.
+    const pendingDrafts = new Map();
+    let pendingRenderDeferred = false;
     let statusTimer = null;
     let sshVerifiedHost = null;
     let sshFingerprint = null;
@@ -860,13 +873,37 @@
         }));
     }
 
+    function pendingHasFocus() {
+        const active = document.activeElement;
+        return Boolean(active && refs.pendingRows.contains(active)
+            && typeof active.matches === 'function'
+            && active.matches('select, input, button'));
+    }
+
     function renderPending() {
         const pending = (snapshot.devices || []).filter((device) => device.status === 'pending');
         const enabledPbx = (snapshot.pbx || []).filter((record) => record.enabled);
 
+        // A 3-second poll must not replace the select/input under the operator.
+        if (pendingHasFocus()) {
+            pendingRenderDeferred = true;
+            return;
+        }
+        pendingRenderDeferred = false;
+        const pendingIds = new Set(pending.map((device) => device.id));
+        for (const id of pendingDrafts.keys()) {
+            if (!pendingIds.has(id)) pendingDrafts.delete(id);
+        }
+
         refs.pendingEmpty.hidden = pending.length > 0;
         refs.pendingRows.replaceChildren(...pending.map((device) => {
             const title = deviceTitle(device);
+            const draft = pendingDrafts.get(device.id) || {
+                pbxId: device.suggestedPbxId || '',
+                extension: device.suggestedExtension || ''
+            };
+            pendingDrafts.set(device.id, draft);
+
             const select = el('select', {
                 'aria-label': `PBX for ${title}`,
                 disabled: enabledPbx.length === 0
@@ -874,7 +911,12 @@
                 ? enabledPbx.map((record) => el('option', { value: record.id, text: record.name }))
                 : el('option', { value: '', text: 'Enable a PBX first' }));
             const preferred = enabledPbx.find((record) => record.id === device.suggestedPbxId);
-            if (preferred) select.value = preferred.id;
+            const chosen = enabledPbx.some((record) => record.id === draft.pbxId)
+                ? draft.pbxId
+                : (preferred ? preferred.id : (enabledPbx[0] ? enabledPbx[0].id : ''));
+            if (chosen) select.value = chosen;
+            if (!draft.pbxId || draft.pbxId !== select.value) draft.pbxId = select.value;
+            select.addEventListener('change', () => { draft.pbxId = select.value; });
 
             const extension = el('input', {
                 type: 'text',
@@ -883,8 +925,9 @@
                 autocomplete: 'off',
                 placeholder: 'Extension',
                 'aria-label': `Extension for ${title}`,
-                value: device.suggestedExtension || ''
+                value: draft.extension
             });
+            extension.addEventListener('input', () => { draft.extension = extension.value; });
 
             const approve = el('button', {
                 class: 'btn btn-primary btn-sm',
@@ -1312,6 +1355,7 @@
                 method: 'POST',
                 body: { pbxId, extension }
             });
+            pendingDrafts.delete(device.id);
             if (result.secret) {
                 // Invite enrollment: the operator hands this secret over once.
                 refs.secretValue.textContent = result.secret;
@@ -1343,6 +1387,7 @@
                 method: 'POST',
                 body: { reason: 'rejected by operator' }
             });
+            pendingDrafts.delete(device.id);
             showStatus('Device rejected.');
             await refresh();
         } catch (error) {

@@ -49,7 +49,7 @@ if [ ! -f "Dockerfile" ]; then
     mkdir -p "$INSTALL_DIR"
     if command -v git &> /dev/null; then
         if [ ! -d "${INSTALL_DIR}/.git" ]; then
-            git clone https://github.com/Ahmed-Emad02/sokrat-push-gateway.git "$INSTALL_DIR"
+            git clone --branch main https://github.com/Ahmed-Emad02/sokrat-push-gateway.git "$INSTALL_DIR"
         else
             git -C "$INSTALL_DIR" pull origin main
         fi
@@ -60,7 +60,7 @@ if [ ! -f "Dockerfile" ]; then
         else
             yum install -y git
         fi
-        git clone https://github.com/Ahmed-Emad02/sokrat-push-gateway.git "$INSTALL_DIR"
+        git clone --branch main https://github.com/Ahmed-Emad02/sokrat-push-gateway.git "$INSTALL_DIR"
     fi
     cd "$INSTALL_DIR"
 fi

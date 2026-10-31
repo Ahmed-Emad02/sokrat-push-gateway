@@ -193,8 +193,31 @@ main {
   padding-block-end: 4rem;
   display: grid;
   gap: 1.5rem;
-  max-inline-size: 1080px;
+  max-inline-size: 1480px;
   margin-inline: auto;
+}
+
+/* Use the wide-screen side space: PBX and extensions stay full width, while
+   the smaller management cards pair up below them. */
+#dashboard-view {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  align-items: start;
+}
+
+#dashboard-view > .page-head,
+#dashboard-view > .alert,
+#dashboard-view > .stats,
+#dashboard-view > section[aria-labelledby="pbx-title"],
+#dashboard-view > section[aria-labelledby="extensions-title"] {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 72rem) {
+  #dashboard-view {
+    grid-template-columns: 1fr;
+  }
 }
 
 main[aria-busy="true"] {

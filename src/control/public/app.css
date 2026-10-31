@@ -193,8 +193,8 @@ main {
   padding-block-end: 4rem;
   display: grid;
   gap: 1.5rem;
-  max-inline-size: 1480px;
-  margin-inline: auto;
+  max-inline-size: none;
+  margin-inline: 0;
 }
 
 /* Use the wide-screen side space: PBX and extensions stay full width, while
@@ -210,7 +210,8 @@ main {
 #dashboard-view > .alert,
 #dashboard-view > .stats,
 #dashboard-view > section[aria-labelledby="pbx-title"],
-#dashboard-view > section[aria-labelledby="extensions-title"] {
+#dashboard-view > section[aria-labelledby="extensions-title"],
+#dashboard-view > section[aria-labelledby="activity-title"] {
   grid-column: 1 / -1;
 }
 

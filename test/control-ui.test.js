@@ -32,7 +32,7 @@ test('every element id used by the script exists in the shell', async () => {
 
     // The reverse direction is allowed to lag (the shell can grow first), but a
     // orphaned structural section is worth flagging.
-    for (const id of ['login-view', 'dashboard-view', 'pbx-form', 'invite-form', 'token-panel', 'secret-panel']) {
+    for (const id of ['login-view', 'dashboard-view', 'pbx-form', 'secret-panel']) {
         assert.ok(scriptIds.has(id), `#${id} should be wired by app.js`);
     }
 });

@@ -79,19 +79,6 @@
         extCancel: document.getElementById('ext-cancel'),
         extRows: document.getElementById('ext-rows'),
         extEmpty: document.getElementById('ext-empty'),
-        inviteForm: document.getElementById('invite-form'),
-        inviteLabel: document.getElementById('invite-label'),
-        invitePbx: document.getElementById('invite-pbx'),
-        inviteExtension: document.getElementById('invite-extension'),
-        inviteUses: document.getElementById('invite-uses'),
-        inviteTtl: document.getElementById('invite-ttl'),
-        inviteSubmit: document.getElementById('invite-submit'),
-        inviteRows: document.getElementById('invite-rows'),
-        inviteEmpty: document.getElementById('invite-empty'),
-        tokenPanel: document.getElementById('token-panel'),
-        tokenValue: document.getElementById('token-value'),
-        tokenCopy: document.getElementById('token-copy'),
-        tokenDismiss: document.getElementById('token-dismiss'),
         secretPanel: document.getElementById('secret-panel'),
         secretValue: document.getElementById('secret-value'),
         secretCopy: document.getElementById('secret-copy'),
@@ -831,6 +818,7 @@
     }
 
     function renderInvites() {
+        if (!refs.inviteRows || !refs.inviteEmpty) return;
         const invites = snapshot.enrollmentTokens || [];
         const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
 
@@ -967,6 +955,7 @@
     }
 
     function renderInvitePbxOptions() {
+        if (!refs.invitePbx) return;
         const current = refs.invitePbx.value;
         const options = [
             el('option', { value: '', text: 'No preset — choose at approval' }),
@@ -1456,7 +1445,7 @@
         refs.loginForm.addEventListener('submit', submitLogin);
         refs.pbxForm.addEventListener('submit', submitPbx);
         refs.extForm.addEventListener('submit', submitExtension);
-        refs.inviteForm.addEventListener('submit', createInvite);
+        if (refs.inviteForm) refs.inviteForm.addEventListener('submit', createInvite);
         refs.signOut.addEventListener('click', signOut);
         refs.pbxManaged.addEventListener('change', syncManagementFields);
         refs.pbxCancel.addEventListener('click', () => {
@@ -1470,9 +1459,9 @@
         for (const field of PLATFORM_FIELDS) {
             field.addEventListener('change', clearPlatformValidity);
         }
-        refs.tokenCopy.addEventListener('click', () => copyFrom(refs.tokenValue, refs.tokenCopy));
+        if (refs.tokenCopy) refs.tokenCopy.addEventListener('click', () => copyFrom(refs.tokenValue, refs.tokenCopy));
         refs.secretCopy.addEventListener('click', () => copyFrom(refs.secretValue, refs.secretCopy));
-        refs.tokenDismiss.addEventListener('click', () => {
+        if (refs.tokenDismiss) refs.tokenDismiss.addEventListener('click', () => {
             refs.tokenPanel.hidden = true;
             refs.tokenValue.textContent = '';
         });

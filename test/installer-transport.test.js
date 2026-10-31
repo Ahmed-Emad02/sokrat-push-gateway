@@ -20,14 +20,16 @@ test('installer hashes supplied passwords as data, not executable Python/shell s
     assert.equal(await verifyPasswordHash(password, result.stdout), true);
     assert.equal(result.stdout.includes(password), false);
 });
-test('installer carries TLS options and stages, but does not activate, host enrollment', () => {
+test('installer carries TLS options and activates host enrollment for pairing', () => {
     assert.equal(spawnSync('bash', ['-n', path.resolve(__dirname, '../install.sh')]).status, 0);
     assert.match(installer, /GATEWAY_TLS_ENABLED=\$\{TLS_ENABLED\}/);
     assert.match(installer, /GATEWAY_HTTPS_PORT=\$\{HTTPS_PORT\}/);
     assert.match(installer, /GATEWAY_WSS_PORT=\$\{WSS_PORT\}/);
     assert.match(installer, /python3 scripts\/install-tunnel-enrollment\.py --apply/);
     assert.match(installer, /bash scripts\/install-reverse-tls-deps\.sh/);
-    assert.doesNotMatch(installer, /tunnel-enrollment\.py --init|enable --now sokrat-tunnel-enrollment/);
+    assert.match(installer, /tunnel-enrollment\.py --init/);
+    assert.match(installer, /install -m 0644 systemd\/frps\.service/);
+    assert.match(installer, /systemctl enable sokrat-tunnel-enrollment\.service frps\.service/);
     assert.match(installer, /trustedStateDir.*\/runtime-state/);
     assert.match(installer, /lockDir.*\/locks/);
     assert.match(installer, /Employee public onboarding NOT READY/);

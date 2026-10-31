@@ -1,0 +1,14 @@
+[Unit]
+Description=Sokrat Reverse Tunnel Server (frps)
+After=network-online.target sokrat-tunnel-enrollment.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

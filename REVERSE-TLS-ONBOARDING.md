@@ -139,9 +139,15 @@ python3 scripts/install-tunnel-enrollment.py
 
 - Fresh `install.sh` refuses existing control/root enrollment state; it carries
   TLS mode/ports, prepares a root-only shared lock/trusted-state directory,
-  verifies host OpenVPN/Python dependencies and stages the enrollment broker.
-  It does **not** initialize pairing secrets or activate scoped FRPS implicitly.
-  Public employee onboarding is explicitly reported not-ready without TLS.
+  verifies host OpenVPN/Python dependencies, stages the enrollment broker,
+  generates the FRP token, writes and enables `frps.service`, initializes the
+  enrollment CA/pairing identity, and starts both host services. The dashboard
+  pairing code is therefore available immediately after install. Public employee
+  onboarding is still explicitly reported not-ready without TLS.
+- Re-running `scripts/install-tunnel-enrollment.py --apply` alone remains a
+  non-activating promotion: it does not initialize secrets, open ports, migrate
+  tenants or enable the broker. The fresh-install path performs those steps
+  explicitly after promotion.
 - `scripts/upgrade-container-gateway.py` defaults to a read-only preflight. It
   preserves mounted authority/credentials, permits only the newly introduced
   default TLS environment options on older containers, and runs authority-aware

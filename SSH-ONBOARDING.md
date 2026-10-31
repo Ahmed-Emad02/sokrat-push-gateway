@@ -1,5 +1,10 @@
 # Dashboard SSH onboarding
 
+> Superseded for new PBXs by the secure pairing flow in
+> [`REVERSE-TLS-ONBOARDING.md`](REVERSE-TLS-ONBOARDING.md). The dashboard no
+> longer exposes **Add server**; this document is retained for the legacy SSH
+> onboarding API and recovery context.
+
 ## Add a server
 
 Enter **PBX address** and **Root SSH password**, then select **Add server**.

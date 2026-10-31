@@ -362,11 +362,77 @@ fi
 
 echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
 
-# Stage the host-only enrollment/firewall broker; never initialize credentials
-# or enable its privileged listeners implicitly during a container installation.
+# Stage the host-only enrollment/firewall broker, then initialize the gateway
+# pairing identity so the dashboard's pairing code works immediately after
+# installation. This is still a first-install-only path: the guard above refuses
+# to overwrite an existing enrollment.
 bash scripts/install-reverse-tls-deps.sh
 python3 scripts/install-tunnel-enrollment.py --apply
 install -m 0755 scripts/deploy-public-certificate.sh /usr/local/bin/sokrat-public-certificate-deploy
+install -m 0644 systemd/frps.service /etc/systemd/system/frps.service
+
+if [ ! -x /usr/local/bin/frps ]; then
+    echo -e "${RED}frps is required for PBX pairing but was not installed.${NC}" >&2
+    exit 1
+fi
+
+# The enrollment service signs FRP connections with this host CA, and the FRP
+# server passes its auth token to the enrollment plugin. Generate once.
+install -d -m 0700 /etc/frp
+if [ ! -s /etc/sokrat/gateway-tunnel.token ]; then
+    (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > /etc/sokrat/gateway-tunnel.token)
+fi
+FRP_TOKEN=$(tr -d '\n' < /etc/sokrat/gateway-tunnel.token)
+if [ -f /etc/frp/frps.toml ]; then
+    EXISTING_FRP_TOKEN=$(awk -F'"' '/^[[:space:]]*auth\.token[[:space:]]*=/ {print $2; exit}' /etc/frp/frps.toml)
+    if [ -n "$EXISTING_FRP_TOKEN" ] && [ "$EXISTING_FRP_TOKEN" != "$FRP_TOKEN" ]; then
+        echo -e "${RED}/etc/frp/frps.toml already uses a different auth token; align it with /etc/sokrat/gateway-tunnel.token before installing.${NC}" >&2
+        exit 1
+    fi
+fi
+
+if [ ! -f /etc/frp/frps.toml ]; then
+    cat << EOF > /etc/frp/frps.toml
+bindPort = 7000
+auth.method = "token"
+auth.token = "${FRP_TOKEN}"
+proxyBindAddr = "127.0.0.1"
+transport.tls.force = true
+
+transport.tls.certFile = "/etc/sokrat/tunnel-enrollment/server.crt"
+transport.tls.keyFile = "/etc/sokrat/tunnel-enrollment/server.key"
+
+[[httpPlugins]]
+name = "sokrat-tenant-enrollment"
+addr = "127.0.0.1:7450"
+path = "/handler"
+ops = ["Login","NewProxy","Ping","NewWorkConn"]
+EOF
+    chmod 0600 /etc/frp/frps.toml
+fi
+
+if [ ! -f /etc/sokrat/tunnel-enrollment/config.json ]; then
+    python3 /usr/local/lib/sokrat-tenant-provisioning/tunnel-enrollment.py --init \
+        --host "${PUBLIC_HOST}" \
+        --pool "${SOKRAT_MEDIA_POOL:-10.253.0.0/22}" \
+        --gateway-url "https://${PUBLIC_HOST}:7443" \
+        --port 7443 --control-port 8002 --plugin-port 7450 \
+        --tunnel-port 7000 --runtime-port 9097 \
+        --service-user sokrat-push \
+        --trusted-state-dir /var/lib/sokrat-tenant-provisioning/runtime-state
+fi
+
+systemctl daemon-reload
+systemctl enable sokrat-tunnel-enrollment.service frps.service > /dev/null
+systemctl restart sokrat-tunnel-enrollment.service
+systemctl restart frps.service
+for unit in sokrat-tunnel-enrollment.service frps.service; do
+    if ! systemctl is-active --quiet "$unit"; then
+        echo -e "${RED}${unit} failed to start; PBX pairing is not ready.${NC}" >&2
+        journalctl -u "$unit" -n 20 --no-pager >&2 || true
+        exit 1
+    fi
+done
 
 docker compose build
 docker compose up -d
@@ -403,7 +469,7 @@ if [ "$TLS_READY" = true ]; then
 else
     echo 'Employee public onboarding NOT READY: configure trusted HTTPS/WSS certificates and renewal first.'
 fi
-echo 'Reverse TLS enrollment bundle staged, NOT activated: follow REVERSE-TLS-ONBOARDING.md before distributing a pairing code.'
+echo 'Secure PBX pairing is READY: open the Control Dashboard and use "Show Pairing Code", then paste it in Sokrat VOIP → Settings → Sokrat Gateway.'
 echo -e "Reverse Tunnel Ingress:  ${GREEN}${PUBLIC_HOST}:7000 (TLS)${NC}"
 echo -e "CoTURN STUN/TURN:        ${GREEN}${PUBLIC_HOST}:3478 (UDP/TCP)${NC}"
 echo

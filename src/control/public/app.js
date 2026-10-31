@@ -56,8 +56,7 @@
         pbxCancel: document.getElementById('pbx-cancel'),
         pbxRows: document.getElementById('pbx-rows'),
         pbxEmpty: document.getElementById('pbx-empty'),
-        pbxCapHint: document.getElementById('pbx-cap-hint'),
-        pbxProvisioningSummary: document.getElementById('pbx-provisioning-summary'),
+
         pbxManaged: document.getElementById('pbx-managed'),
         pbxCustomer: document.getElementById('pbx-customer'),
         pbxLoginHostname: document.getElementById('pbx-login-hostname'),
@@ -568,9 +567,11 @@
         refs.statPending.textContent = String(stats.pendingDevices || 0);
         refs.statApproved.textContent = String(stats.approvedDevices || 0);
         refs.statCap.textContent = String(limits.maxEnabledPbx || 0);
-        refs.pbxCapHint.textContent =
-            `Enabled connections are capped at ${limits.maxEnabledPbx || 0} by the gateway; ` +
-            `${stats.pbx || 0} of ${limits.maxPbx || 0} records used.`;
+        if (refs.pbxCapHint) {
+            refs.pbxCapHint.textContent =
+                `Enabled connections are capped at ${limits.maxEnabledPbx || 0} by the gateway; ` +
+                `${stats.pbx || 0} of ${limits.maxPbx || 0} records used.`;
+        }
 
         renderProvisioningSummary();
         renderPbx();

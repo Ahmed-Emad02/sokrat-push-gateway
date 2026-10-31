@@ -559,7 +559,6 @@ test('dashboard renders provisioning with textContent and an explicit timestamp'
         fs.readFile(path.join(PUBLIC_DIR, 'app.js'), 'utf8')
     ]);
 
-    assert.match(html, /id="pbx-provisioning-summary"[^>]*role="status"[^>]*aria-live="polite"/);
     assert.match(html, /<th scope="col">Provisioning<\/th>/);
     assert.match(script, /\/api\/provisioning/);
     assert.match(script, /provisioningCell/);

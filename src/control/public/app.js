@@ -809,11 +809,17 @@
                 }),
                 el('td', { dataset: { label: 'Limit' }, text: String(Number(record.maxDevices) || 0) }),
                 el('td', { dataset: { label: 'Actions' } },
-                    el('button', {
-                        class: 'btn btn-sm',
-                        type: 'button',
-                        onclick: () => startEditExtension(record)
-                    }, 'Edit'))
+                    el('div', { class: 'row-actions' },
+                        el('button', {
+                            class: 'btn btn-sm',
+                            type: 'button',
+                            onclick: () => startEditExtension(record)
+                        }, 'Edit'),
+                        el('button', {
+                            class: 'btn btn-danger btn-sm',
+                            type: 'button',
+                            onclick: () => removeExtension(record)
+                        }, 'Remove')))
             );
         }));
     }
@@ -1219,6 +1225,25 @@
 
         resetExtensionForm();
         try {
+            await refresh();
+        } catch (error) {
+            handleError(error);
+        }
+    }
+
+    async function removeExtension(record) {
+        const pbx = (snapshot.pbx || []).find((item) => item.id === record.pbxId);
+        const count = approvedDeviceCount(record);
+        const where = pbx ? ` on ${pbx.name}` : '';
+        const confirmed = window.confirm(
+            `Remove extension ${record.extension}${where}? ` +
+            `${count} approved device${count === 1 ? '' : 's'} will be revoked and matching invites will stop working.`
+        );
+        if (!confirmed) return;
+        try {
+            await api(`/api/extensions/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+            if (editingExtensionId === record.id) resetExtensionForm();
+            showStatus(`Removed extension ${record.extension}.`);
             await refresh();
         } catch (error) {
             handleError(error);

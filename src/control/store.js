@@ -974,6 +974,49 @@ class ControlStore {
         });
     }
 
+    removeExtension(id, meta = {}) {
+        return this._mutate((draft) => {
+            const index = draft.extensions.findIndex(e => e.id === id);
+            if (index === -1) throw fail('extension_not_found', 'Extension policy not found', 404);
+            const [removed] = draft.extensions.splice(index, 1);
+            const at = isoAt(this._now());
+            let revokedDevices = 0;
+            for (const device of draft.devices) {
+                if (device.status !== 'approved' || device.pbxId !== removed.pbxId
+                    || device.extension !== removed.extension) continue;
+                Object.assign(device, {
+                    status: 'revoked',
+                    secretHash: null,
+                    reviewedAt: at,
+                    reviewedBy: sanitizeActor(meta.actor),
+                    reviewReason: 'extension-removed'
+                });
+                revokedDevices += 1;
+            }
+            let revokedInvites = 0;
+            for (const token of draft.enrollmentTokens) {
+                if (token.revokedAt || token.pbxId !== removed.pbxId
+                    || token.extension !== removed.extension) continue;
+                token.revokedAt = at;
+                revokedInvites += 1;
+            }
+            const pbx = draft.pbx.find(p => p.id === removed.pbxId);
+            pushAudit(
+                draft,
+                {
+                    at,
+                    actor: meta.actor,
+                    action: 'extension.removed',
+                    target: removed.id,
+                    detail: `${pbx ? pbx.name : 'Removed PBX'} / ${removed.extension} ` +
+                        `(devices revoked: ${revokedDevices}, invites revoked: ${revokedInvites})`
+                },
+                this.limits.auditEntries
+            );
+            return { extension: clone(removed), revokedDevices, revokedInvites };
+        });
+    }
+
     _assertEnabledCapacity(draft, excludeId) {
         const enabled = draft.pbx.filter((p) => p.enabled && p.id !== excludeId).length;
         if (enabled >= this.limits.maxEnabledPbx) {

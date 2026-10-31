@@ -571,3 +571,30 @@ test('malformed JSON bodies are rejected with a JSON error', async (t) => {
     const payload = await response.json();
     assert.equal(payload.error, 'invalid_json');
 });
+
+test('DELETE extension requires CSRF and removes the policy', async (t) => {
+    const harness = await createHarness();
+    t.after(() => harness.close());
+    const csrf = await harness.login();
+    const pbx = await harness.store.addPbx({
+        ...PBX_BODY,
+        management: { approvalStatus: 'approved', extensionPolicyRequired: true }
+    });
+    const extension = await harness.store.addExtension({
+        pbxId: pbx.id, extension: '150', name: 'Desk 150', status: 'enabled',
+        maxDevices: 5, allowedPlatforms: ['android']
+    });
+
+    const denied = await harness.client.request(
+        `/control/api/extensions/${extension.id}`, { method: 'DELETE' }
+    );
+    assert.equal(denied.status, 403);
+
+    const removed = await harness.client.request(
+        `/control/api/extensions/${extension.id}`, { method: 'DELETE', csrf }
+    );
+    assert.equal(removed.status, 200);
+    assert.equal(removed.body.success, true);
+    assert.equal(removed.body.extension.id, extension.id);
+    assert.equal(harness.store.listExtensions().length, 0);
+});

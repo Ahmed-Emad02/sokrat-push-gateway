@@ -968,3 +968,39 @@ test('extension policy stays enforced after a reload', async () => {
         await close();
     }
 });
+
+test('removeExtension revokes its approved devices and matching invites', async () => {
+    const { store, close } = await makeStore();
+    try {
+        const pbx = await store.addPbx(pbxInput('Removal', { management: management() }));
+        const policy = await store.addExtension(extensionInput(pbx.id, '150'));
+        const approved = await approvedDevice(store, pbx.id, '150', 'android');
+        assert.equal(store.verifyDeviceSecret(approved.device.id, approved.secret).ok, true);
+
+        const invite = await store.createEnrollmentToken({
+            label: 'extension invite', pbxId: pbx.id, extension: '150'
+        });
+        const otherInvite = await store.createEnrollmentToken({
+            label: 'other extension', pbxId: pbx.id, extension: '151'
+        });
+
+        const result = await store.removeExtension(policy.id, { actor: 'operator' });
+        assert.equal(result.extension.id, policy.id);
+        assert.equal(result.revokedDevices, 1);
+        assert.equal(result.revokedInvites, 1);
+        assert.deepEqual(store.listExtensions(), []);
+
+        const revoked = store.listDevices('revoked').find(d => d.id === approved.device.id);
+        assert.equal(revoked.reviewReason, 'extension-removed');
+        assert.equal(revoked.hasSecret, false);
+        assert.equal(store.verifyDeviceSecret(approved.device.id, approved.secret).ok, false);
+
+        const invites = store.snapshot().enrollmentTokens;
+        assert.ok(invites.find(i => i.id === invite.record.id).revokedAt);
+        assert.equal(invites.find(i => i.id === otherInvite.record.id).revokedAt, null);
+
+        await rejectsWithCode(store.removeExtension(policy.id), 'extension_not_found', 404);
+    } finally {
+        await close();
+    }
+});

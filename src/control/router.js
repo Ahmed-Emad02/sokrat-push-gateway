@@ -711,6 +711,11 @@ function createControlRouter(options = {}) {
         res.json({ success: true, extension });
     }));
 
+    router.delete('/api/extensions/:id', requireSession, requireCsrf, wrap(async (req, res) => {
+        const result = await store.removeExtension(String(req.params.id), { actor: actorFor(req) });
+        res.json({ success: true, ...result, limits: { ...store.limits } });
+    }));
+
     // --- enrollment invitations -------------------------------------------
 
     router.post('/api/enrollment-tokens', requireSession, requireCsrf, wrap(async (req, res) => {

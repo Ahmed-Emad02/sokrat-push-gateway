@@ -242,8 +242,10 @@ above.
 
 ## 5. One reconcile run
 
-1. Load config, control store, plan, manifest, tokens. Capture the control-store
-   byte SHA-256.
+1. Load config, control store, plan, manifest, tokens. Capture a canonical
+   digest of the provisioning identity: PBX id, enabled state, routing fields
+   (`wsURL`, `apiURL`, `mediaIps`) and approval state. Presence (`lastSeenAt`),
+   audit entries and other control-store fields are intentionally excluded.
 2. Preflight: helper/config ownership, status target, adapter presence, plan
    arithmetic, pins.
 3. Decide whether work is needed. A PBX is skipped only if the previous status
@@ -262,9 +264,12 @@ above.
    is `active`.
 6. Call the firewall adapter (`enabled: true`), then the hook adapter (token in
    stdin only).
-7. Re-read the control-store SHA-256 **before every privileged stage and before
-   reporting ready**. A mismatch aborts the run: no PBX is reported ready and
-   every PBX becomes `error` / `worker_failed` with stages `pending`.
+7. Re-read the provisioning-identity digest **before every privileged stage and
+   before reporting ready**. A material mismatch aborts the run: no PBX is
+   reported ready and every PBX becomes `error` / `worker_failed` with stages
+   `pending`. Presence and audit writes cannot trigger this guard. On the first
+   mismatch the worker re-reads the control store and retries once before
+   publishing the abort status.
 8. Write the sanitized status atomically (`0640 root:<service group>`), with a
    fresh `updatedAt` on every timer run — including a fully skipped/idempotent
    run.
@@ -368,8 +373,10 @@ No secrets, URLs, IPs, tokens or adapter output are written to this file.
   crashed run cannot permanently block the timer. The file is never deleted.
 * `--dry-run` never creates the lock directory or file; it only probes an
   existing lock read-only.
-* The control store is hashed before privileged stages; dashboard edits abort
-  the run without stale ready.
+* The provisioning identity is hashed before privileged stages. Material PBX
+  edits abort the run without stale ready; device presence, audit and other
+  non-provisioning control-store writes do not. A single retry absorbs a
+  transient write that lands during reconciliation.
 * The installer refuses to replace the bundle while a run holds the lock.
 
 ---

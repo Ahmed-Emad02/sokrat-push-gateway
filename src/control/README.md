@@ -203,7 +203,8 @@ Content-Type: application/json
 ```
 
 `POST` only — the secret never appears in a URL. Poll every `retryAfterMs`
-(3 s by default).
+(3 s by default). Repeated approved claims are read-only: the control store is
+not rewritten merely to persist device presence.
 
 | Status | Meaning |
 | --- | --- |

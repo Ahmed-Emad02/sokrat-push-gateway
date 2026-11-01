@@ -49,9 +49,11 @@ TRUST MODEL
     sanitized environment, a timeout, and stdout/stderr discarded. No shell is
     ever used. The PBX hook token appears only in the hook adapter request and
     is never logged, printed or written to the status file.
-  * The dashboard control store is hashed before the relay stage and re-read
-    before every privileged stage and before reporting ready. Any dashboard edit
-    aborts the run without a stale ready result.
+  * The provisioning identity (PBX id, enabled, routing fields and approval) is
+    hashed before the relay stage and re-read before every privileged stage and
+    before reporting ready. A change that can affect provisioning aborts the run
+    without a stale ready result; presence and audit writes do not. One retry
+    re-reads the control store before an abort status is published.
   * The run lock is a non-blocking flock held until exit, so SIGKILL cannot
     leave a stale lock. Dry-run performs no writes, no commands and creates no
     lock.

@@ -206,11 +206,12 @@ async function buildCtx() {
                 android: { priority: 'high' },
                 data: {
                     msg: call.msg || 'incoming-call',
+                    type: call.type || 'incoming-call',
                     callerId: call.callerId || '',
                     callerName: call.callerName || 'Incoming Call',
                     extension: call.extension || '',
                     timestamp: String(call.timestamp || Date.now()),
-                    callId: call.callId,
+                    callId: call.callId || '',
                     sipWss: call.sipWss || ''
                 }
             });
@@ -513,8 +514,11 @@ function amiCommand(actions) {
         });
     });
 }
+const GAIN_MIN_DB = -12;
+const GAIN_MAX_DB = 24;
+
 function dbToAsteriskVolume(db) {
-    const num = Math.max(-12, Math.min(6, parseFloat(db) || 0));
+    const num = Math.max(GAIN_MIN_DB, Math.min(GAIN_MAX_DB, parseFloat(db) || 0));
     if (num === 0) return 0;
     if (num > 0) {
         return parseFloat(Math.pow(10, num / 20).toFixed(4));
@@ -608,7 +612,7 @@ app.post('/api/call/volume', async (req, res) => {
         const rawGain = req.body?.micGainDb !== undefined
             ? req.body.micGainDb
             : (req.body?.gainDb !== undefined ? req.body.gainDb : req.body?.gain);
-        const gain = Math.max(-12, Math.min(12, parseInt(rawGain, 10) || 0));
+        const gain = Math.max(GAIN_MIN_DB, Math.min(GAIN_MAX_DB, parseInt(rawGain, 10) || 0));
         const result = await setAsteriskChannelVolume({ extension, callId, gainDb: gain });
         if (!result.success) {
             return res.status(404).json(result);
@@ -629,6 +633,7 @@ async function start() {
     });
 }
 module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume,
+    GAIN_MIN_DB, GAIN_MAX_DB,
     initializePush: () => Promise.all([initApns(), initFcm()]) };
 
 if (require.main === module) {

@@ -7,10 +7,11 @@ const { installTenantPush } = require('./tenant-push');
 const { createTenantPushStore } = require('./tenant-push-store');
 const { createDeviceTickets } = require('./device-tickets');
 const { tenantCallId } = require('./tenant-call-id');
+const { createHeartbeatScheduler } = require('./heartbeat-scheduler');
 
 // Explicit integration factory: opt in only after enrollment clients have been
 // deployed. No fallback to the legacy/single-PBX route is permitted here.
-function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendToDevice, normalizeCallId }) {
+function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendToDevice, normalizeCallId, heartbeatOptions = {} }) {
     function assignment(deviceId) {
         const device = control.store.getApprovedDevice(deviceId);
         const pbx = device && control.store.getPbx(device.pbxId);
@@ -29,6 +30,17 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         return match && deviceId ? authorize(deviceId, match[1]) : null;
     }
     const pushStore = createTenantPushStore(pushFile, assignment);
+    const heartbeat = createHeartbeatScheduler({
+        listDevices: () => pushStore.listAllPush(),
+        sendToDevice,
+        enabled: heartbeatOptions.enabled === true,
+        staleMs: heartbeatOptions.staleMs,
+        tickMs: heartbeatOptions.tickMs,
+        pbxIds: heartbeatOptions.pbxIds,
+        logger: heartbeatOptions.logger,
+        now: heartbeatOptions.now,
+        sleep: heartbeatOptions.sleep,
+    });
     const router = express.Router();
     router.use(express.json({ limit: '16kb' }));
     const requests = new Map();
@@ -58,11 +70,41 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             return ticket ? res.json({ ticket, expiresIn: 30 }) : res.status(429).json({ error: 'Ticket limit reached' });
         } catch (_) { return res.status(503).json({ error: 'Ticket unavailable' }); }
     });
+    router.post('/device/heartbeat', async (req, res) => {
+        try {
+            const route = await authorizeDevice(req);
+            if (!route) return res.status(403).json({ error: 'Device approval required' });
+            heartbeat.markSeen(route.deviceId);
+            console.log(`[heartbeat] seen extension=${route.extension} pbx=${route.pbxId}`);
+            res.json({ ok: true, nextWakeInMs: heartbeat.staleMs });
+        } catch (_) {
+            res.status(503).json({ error: 'Heartbeat unavailable' });
+        }
+    });
+    router.post('/call/volume', async (req, res) => {
+        const route = await authorizeDevice(req);
+        if (!route) return res.status(403).json({ success: false, error: 'Device approval required' });
+        const raw = req.body?.micGainDb !== undefined ? req.body.micGainDb : req.body?.gainDb;
+        const gain = Math.max(-12, Math.min(24, parseInt(raw, 10) || 0));
+        try {
+            const upstream = await fetch('http://127.0.0.1:8095/api/call/volume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ extension: route.extension, callId: req.body?.callId, micGainDb: gain }),
+            });
+            const result = await upstream.json().catch(() => ({ success: false, error: 'Invalid volume response' }));
+            res.status(upstream.status).json(result);
+        } catch (_) {
+            res.status(503).json({ success: false, error: 'Volume control unavailable' });
+        }
+    });
     installTenantIce(router, { authorizeDevice, getRelay });
     require('./contacts-proxy').installContactsProxy(router, { authorizeDevice });
     installTenantPush(router, { store: pushStore, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId });
     return {
-        router, assignment, authorize, pushStore,
+        router, assignment, authorize, pushStore, heartbeat,
+        start() { heartbeat.start(); },
+        stop() { heartbeat.stop(); },
         attach(server) {
             return attachSipProxy(server, { authorize, consumeTicket: tickets.consume,
                 scopeIncomingCallId: (value, route) => tenantCallId(normalizeCallId, route.pbxId, value),

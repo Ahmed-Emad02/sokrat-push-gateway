@@ -28,6 +28,10 @@ services:
       - DB_USER=${DB_USER:-root}
       - DB_PASS=${DB_PASS:-}
       - DB_NAME=${DB_NAME:-asterisk}
+      - AMI_HOST=${AMI_HOST:-127.0.0.1}
+      - AMI_PORT=${AMI_PORT:-5038}
+      - AMI_USER=${AMI_USER:-}
+      - AMI_PASS=${AMI_PASS:-}
       - FCM_ENABLED=${FCM_ENABLED:-true}
       - APNS_ENABLED=${APNS_ENABLED:-false}
     volumes:

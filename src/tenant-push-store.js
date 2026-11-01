@@ -91,6 +91,13 @@ function createTenantPushStore(file, approvedAssignment) {
             const candidates = data.devices.filter(d => d.pbxId === pbxId && d.extension === extension && d.updatedAt > Date.now() - 90 * 86400000);
             const current = await Promise.all(candidates.map(isCurrent));
             return candidates.filter((_, index) => current[index]);
+        },
+        async listAllPush() {
+            await tail;
+            const data = await load();
+            const candidates = data.devices.filter(d => d.updatedAt > Date.now() - 90 * 86400000);
+            const current = await Promise.all(candidates.map(isCurrent));
+            return candidates.filter((_, index) => current[index]);
         }
     };
 }

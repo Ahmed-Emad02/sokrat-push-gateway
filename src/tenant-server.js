@@ -41,12 +41,26 @@ async function startTenantServer(control, env = process.env) {
     const providers = require('./index');
     await providers.initializePush();
     const getRelay = createRelayResolver(control, manifestLoader);
+    const positive = (value, fallback) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    };
+    const heartbeatOptions = {
+        enabled: env.SOKRAT_HEARTBEAT_ENABLED === 'true',
+        staleMs: positive(env.SOKRAT_HEARTBEAT_STALE_MS, 180000),
+        tickMs: positive(env.SOKRAT_HEARTBEAT_TICK_MS, 30000),
+        pbxIds: String(env.SOKRAT_HEARTBEAT_PBX_IDS || '').split(',').map(value => value.trim()).filter(Boolean),
+    };
     const runtime = createTenantRuntime({ control,
         pushFile: env.TENANT_PUSH_FILE || '/var/lib/sokrat-gateway/push.json',
         getRelay, authorizePbx: createPbxAuthorizer(control, id => manifestLoader.getHookHash(id)),
         normalizeCallId: providers.normalizeCallId,
-        sendToDevice: async (device, payload) => (await providers.buildCtx()).sendToDevice(device, payload)
+        sendToDevice: async (device, payload) => (await providers.buildCtx()).sendToDevice(device, payload),
+        heartbeatOptions,
     });
+    if (heartbeatOptions.enabled) {
+        console.log(`[tenant] heartbeat watchdog enabled staleMs=${heartbeatOptions.staleMs} pbxIds=${heartbeatOptions.pbxIds.join(',') || '*'}`);
+    }
     const app = express();
     app.disable('x-powered-by');
     app.use((req, res, next) => {
@@ -72,6 +86,7 @@ async function startTenantServer(control, env = process.env) {
         server.listen(Number(env.TENANT_PORT) || 9097, '127.0.0.1', resolve);
     });
     console.log('[tenant] gateway runtime listening on loopback');
-    return { server, runtime, close() { proxy.close(); server.close(); } };
+    runtime.start();
+    return { server, runtime, close() { runtime.stop(); proxy.close(); server.close(); } };
 }
 module.exports = { startTenantServer, createRelayResolver };

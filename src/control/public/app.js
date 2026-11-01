@@ -32,6 +32,9 @@
         statPending: document.getElementById('stat-pending'),
         statApproved: document.getElementById('stat-approved'),
         statCap: document.getElementById('stat-cap'),
+        activeCallsList: document.getElementById('active-calls-list'),
+        activeCallsTotal: document.getElementById('active-calls-total'),
+        activeCallsEmpty: document.getElementById('active-calls-empty'),
         pbxForm: document.getElementById('pbx-form'),
         pbxFormDetails: document.getElementById('pbx-form-details'),
         pbxAddress: document.getElementById('pbx-address'),
@@ -520,6 +523,37 @@
     }
 
     let pollInterval = null;
+    let activeCallsInterval = null;
+
+    async function refreshActiveCalls() {
+        if (!refs.activeCallsList) return;
+        try {
+            const state = await api('/api/active-calls');
+            renderActiveCalls(state);
+        } catch (_) {}
+    }
+
+    function renderActiveCalls(state) {
+        if (!refs.activeCallsList) return;
+        const rows = Array.isArray(state && state.activeCalls) ? state.activeCalls : [];
+        refs.activeCallsList.replaceChildren();
+        for (const row of rows) {
+            const li = document.createElement('li');
+            const value = document.createElement('span');
+            value.className = 'stat-value';
+            value.textContent = String(row.active || 0);
+            const label = document.createElement('span');
+            label.className = 'stat-label';
+            label.textContent = `${row.pbxName || row.pbxId}${row.ringing ? ` · ${row.ringing} ringing` : ''}`;
+            li.append(value, label);
+            refs.activeCallsList.append(li);
+        }
+        if (refs.activeCallsTotal) {
+            refs.activeCallsTotal.textContent =
+                `${Number(state && state.active) || 0} active · ${Number(state && state.ringing) || 0} ringing`;
+        }
+        if (refs.activeCallsEmpty) refs.activeCallsEmpty.hidden = rows.length > 0;
+    }
 
     function startRealtimePolling() {
         if (pollInterval) return;
@@ -530,12 +564,24 @@
                 } catch (_) {}
             }
         }, 3000);
+        if (!activeCallsInterval) {
+            void refreshActiveCalls();
+            activeCallsInterval = setInterval(() => {
+                if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                    void refreshActiveCalls();
+                }
+            }, 1000);
+        }
     }
 
     function stopRealtimePolling() {
         if (pollInterval) {
             clearInterval(pollInterval);
             pollInterval = null;
+        }
+        if (activeCallsInterval) {
+            clearInterval(activeCallsInterval);
+            activeCallsInterval = null;
         }
     }
 
@@ -562,6 +608,7 @@
                 provisioningError = error;
             }
             render();
+        void refreshActiveCalls();
         } finally {
             if (!isBackground) refs.main.removeAttribute('aria-busy');
         }

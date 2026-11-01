@@ -74,6 +74,7 @@ function createControl(options = {}) {
         trustProxy: options.trustProxy,
         cookieSecure: options.cookieSecure,
         loginFailureDelayMs: options.loginFailureDelayMs,
+        getActiveCalls: options.getActiveCalls,
         env
     });
 

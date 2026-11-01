@@ -1,6 +1,7 @@
 'use strict';
 const { WebSocket, WebSocketServer } = require('ws');
 const SIP_HANDOVER_GRACE_MS = 20000;
+const { createCallTracker } = require('./sip-call-tracker');
 
 // Device authorization belongs to the control store. SIP passwords continue to
 // be checked upstream by the selected PBX; no password is parsed/stored here.
@@ -9,6 +10,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
     const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024,
         perMessageDeflate: false, handleProtocols: protocols => protocols.has('sip') ? 'sip' : false });
     const sessions = new Set();
+    const callTracker = createCallTracker();
     let pending = 0;
     server.on('upgrade', async (req, socket, head) => {
         socket.on('error', () => {});
@@ -81,6 +83,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                     clearTimeout(handoverTimer);
                     console.warn(`[sip-proxy][${route.extension}] close: ${why || 'unknown'}`);
                     sessions.delete(session);
+                    callTracker.removeSession(session);
                     client?.terminate(); upstream.terminate();
                 };
                 session.close = close;
@@ -141,6 +144,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                             if (!user || user[1] !== route.extension) return close('auth_username_mismatch');
                         }
                     }
+                    callTracker.observe(data, route.pbxId, session);
                     if (upstream.readyState === WebSocket.CONNECTING) {
                         queued += data.length;
                         if (queued > 256 * 1024) return close('queue_overflow');
@@ -164,6 +168,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                 session.bindClient(initialClient);
                 upstream.on('open', () => { for (const [data, binary] of queue) send(upstream, data, binary); queue.length = 0; });
                 upstream.on('message', (data, binary) => {
+                    callTracker.observe(data, route.pbxId, session);
                     const message = data.toString();
                     if (/^INVITE\s/.test(message)) {
                         const headers = message.split('\r\n\r\n', 1)[0].replace(/\r\n[ \t]+/g, ' ');
@@ -205,6 +210,8 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
             if (!socket.destroyed) socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
         } finally { clearTimeout(deadline); pending--; }
     });
+    const pruneTimer = setInterval(() => callTracker.prune(), 5000);
+    pruneTimer.unref();
     const timer = setInterval(async () => {
         for (const session of sessions) {
             try {
@@ -219,6 +226,9 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
         }
     }, 10000);
     timer.unref();
-    return { close() { clearInterval(timer); for (const s of sessions) s.close('shutdown'); wss.close(); } };
+    return {
+        getActiveCalls: () => callTracker.snapshot(),
+        close() { clearInterval(timer); clearInterval(pruneTimer); for (const s of sessions) s.close('shutdown'); wss.close(); },
+    };
 }
 module.exports = { attachSipProxy, SIP_HANDOVER_GRACE_MS };

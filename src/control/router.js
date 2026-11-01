@@ -381,6 +381,32 @@ function createControlRouter(options = {}) {
         });
     });
 
+    router.get('/api/active-calls', requireSession, (req, res) => {
+        let live = [];
+        try { live = typeof options.getActiveCalls === 'function' ? options.getActiveCalls() : []; }
+        catch (_) { live = []; }
+        const counts = new Map((Array.isArray(live) ? live : []).map((row) => [String(row.pbxId), row]));
+        const activeCalls = store.listPbx().map((pbx) => {
+            const row = counts.get(String(pbx.id)) || {};
+            return {
+                pbxId: pbx.id,
+                pbxName: pbx.name || pbx.id,
+                enabled: pbx.enabled !== false,
+                active: Number(row.active) || 0,
+                ringing: Number(row.ringing) || 0,
+                total: Number(row.total) || 0
+            };
+        });
+        res.json({
+            success: true,
+            activeCalls,
+            active: activeCalls.reduce((sum, row) => sum + row.active, 0),
+            ringing: activeCalls.reduce((sum, row) => sum + row.ringing, 0),
+            total: activeCalls.reduce((sum, row) => sum + row.total, 0),
+            timestamp: new Date().toISOString()
+        });
+    });
+
     router.get('/api/tunnel-token', requireSession, (req, res) => {
         const fs = require('node:fs');
         const tokenPath = '/etc/sokrat/gateway-tunnel.token';

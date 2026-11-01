@@ -4,11 +4,13 @@ const express = require('express');
 const { createControl } = require('./control');
 
 async function start() {
+    let tenant = null;
     const isPublic = process.env.CONTROL_ALLOW_PUBLIC === 'true';
     const control = createControl({
         filePath: process.env.CONTROL_DATA_FILE,
         maxEnabledPbx: Number(process.env.CONTROL_MAX_ENABLED_PBX) || 10,
-        allowPublic: isPublic
+        allowPublic: isPublic,
+        getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || []
     });
     await control.init();
     const app = express();
@@ -17,7 +19,7 @@ async function start() {
     app.post('/api/tunnel/register', control.router);
     app.post('/api/gateway/tunnel/register', control.router);
     app.get('/', (req, res) => res.redirect('/control/'));
-    const tenant = process.env.TENANT_RUNTIME_FILE
+    tenant = process.env.TENANT_RUNTIME_FILE
         ? await require('./tenant-server').startTenantServer(control) : null;
     const port = Number(process.env.CONTROL_PORT) || 8002;
     const host = process.env.CONTROL_LISTEN_HOST || (isPublic ? '0.0.0.0' : '127.0.0.1');

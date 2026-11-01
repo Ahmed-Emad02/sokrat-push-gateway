@@ -41,6 +41,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         now: heartbeatOptions.now,
         sleep: heartbeatOptions.sleep,
     });
+    let attachedProxy = null;
     const router = express.Router();
     router.use(express.json({ limit: '16kb' }));
     const requests = new Map();
@@ -103,16 +104,18 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     installTenantPush(router, { store: pushStore, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId });
     return {
         router, assignment, authorize, pushStore, heartbeat,
+        getActiveCalls: () => attachedProxy?.getActiveCalls?.() || [],
         start() { heartbeat.start(); },
         stop() { heartbeat.stop(); },
         attach(server) {
-            return attachSipProxy(server, { authorize, consumeTicket: tickets.consume,
+            attachedProxy = attachSipProxy(server, { authorize, consumeTicket: tickets.consume,
                 scopeIncomingCallId: (value, route) => tenantCallId(normalizeCallId, route.pbxId, value),
                 isAuthorized: async (id, previous, token) => {
                     const current = await authorize(id, token);
                     return !!current && current.pbxId === previous.pbxId && current.extension === previous.extension
                         && current.wsUrl === previous.wsUrl && current.authorizationRevision === previous.authorizationRevision;
                 } });
+            return attachedProxy;
         }
     };
 }

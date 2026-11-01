@@ -78,6 +78,37 @@
       <p id="active-calls-empty" class="hint" hidden>No active calls through the gateway.</p>
     </section>
 
+    <section class="card" aria-labelledby="load-title">
+      <div class="card-head">
+        <h2 id="load-title">Gateway load</h2>
+        <span id="load-source" class="hint">Gateway container · BT-Panel excluded</span>
+      </div>
+      <div class="load-grid">
+        <div class="load-metric">
+          <span id="load-cpu" class="stat-value">—</span>
+          <span class="stat-label">CPU · 1 core = 100%</span>
+          <canvas id="chart-cpu" class="load-chart" width="640" height="96" aria-label="Gateway CPU history"></canvas>
+        </div>
+        <div class="load-metric">
+          <span id="load-memory" class="stat-value">—</span>
+          <span class="stat-label">Container RAM</span>
+          <canvas id="chart-memory" class="load-chart" width="640" height="96" aria-label="Gateway memory history"></canvas>
+        </div>
+        <div class="load-metric">
+          <span id="load-network" class="stat-value">—</span>
+          <span class="stat-label">SIP traffic ↓ / ↑</span>
+          <canvas id="chart-network" class="load-chart" width="640" height="96" aria-label="SIP traffic history"></canvas>
+        </div>
+        <div class="load-metric">
+          <span id="load-calls" class="stat-value">—</span>
+          <span class="stat-label">Active / ringing calls</span>
+          <canvas id="chart-calls" class="load-chart" width="640" height="96" aria-label="Active call history"></canvas>
+        </div>
+      </div>
+      <p id="load-host" class="hint">Host comparison unavailable.</p>
+      <p id="load-note" class="hint">Sampled in-process every 2 seconds; no external watcher.</p>
+    </section>
+
     <section class="card" aria-labelledby="pbx-title">
       <div class="card-head">
         <h2 id="pbx-title">PBX connections</h2>
@@ -206,6 +237,14 @@
       </form>
       </details>
 
+      <div class="table-tools">
+        <label class="filter-field" for="pbx-filter">
+          <span class="filter-label">Filter</span>
+          <input id="pbx-filter" type="search" aria-label="Filter PBX connections" placeholder="Name, URL, state" autocomplete="off" spellcheck="false">
+        </label>
+        <button id="pbx-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
+        <output id="pbx-filter-count" class="hint filter-count" aria-live="polite"></output>
+      </div>
       <div class="table-wrapper" role="region" aria-labelledby="pbx-caption" tabindex="0">
         <table>
           <caption id="pbx-caption" class="visually-hidden">Configured PBX connections</caption>
@@ -227,9 +266,6 @@
     <section class="card" aria-labelledby="extensions-title">
       <div class="card-head">
         <h2 id="extensions-title">Extensions</h2>
-        <p class="hint">
-          Extensions are registered automatically when you approve devices for a managed PBX.
-        </p>
       </div>
       <form id="ext-form" class="form-grid" hidden>
         <input type="hidden" id="ext-id" value="">
@@ -303,6 +339,14 @@
         </div>
       </form>
 
+      <div class="table-tools">
+        <label class="filter-field" for="ext-filter">
+          <span class="filter-label">Filter</span>
+          <input id="ext-filter" type="search" aria-label="Filter extensions" placeholder="PBX, extension, employee" autocomplete="off" spellcheck="false">
+        </label>
+        <button id="ext-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
+        <output id="ext-filter-count" class="hint filter-count" aria-live="polite"></output>
+      </div>
       <div class="table-wrapper" role="region" aria-labelledby="extensions-caption" tabindex="0">
         <table>
           <caption id="extensions-caption" class="visually-hidden">Registered extensions</caption>
@@ -338,6 +382,14 @@
         </div>
       </div>
 
+      <div class="table-tools">
+        <label class="filter-field" for="pending-filter">
+          <span class="filter-label">Filter</span>
+          <input id="pending-filter" type="search" aria-label="Filter pending devices" placeholder="Device, ID, platform, IP" autocomplete="off" spellcheck="false">
+        </label>
+        <button id="pending-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
+        <output id="pending-filter-count" class="hint filter-count" aria-live="polite"></output>
+      </div>
       <div class="table-wrapper" role="region" aria-labelledby="pending-caption" tabindex="0">
         <table>
           <caption id="pending-caption" class="visually-hidden">Devices waiting for approval</caption>
@@ -370,6 +422,14 @@
       <div class="card-head">
         <h2 id="approved-title">Approved devices</h2>
         <p class="hint">Revoking drops the stored secret immediately and blocks future pushes.</p>
+      </div>
+      <div class="table-tools">
+        <label class="filter-field" for="approved-filter">
+          <span class="filter-label">Filter</span>
+          <input id="approved-filter" type="search" aria-label="Filter approved devices" placeholder="Device, PBX, extension" autocomplete="off" spellcheck="false">
+        </label>
+        <button id="approved-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
+        <output id="approved-filter-count" class="hint filter-count" aria-live="polite"></output>
       </div>
       <div class="table-wrapper" role="region" aria-labelledby="approved-caption" tabindex="0">
         <table>

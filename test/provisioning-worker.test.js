@@ -57,6 +57,23 @@ if os.path.exists(os.path.join(here, 'sync-mutate-control')):
     with open(target, 'a') as handle:
         handle.write(' \n')
 
+if os.path.exists(os.path.join(here, 'sync-mutate-json')):
+    target = open(os.path.join(here, 'sync-mutate-json')).read().strip()
+    data = json.load(open(target))
+    data['updatedAt'] = '2099-01-01T00:00:00Z'
+    data.setdefault('devices', []).append({'id': 'dev_test', 'lastSeenAt': '2099-01-01T00:00:00Z'})
+    data.setdefault('audit', []).append({'at': '2099-01-01T00:00:00Z', 'action': 'test'})
+    data['pbx'][0]['name'] = 'Renamed during sync'
+    with open(target, 'w') as handle:
+        json.dump(data, handle, sort_keys=True)
+
+if os.path.exists(os.path.join(here, 'sync-mutate-pbx-url')):
+    target = open(os.path.join(here, 'sync-mutate-pbx-url')).read().strip()
+    data = json.load(open(target))
+    data['pbx'][0]['wsURL'] = data['pbx'][0]['wsURL'] + '/changed'
+    with open(target, 'w') as handle:
+        json.dump(data, handle, sort_keys=True)
+
 if os.path.exists(os.path.join(here, 'sync-sleep')):
     time.sleep(float(open(os.path.join(here, 'sync-sleep')).read().strip() or '1'))
 
@@ -688,17 +705,31 @@ test('invalid allocation arithmetic is refused before any command', (t) => {
 // Concurrency, locking and freshness
 // ---------------------------------------------------------------------------
 
-test('dashboard edit during the run aborts before adapters and clears ready', (t) => {
+test('presence/audit writes during the run do not abort provisioning', (t) => {
     const fixture = makeFixture(t);
-    fixture.flag('sync-mutate-control', fixture.controlFile);
+    fixture.flag('sync-mutate-json', fixture.controlFile);
 
     const result = fixture.run(['--apply']);
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
     const entry = fixture.readStatus().pbx.pbx_alpha;
-    assert.equal(entry.state, 'error');
-    assert.equal(entry.reason, 'worker_failed');
-    assert.equal(entry.stages.relay, 'pending');
-    assert.equal(entry.capturedUpdatedAt, '2026-10-28T10:00:00Z');
+    assert.equal(entry.state, 'ready');
+    assert.deepEqual(entry.stages, { relay: 'ready', firewall: 'ready', hook: 'ready' });
+    assert.equal(fixture.syncCount(), 1, 'a benign write must not force another sync');
+    assert.equal(fixture.requests('firewall-adapter').length, 1);
+    assert.equal(fixture.requests('hook-adapter').length, 1);
+});
+
+test('provisioning-field change during the run is retried, then blocked without stale ready', (t) => {
+    const fixture = makeFixture(t);
+    fixture.flag('sync-mutate-pbx-url', fixture.controlFile);
+
+    const result = fixture.run(['--apply']);
+    assert.equal(result.status, 2, result.stderr + result.stdout);
+    const entry = fixture.readStatus().pbx.pbx_alpha;
+    assert.equal(entry.state, 'blocked');
+    assert.equal(entry.reason, 'identity_mismatch');
+    assert.equal(entry.stages.relay, 'blocked');
+    assert.equal(fixture.syncCount(), 1, 'retry re-evaluates before syncing a drifted record');
     assert.deepEqual(fixture.requests('firewall-adapter'), []);
     assert.deepEqual(fixture.requests('hook-adapter'), []);
 });

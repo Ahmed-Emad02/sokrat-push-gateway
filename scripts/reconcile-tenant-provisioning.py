@@ -104,10 +104,12 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 import urllib.parse
 
 STATUS_SCHEMA_VERSION = 1
 CONFIG_SCHEMA_VERSION = 1
+CONTROL_RETRY_DELAY_SECONDS = 0.5
 
 # Deployment bundle: installed root-owned and immutable for the service user.
 TRUSTED_BUNDLE = Path("/usr/local/lib/sokrat-tenant-provisioning")
@@ -442,6 +444,29 @@ def record_fingerprint(record):
         return None
 
 
+def provisioning_control_digest(records):
+    """Digest only the fields that can change provisioning work.
+
+    The dashboard control store also carries device presence, sessions and an
+    audit log. Revalidating an approved device's claim used to update
+    `lastSeenAt` on every request; hashing the raw file made those benign writes
+    abort an otherwise healthy reconcile run and publish `worker_failed` for
+    every PBX. Hash the routing identity instead, so a real PBX edit still
+    aborts while presence/audit changes do not.
+    """
+    identities = {}
+    for pbx_id, record in records.items():
+        identities[pbx_id] = {
+            "approval": record_approval(record),
+            "apiURL": record["apiURL"],
+            "enabled": record["enabled"],
+            "mediaIps": sorted(record.get("mediaIps") or []),
+            "wsURL": record["wsURL"],
+        }
+    payload = json.dumps(identities, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def compare_identity(pin, record):
     """Return an allowlisted reason when the dashboard record drifted from pins."""
     try:
@@ -671,7 +696,6 @@ def load_control(config):
     if info.st_size > 32 * 1024 * 1024:
         refuse("configuration_invalid", "control store is unexpectedly large")
     raw = read_regular(config["controlFile"], "control store")
-    digest = hashlib.sha256(raw).hexdigest()
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -720,7 +744,7 @@ def load_control(config):
             "management": management,
             "updatedAt": record.get("updatedAt") if isinstance(record.get("updatedAt"), str) else None,
         }
-    return parsed, digest
+    return parsed, provisioning_control_digest(parsed)
 
 
 def load_plan(config):
@@ -851,12 +875,8 @@ def load_tokens(config):
 
 
 def read_control_digest(config):
-    """Hash the dashboard control bytes so privileged stages can detect edits."""
-    owners = trusted_owners(config["testMode"])
-    if config["serviceUid"] is not None:
-        owners.add(config["serviceUid"])
-    check_file(config["controlFile"], "control store", owners, private=True)
-    return hashlib.sha256(read_regular(config["controlFile"], "control store")).hexdigest()
+    """Hash the provisioning identity, not unrelated presence/audit writes."""
+    return load_control(config)[1]
 
 
 def ensure_control_unchanged(config, expected):
@@ -1598,33 +1618,47 @@ def main(argv=None):
 
     state = None
     try:
-        state = evaluate(config)
-        if state["globalReason"] is not None:
-            previous = load_previous_status(config) if args.apply else {}
-            document = status_document(blocked_status(state["entries"], state["globalReason"], previous))
-            if args.apply:
+        # A control-store write that lands during a run is normally transient.
+        # Re-read once before publishing an abort status; a second conflict
+        # still aborts, so a real dashboard edit is never hidden.
+        attempts = 2 if args.apply else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                state = evaluate(config)
+                if state["globalReason"] is not None:
+                    previous = load_previous_status(config) if args.apply else {}
+                    document = status_document(
+                        blocked_status(state["entries"], state["globalReason"], previous)
+                    )
+                    if args.apply:
+                        write_status(config, document)
+                    emit(document)
+                    sys.stderr.write(
+                        f"refused [{state['globalReason']}]: provisioning is not authorized for every "
+                        "existing allocation; no changes were made\n"
+                    )
+                    return 2
+
+                if not args.apply:
+                    document = status_document(planned_status(state["entries"]))
+                    emit(document)
+                    return 0
+
+                previous = load_previous_status(config)
+                results = apply_run(state, previous)
+                # Last gate: never publish a ready result for a record whose
+                # provisioning identity changed while adapters were running.
+                ensure_control_unchanged(config, state["controlDigest"])
+                document = status_document(results)
                 write_status(config, document)
-            emit(document)
-            sys.stderr.write(
-                f"refused [{state['globalReason']}]: provisioning is not authorized for every "
-                "existing allocation; no changes were made\n"
-            )
-            return 2
-
-        if not args.apply:
-            document = status_document(planned_status(state["entries"]))
-            emit(document)
-            return 0
-
-        previous = load_previous_status(config)
-        results = apply_run(state, previous)
-        # Last gate: never publish a ready result for a record the dashboard
-        # edited while adapters were running.
-        ensure_control_unchanged(config, state["controlDigest"])
-        document = status_document(results)
-        write_status(config, document)
-        emit(document)
-        return 1 if any(entry["state"] == "error" for entry in results.values()) else 0
+                emit(document)
+                return 1 if any(entry["state"] == "error" for entry in results.values()) else 0
+            except ControlChanged:
+                if attempt < attempts:
+                    sys.stderr.write("retrying: control store changed; re-reading once\n")
+                    time.sleep(CONTROL_RETRY_DELAY_SECONDS)
+                    continue
+                raise
     except ControlChanged:
         document = abort_status(state)
         if args.apply and state is not None:

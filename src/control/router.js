@@ -407,6 +407,14 @@ function createControlRouter(options = {}) {
         });
     });
 
+    router.get('/api/metrics', requireSession, (req, res) => {
+        let metrics = null;
+        try { metrics = typeof options.getMetrics === 'function' ? options.getMetrics() : null; }
+        catch (_) { metrics = null; }
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, metrics });
+    });
+
     router.get('/api/tunnel-token', requireSession, (req, res) => {
         const fs = require('node:fs');
         const tokenPath = '/etc/sokrat/gateway-tunnel.token';

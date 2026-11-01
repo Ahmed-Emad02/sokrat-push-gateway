@@ -11,6 +11,15 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
         perMessageDeflate: false, handleProtocols: protocols => protocols.has('sip') ? 'sip' : false });
     const sessions = new Set();
     const callTracker = createCallTracker();
+    const network = { inBytes: 0, outBytes: 0, byPbx: new Map() };
+    const countNetwork = (pbxId, direction, bytes) => {
+        if (!bytes) return;
+        network[direction] = (network[direction] || 0) + bytes;
+        if (!pbxId) return;
+        const entry = network.byPbx.get(pbxId) || { inBytes: 0, outBytes: 0 };
+        entry[direction] = (entry[direction] || 0) + bytes;
+        network.byPbx.set(pbxId, entry);
+    };
     let pending = 0;
     server.on('upgrade', async (req, socket, head) => {
         socket.on('error', () => {});
@@ -145,6 +154,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                         }
                     }
                     callTracker.observe(data, route.pbxId, session);
+                    countNetwork(route.pbxId, 'inBytes', data.length);
                     if (upstream.readyState === WebSocket.CONNECTING) {
                         queued += data.length;
                         if (queued > 256 * 1024) return close('queue_overflow');
@@ -169,6 +179,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                 upstream.on('open', () => { for (const [data, binary] of queue) send(upstream, data, binary); queue.length = 0; });
                 upstream.on('message', (data, binary) => {
                     callTracker.observe(data, route.pbxId, session);
+                    countNetwork(route.pbxId, 'outBytes', data.length);
                     const message = data.toString();
                     if (/^INVITE\s/.test(message)) {
                         const headers = message.split('\r\n\r\n', 1)[0].replace(/\r\n[ \t]+/g, ' ');
@@ -228,6 +239,11 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
     timer.unref();
     return {
         getActiveCalls: () => callTracker.snapshot(),
+        getNetworkStats: () => ({
+            inBytes: network.inBytes,
+            outBytes: network.outBytes,
+            byPbx: [...network.byPbx.entries()].map(([pbxId, value]) => ({ pbxId, ...value })),
+        }),
         close() { clearInterval(timer); clearInterval(pruneTimer); for (const s of sessions) s.close('shutdown'); wss.close(); },
     };
 }

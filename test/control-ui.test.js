@@ -68,3 +68,21 @@ test('the script only talks to same-origin control endpoints', async () => {
         assert.equal(/^https?:\/\//.test(value), false);
     }
 });
+test('each table has a search filter wired to its renderer', async () => {
+    const [html, script] = await Promise.all([read('index.html'), read('app.js')]);
+
+    for (const [rows, filter, renderer] of [
+        ['pbx-rows', 'pbx-filter', 'renderPbx'],
+        ['ext-rows', 'ext-filter', 'renderExtensions'],
+        ['pending-rows', 'pending-filter', 'renderPending'],
+        ['approved-rows', 'approved-filter', 'renderApproved']
+    ]) {
+        assert.match(html, new RegExp(`<tbody id="${rows}"></tbody>`));
+        assert.match(html, new RegExp(`<input id="${filter}" type="search"`));
+        assert.match(script, new RegExp(`input: refs\\.${filter.replace(/-([a-z])/g, (_, c) => c.toUpperCase())}`));
+        assert.match(script, new RegExp(`render: ${renderer}`));
+    }
+    assert.match(script, /function filterRecords\(name, records, textFor\)/);
+    assert.match(script, /terms\.every\(\(term\) => haystack\.includes\(term\)\)/);
+    assert.match(script, /filter\.input\.value = '';/);
+});

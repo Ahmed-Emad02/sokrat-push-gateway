@@ -1665,6 +1665,12 @@ class ControlStore {
      * and once approved it activates the client-held credential idempotently
      * and returns the assignment. A rejected or revoked claim stays dead until
      * the device enrolls again with a fresh claim secret.
+     *
+     * Repeated claim reads are deliberately side-effect-free. In particular,
+     * `lastSeenAt` is only written when the claim is first redeemed: persisting
+     * presence on every client revalidation rewrites the control store while
+     * the root provisioning worker is reconciling, which invalidates its
+     * consistency guard for a change that cannot affect provisioning.
      */
     redeemClaim(input = {}) {
         const claimSecret = normalizeClaimSecret(input.claimSecret);
@@ -1706,15 +1712,17 @@ class ControlStore {
             const assignment = this._claimAssignment(draft, device);
             const at = isoAt(now);
             const firstRedemption = !device.claimRedeemedAt;
+            let changed = false;
             if (!device.secretHash) {
                 // Activate the credential the device already holds; nothing is
                 // minted here, so a retry can never lose a response secret.
                 device.secretHash = device.claimHash;
                 device.secretIssuedAt = at;
+                changed = true;
             }
-            device.claimRedeemedAt = device.claimRedeemedAt || at;
-            device.lastSeenAt = at;
             if (firstRedemption) {
+                device.claimRedeemedAt = at;
+                device.lastSeenAt = at;
                 pushAudit(
                     draft,
                     {
@@ -1726,9 +1734,10 @@ class ControlStore {
                     },
                     this.limits.auditEntries
                 );
+                changed = true;
             }
             return {
-                commit: true,
+                commit: changed,
                 value: {
                     status: 'approved',
                     device: publicDevice(device),

@@ -203,12 +203,16 @@ test('approval preserves the claim and redemption activates the client credentia
         assert.equal(store.verifyDeviceSecret(enrolled.device.id, newClaimSecret()).ok, false);
         assert.equal(store.getApprovedDevice(enrolled.device.id).extension, '162');
 
-        // Retrying redemption is safe and returns no new material.
+        // Retrying redemption is safe, returns no new material, and does not
+        // rewrite the control store just to persist presence.
+        const beforeRetry = await fsp.readFile(store.filePath, 'utf8');
         const retried = await store.redeemClaim({ deviceId: enrolled.device.id, claimSecret });
         assert.equal(retried.status, 'approved');
         assert.equal(retried.redeemedNow, false);
         assert.deepEqual(retried.assignment, redeemed.assignment);
         assert.equal(retried.device.claimRedeemedAt, redeemed.device.claimRedeemedAt);
+        assert.equal(retried.device.lastSeenAt, redeemed.device.lastSeenAt);
+        assert.equal(await fsp.readFile(store.filePath, 'utf8'), beforeRetry);
         assert.equal(store.verifyDeviceSecret(enrolled.device.id, claimSecret).ok, true);
 
         // Wrong or unknown credentials are indistinguishable.

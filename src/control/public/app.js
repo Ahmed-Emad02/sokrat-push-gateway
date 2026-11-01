@@ -35,6 +35,16 @@
         activeCallsList: document.getElementById('active-calls-list'),
         activeCallsTotal: document.getElementById('active-calls-total'),
         activeCallsEmpty: document.getElementById('active-calls-empty'),
+        loadCpu: document.getElementById('load-cpu'),
+        loadMemory: document.getElementById('load-memory'),
+        loadNetwork: document.getElementById('load-network'),
+        loadCalls: document.getElementById('load-calls'),
+        loadHost: document.getElementById('load-host'),
+        loadSource: document.getElementById('load-source'),
+        chartCpu: document.getElementById('chart-cpu'),
+        chartMemory: document.getElementById('chart-memory'),
+        chartNetwork: document.getElementById('chart-network'),
+        chartCalls: document.getElementById('chart-calls'),
         pbxForm: document.getElementById('pbx-form'),
         pbxFormDetails: document.getElementById('pbx-form-details'),
         pbxAddress: document.getElementById('pbx-address'),
@@ -59,6 +69,9 @@
         pbxCancel: document.getElementById('pbx-cancel'),
         pbxRows: document.getElementById('pbx-rows'),
         pbxEmpty: document.getElementById('pbx-empty'),
+        pbxFilter: document.getElementById('pbx-filter'),
+        pbxFilterClear: document.getElementById('pbx-filter-clear'),
+        pbxFilterCount: document.getElementById('pbx-filter-count'),
 
         pbxManaged: document.getElementById('pbx-managed'),
         pbxCustomer: document.getElementById('pbx-customer'),
@@ -81,14 +94,23 @@
         extCancel: document.getElementById('ext-cancel'),
         extRows: document.getElementById('ext-rows'),
         extEmpty: document.getElementById('ext-empty'),
+        extFilter: document.getElementById('ext-filter'),
+        extFilterClear: document.getElementById('ext-filter-clear'),
+        extFilterCount: document.getElementById('ext-filter-count'),
         secretPanel: document.getElementById('secret-panel'),
         secretValue: document.getElementById('secret-value'),
         secretCopy: document.getElementById('secret-copy'),
         secretDismiss: document.getElementById('secret-dismiss'),
         pendingRows: document.getElementById('pending-rows'),
         pendingEmpty: document.getElementById('pending-empty'),
+        pendingFilter: document.getElementById('pending-filter'),
+        pendingFilterClear: document.getElementById('pending-filter-clear'),
+        pendingFilterCount: document.getElementById('pending-filter-count'),
         approvedRows: document.getElementById('approved-rows'),
         approvedEmpty: document.getElementById('approved-empty'),
+        approvedFilter: document.getElementById('approved-filter'),
+        approvedFilterClear: document.getElementById('approved-filter-clear'),
+        approvedFilterCount: document.getElementById('approved-filter-count'),
         activityList: document.getElementById('activity-list'),
         activityEmpty: document.getElementById('activity-empty'),
         showTunnelTokenBtn: document.getElementById('show-tunnel-token-btn'),
@@ -98,6 +120,48 @@
     };
 
     if (!refs.main || !refs.loginForm || !refs.pbxRows || !refs.extForm || !refs.extRows) return;
+
+    const tableFilters = {
+        pbx: {
+            input: refs.pbxFilter,
+            clear: refs.pbxFilterClear,
+            count: refs.pbxFilterCount,
+            empty: refs.pbxEmpty,
+            render: renderPbx
+        },
+        extensions: {
+            input: refs.extFilter,
+            clear: refs.extFilterClear,
+            count: refs.extFilterCount,
+            empty: refs.extEmpty,
+            render: renderExtensions
+        },
+        pending: {
+            input: refs.pendingFilter,
+            clear: refs.pendingFilterClear,
+            count: refs.pendingFilterCount,
+            empty: refs.pendingEmpty,
+            render: renderPending
+        },
+        approved: {
+            input: refs.approvedFilter,
+            clear: refs.approvedFilterClear,
+            count: refs.approvedFilterCount,
+            empty: refs.approvedEmpty,
+            render: renderApproved
+        }
+    };
+
+    for (const filter of Object.values(tableFilters)) {
+        filter.input.addEventListener('input', () => {
+            if (snapshot) filter.render();
+        });
+        filter.clear.addEventListener('click', () => {
+            filter.input.value = '';
+            if (snapshot) filter.render();
+            filter.input.focus();
+        });
+    }
 
     refs.pendingRows.addEventListener('focusout', () => {
         setTimeout(() => {
@@ -251,6 +315,111 @@
 
     function shortId(value) {
         return String(value || '').slice(0, 12);
+    }
+
+    /**
+     * Filter rows by every whitespace-separated term, using the text the row
+     * exposes to the operator. Terms are ANDed so "sales 111" narrows instead
+     * of widening the result.
+     */
+    function filterRecords(name, records, textFor) {
+        const filter = tableFilters[name];
+        const terms = String(filter.input.value || '').trim().toLowerCase().split(/\s+/)
+            .filter(Boolean);
+        const visible = terms.length === 0
+            ? records
+            : records.filter((record) => {
+                const haystack = String(textFor(record) || '').toLowerCase();
+                return terms.every((term) => haystack.includes(term));
+            });
+
+        if (filter.clear) filter.clear.hidden = terms.length === 0;
+        const countText = records.length === 0
+            ? '0 total'
+            : terms.length === 0
+                ? `${records.length} total`
+                : `${visible.length} of ${records.length}`;
+        if (filter.count && filter.count.textContent !== countText) {
+            filter.count.textContent = countText;
+        }
+        return visible;
+    }
+
+    function updateFilterEmpty(name, visible, total) {
+        const node = tableFilters[name].empty;
+        if (!node) return;
+        if (visible > 0) {
+            node.hidden = true;
+            return;
+        }
+        if (!node.dataset.emptyText) node.dataset.emptyText = node.textContent;
+        node.textContent = total === 0 ? node.dataset.emptyText : 'No matching records.';
+        node.hidden = false;
+    }
+
+    function deviceFilterText(device, pbxById) {
+        const pbx = device.pbxId ? pbxById.get(device.pbxId) : null;
+        const suggestedPbx = device.suggestedPbxId ? pbxById.get(device.suggestedPbxId) : null;
+        return [
+            deviceTitle(device),
+            device.deviceName,
+            device.model,
+            device.deviceUuid,
+            device.platform,
+            platformLabel(device.platform),
+            device.osVersion,
+            device.appVersion,
+            device.requestIp,
+            enrollmentSource(device),
+            formatTime(device.requestedAt),
+            formatTime(device.reviewedAt),
+            device.extension,
+            device.suggestedExtension,
+            pbx && pbx.name,
+            pbx && pbx.id,
+            suggestedPbx && suggestedPbx.name,
+            device.status
+        ].filter(Boolean).join(' ');
+    }
+
+    function pbxFilterText(record) {
+        const management = record.management || {};
+        const provisioningEntryForRecord = provisioningEntry(record.id);
+        const provisionValues = provisioningEntryForRecord
+            ? [
+                provisioningEntryForRecord.effectiveState,
+                provisioningEntryForRecord.reason,
+                ...Object.values(provisioningEntryForRecord.stages || {})
+            ]
+            : [];
+        return [
+            record.name,
+            record.id,
+            record.wsURL,
+            record.apiURL,
+            ...(record.mediaIps || []),
+            record.enabled ? 'enabled' : 'disabled',
+            management.customer,
+            management.loginHostname,
+            management.reviewedInstallationId,
+            approvalLabel(management.approvalStatus),
+            ...provisionValues
+        ].filter(Boolean).join(' ');
+    }
+
+    function extensionFilterText(record, pbxById) {
+        const pbx = record.pbxId ? pbxById.get(record.pbxId) : null;
+        const platforms = Array.isArray(record.allowedPlatforms) ? record.allowedPlatforms : [];
+        return [
+            pbx && pbx.name,
+            pbx && pbx.id,
+            record.extension,
+            record.name,
+            extensionStatusLabel(record.status),
+            platforms.map(platformLabel).join(' '),
+            approvedDeviceCount(record),
+            record.maxDevices
+        ].filter(Boolean).join(' ');
     }
 
     function deviceTitle(device) {
@@ -524,6 +693,104 @@
 
     let pollInterval = null;
     let activeCallsInterval = null;
+    let metricsInterval = null;
+
+    function formatMetric(value, digits = 1, suffix = '') {
+        const number = Number(value);
+        return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : '—';
+    }
+
+    function drawSpark(canvas, values, maximum, color) {
+        if (!canvas || !canvas.getContext) return;
+        const width = Math.max(1, Math.floor(canvas.clientWidth || canvas.width));
+        const height = Math.max(1, Math.floor(canvas.clientHeight || 96));
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(width * ratio);
+        canvas.height = Math.floor(height * ratio);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        const points = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+        if (points.length === 0) return;
+        const max = Math.max(1, Number(maximum) || 1);
+        const step = points.length > 1 ? width / (points.length - 1) : width;
+        const yFor = (value) => height - Math.max(0, Math.min(max, value)) / max * (height - 4) - 2;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        points.forEach((value, index) => {
+            const x = points.length > 1 ? index * step : width / 2;
+            const y = yFor(value);
+            if (index === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.globalAlpha = 0.12;
+        ctx.lineTo(width, height);
+        ctx.lineTo(0, height);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+
+    function renderMetrics(payload) {
+        const metrics = payload && payload.metrics;
+        const current = metrics && metrics.current;
+        if (!current) {
+            if (refs.loadCpu) refs.loadCpu.textContent = '—';
+            if (refs.loadMemory) refs.loadMemory.textContent = '—';
+            if (refs.loadNetwork) refs.loadNetwork.textContent = '—';
+            if (refs.loadCalls) refs.loadCalls.textContent = '—';
+            return;
+        }
+        if (refs.loadCpu) refs.loadCpu.textContent = formatMetric(current.cpuPct, 1, '%');
+        if (refs.loadMemory) {
+            refs.loadMemory.textContent = Number.isFinite(current.memoryBytes)
+                ? `${formatMetric(current.memoryBytes / 1048576, 1)} MB`
+                : '—';
+        }
+        if (refs.loadNetwork) {
+            refs.loadNetwork.textContent =
+                `${formatMetric(current.sipInBps / 1e6, 2)} / ${formatMetric(current.sipOutBps / 1e6, 2)} Mbps`;
+        }
+        if (refs.loadCalls) {
+            refs.loadCalls.textContent = `${Number(current.activeCalls) || 0} / ${Number(current.ringingCalls) || 0}`;
+        }
+        if (refs.loadHost) {
+            const hostCpu = formatMetric(current.hostCpuPct, 1, '%');
+            const hostMemory = formatMetric(current.hostMemoryPct, 1, '%');
+            refs.loadHost.textContent = `Host total (includes BT-Panel and other services): CPU ${hostCpu} · RAM ${hostMemory}.`;
+        }
+        if (refs.loadSource) {
+            refs.loadSource.textContent = metrics.source && metrics.source.cgroup
+                ? 'Gateway container · BT-Panel excluded · 5 min'
+                : 'Gateway container · BT-Panel excluded';
+        }
+        const history = Array.isArray(metrics.history) ? metrics.history : [];
+        const values = (key) => history.map((row) => row && row[key]);
+        const style = getComputedStyle(document.documentElement);
+        const accent = style.getPropertyValue('--accent').trim() || '#c0392b';
+        const ok = style.getPropertyValue('--ok').trim() || '#1e6a45';
+        const warn = style.getPropertyValue('--warn').trim() || '#8a5a00';
+        const muted = style.getPropertyValue('--muted').trim() || '#5d6673';
+        drawSpark(refs.chartCpu, values('cpuPct'), 100, accent);
+        drawSpark(refs.chartMemory, values('memoryBytes').map((value) => value / 1048576), 64, ok);
+        drawSpark(refs.chartNetwork, values('sipInBps').map((value, index) =>
+            (Number(value) || 0) + (Number(values('sipOutBps')[index]) || 0)).map((value) => value / 1e6), 1, warn);
+        drawSpark(refs.chartCalls, values('activeCalls'), Math.max(1, ...values('activeCalls').map(Number).filter(Number.isFinite)), muted);
+    }
+
+    async function refreshMetrics() {
+        if (!refs.loadCpu) return;
+        try {
+            const payload = await api('/api/metrics');
+            renderMetrics(payload);
+        } catch (_) {}
+    }
 
     async function refreshActiveCalls() {
         if (!refs.activeCallsList) return;
@@ -572,6 +839,14 @@
                 }
             }, 1000);
         }
+        if (!metricsInterval) {
+            void refreshMetrics();
+            metricsInterval = setInterval(() => {
+                if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                    void refreshMetrics();
+                }
+            }, 2000);
+        }
     }
 
     function stopRealtimePolling() {
@@ -582,6 +857,10 @@
         if (activeCallsInterval) {
             clearInterval(activeCallsInterval);
             activeCallsInterval = null;
+        }
+        if (metricsInterval) {
+            clearInterval(metricsInterval);
+            metricsInterval = null;
         }
     }
 
@@ -609,6 +888,7 @@
             }
             render();
         void refreshActiveCalls();
+        void refreshMetrics();
         } finally {
             if (!isBackground) refs.main.removeAttribute('aria-busy');
         }
@@ -749,8 +1029,9 @@
     }
 
     function renderPbx() {
-        const pbx = snapshot.pbx || [];
-        refs.pbxEmpty.hidden = pbx.length > 0;
+        const allPbx = snapshot.pbx || [];
+        const pbx = filterRecords('pbx', allPbx, pbxFilterText);
+        updateFilterEmpty('pbx', pbx.length, allPbx.length);
         refs.pbxRows.replaceChildren(...pbx.map((record) => {
             const management = record.management || null;
             return el('tr', {},
@@ -846,10 +1127,14 @@
 
     function renderExtensions() {
         // Legacy snapshots predate extension records; treat a missing array as empty.
-        const extensions = Array.isArray(snapshot.extensions) ? snapshot.extensions : [];
+        const allExtensions = Array.isArray(snapshot.extensions) ? snapshot.extensions : [];
         const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
-
-        refs.extEmpty.hidden = extensions.length > 0;
+        const extensions = filterRecords(
+            'extensions',
+            allExtensions,
+            (record) => extensionFilterText(record, pbxById)
+        );
+        updateFilterEmpty('extensions', extensions.length, allExtensions.length);
         refs.extRows.replaceChildren(...extensions.map((record) => {
             const pbx = record.pbxId ? pbxById.get(record.pbxId) : null;
             const status = record.status || 'disabled';
@@ -933,7 +1218,13 @@
     }
 
     function renderPending() {
-        const pending = (snapshot.devices || []).filter((device) => device.status === 'pending');
+        const allPending = (snapshot.devices || []).filter((device) => device.status === 'pending');
+        const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
+        const pending = filterRecords(
+            'pending',
+            allPending,
+            (device) => deviceFilterText(device, pbxById)
+        );
         const enabledPbx = (snapshot.pbx || []).filter((record) => record.enabled);
 
         // A 3-second poll must not replace the select/input under the operator.
@@ -942,12 +1233,12 @@
             return;
         }
         pendingRenderDeferred = false;
-        const pendingIds = new Set(pending.map((device) => device.id));
+        const pendingIds = new Set(allPending.map((device) => device.id));
         for (const id of pendingDrafts.keys()) {
             if (!pendingIds.has(id)) pendingDrafts.delete(id);
         }
 
-        refs.pendingEmpty.hidden = pending.length > 0;
+        updateFilterEmpty('pending', pending.length, allPending.length);
         refs.pendingRows.replaceChildren(...pending.map((device) => {
             const title = deviceTitle(device);
             const draft = pendingDrafts.get(device.id) || {
@@ -1017,10 +1308,15 @@
     }
 
     function renderApproved() {
-        const approved = (snapshot.devices || []).filter((device) => device.status === 'approved');
+        const allApproved = (snapshot.devices || []).filter((device) => device.status === 'approved');
         const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
+        const approved = filterRecords(
+            'approved',
+            allApproved,
+            (device) => deviceFilterText(device, pbxById)
+        );
 
-        refs.approvedEmpty.hidden = approved.length > 0;
+        updateFilterEmpty('approved', approved.length, allApproved.length);
         refs.approvedRows.replaceChildren(...approved.map((device) => {
             const title = deviceTitle(device);
             const pbx = device.pbxId ? pbxById.get(device.pbxId) : null;

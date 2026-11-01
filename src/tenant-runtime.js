@@ -105,6 +105,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     return {
         router, assignment, authorize, pushStore, heartbeat,
         getActiveCalls: () => attachedProxy?.getActiveCalls?.() || [],
+        getNetworkStats: () => attachedProxy?.getNetworkStats?.() || { inBytes: 0, outBytes: 0, byPbx: [] },
         start() { heartbeat.start(); },
         stop() { heartbeat.stop(); },
         attach(server) {

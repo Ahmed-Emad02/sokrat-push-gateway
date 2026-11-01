@@ -2,15 +2,18 @@
 require('dotenv').config();
 const express = require('express');
 const { createControl } = require('./control');
+const { createSystemMetrics } = require('./system-metrics');
 
 async function start() {
     let tenant = null;
+    let metrics = null;
     const isPublic = process.env.CONTROL_ALLOW_PUBLIC === 'true';
     const control = createControl({
         filePath: process.env.CONTROL_DATA_FILE,
         maxEnabledPbx: Number(process.env.CONTROL_MAX_ENABLED_PBX) || 10,
         allowPublic: isPublic,
-        getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || []
+        getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
+        getMetrics: () => metrics?.snapshot?.() || null
     });
     await control.init();
     const app = express();
@@ -21,12 +24,17 @@ async function start() {
     app.get('/', (req, res) => res.redirect('/control/'));
     tenant = process.env.TENANT_RUNTIME_FILE
         ? await require('./tenant-server').startTenantServer(control) : null;
+    metrics = createSystemMetrics({
+        getNetwork: () => tenant?.runtime?.getNetworkStats?.() || { inBytes: 0, outBytes: 0, byPbx: [] },
+        getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
+    });
+    metrics.start();
     const port = Number(process.env.CONTROL_PORT) || 8002;
     const host = process.env.CONTROL_LISTEN_HOST || (isPublic ? '0.0.0.0' : '127.0.0.1');
     const server = app.listen(port, host, () => {
         console.log(`[control] administrative dashboard listening on ${host}:${port}`);
     });
-    const stop = () => { tenant?.close(); server.close(() => { control.close(); process.exit(0); }); };
+    const stop = () => { metrics?.stop(); tenant?.close(); server.close(() => { control.close(); process.exit(0); }); };
     process.on('SIGTERM', stop); process.on('SIGINT', stop);
     return { control, server };
 }

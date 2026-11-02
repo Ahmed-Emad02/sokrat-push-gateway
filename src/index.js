@@ -515,7 +515,8 @@ function amiCommand(actions) {
     });
 }
 const GAIN_MIN_DB = -12;
-const GAIN_MAX_DB = 24;
+// Extended by 30% from the previous +24 dB ceiling.
+const GAIN_MAX_DB = 31.2;
 
 function dbToAsteriskVolume(db) {
     const num = Math.max(GAIN_MIN_DB, Math.min(GAIN_MAX_DB, parseFloat(db) || 0));
@@ -612,7 +613,7 @@ app.post('/api/call/volume', async (req, res) => {
         const rawGain = req.body?.micGainDb !== undefined
             ? req.body.micGainDb
             : (req.body?.gainDb !== undefined ? req.body.gainDb : req.body?.gain);
-        const gain = Math.max(GAIN_MIN_DB, Math.min(GAIN_MAX_DB, parseInt(rawGain, 10) || 0));
+        const gain = Math.max(GAIN_MIN_DB, Math.min(GAIN_MAX_DB, parseFloat(rawGain) || 0));
         const result = await setAsteriskChannelVolume({ extension, callId, gainDb: gain });
         if (!result.success) {
             return res.status(404).json(result);

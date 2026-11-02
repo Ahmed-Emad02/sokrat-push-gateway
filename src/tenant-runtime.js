@@ -86,7 +86,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         const route = await authorizeDevice(req);
         if (!route) return res.status(403).json({ success: false, error: 'Device approval required' });
         const raw = req.body?.micGainDb !== undefined ? req.body.micGainDb : req.body?.gainDb;
-        const gain = Math.max(-12, Math.min(24, parseInt(raw, 10) || 0));
+        const gain = Math.max(-12, Math.min(31.2, parseFloat(raw) || 0));
         try {
             const upstream = await fetch('http://127.0.0.1:8095/api/call/volume', {
                 method: 'POST',

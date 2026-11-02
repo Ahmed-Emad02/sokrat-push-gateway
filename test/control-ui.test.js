@@ -68,21 +68,27 @@ test('the script only talks to same-origin control endpoints', async () => {
         assert.equal(/^https?:\/\//.test(value), false);
     }
 });
-test('each table has a search filter wired to its renderer', async () => {
+test('each table has a search box and multi-select filter mount', async () => {
     const [html, script] = await Promise.all([read('index.html'), read('app.js')]);
 
-    for (const [rows, filter, renderer] of [
-        ['pbx-rows', 'pbx-filter', 'renderPbx'],
-        ['ext-rows', 'ext-filter', 'renderExtensions'],
-        ['pending-rows', 'pending-filter', 'renderPending'],
-        ['approved-rows', 'approved-filter', 'renderApproved']
+    for (const [rows, prefix, renderer] of [
+        ['pbx-rows', 'pbx', 'renderPbx'],
+        ['ext-rows', 'ext', 'renderExtensions'],
+        ['pending-rows', 'pending', 'renderPending'],
+        ['approved-rows', 'approved', 'renderApproved']
     ]) {
         assert.match(html, new RegExp(`<tbody id="${rows}"></tbody>`));
-        assert.match(html, new RegExp(`<input id="${filter}" type="search"`));
-        assert.match(script, new RegExp(`input: refs\\.${filter.replace(/-([a-z])/g, (_, c) => c.toUpperCase())}`));
+        assert.match(html, new RegExp(`<input id="${prefix}-search" type="search"`));
+        assert.match(html, new RegExp(`<div id="${prefix}-filters" class="filter-selects"`));
+        const cap = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        assert.match(script, new RegExp(`search: refs\\.${cap(prefix + '-search')}`));
+        assert.match(script, new RegExp(`menu: refs\\.${cap(prefix + '-filters')}`));
         assert.match(script, new RegExp(`render: ${renderer}`));
     }
     assert.match(script, /function filterRecords\(name, records, textFor\)/);
-    assert.match(script, /terms\.every\(\(term\) => haystack\.includes\(term\)\)/);
-    assert.match(script, /filter\.input\.value = '';/);
+    assert.match(script, /function ensureFilterMenus\(name\)/);
+    assert.match(script, /function buildMultiSelect\(filter, definition\)/);
+    assert.match(script, /selected\.add\(option\.value\)/);
+    assert.match(script, /selected\.delete\(option\.value\)/);
+    assert.match(script, /filter\.search\.value = '';/);
 });

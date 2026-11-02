@@ -13,7 +13,13 @@ async function start() {
         maxEnabledPbx: Number(process.env.CONTROL_MAX_ENABLED_PBX) || 10,
         allowPublic: isPublic,
         getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
-        getMetrics: () => metrics?.snapshot?.() || null
+        getMetrics: () => metrics?.snapshot?.() || null,
+        onDeviceApproved: async (device) => {
+            const pushStore = tenant?.runtime?.pushStore;
+            if (pushStore && typeof pushStore.reassign === 'function') {
+                await pushStore.reassign(device.id, device);
+            }
+        }
     });
     await control.init();
     const app = express();

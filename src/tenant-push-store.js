@@ -73,6 +73,30 @@ function createTenantPushStore(file, approvedAssignment) {
                 data.devices.push(registration);
             });
         },
+        /**
+         * Keep a registered token with the same installation when an operator
+         * re-approves it for a new PBX/extension. The token is re-bound only
+         * after the control store confirms the new approved assignment.
+         */
+        reassign(deviceId, assignment) {
+            return update(async data => {
+                const row = data.devices.find(d => d.deviceId === deviceId);
+                if (!row) return false;
+                const current = typeof approvedAssignment === 'function'
+                    ? await approvedAssignment(deviceId) : null;
+                if (!current || current.pbxId !== assignment?.pbxId ||
+                    current.extension !== assignment?.extension ||
+                    (current.authorizationRevision || 0) !== (assignment?.authorizationRevision || 0)) {
+                    throw new Error('Device approval changed');
+                }
+                row.pbxId = current.pbxId;
+                row.extension = current.extension;
+                row.deviceUuid = current.deviceUuid;
+                row.authorizationRevision = current.authorizationRevision || 0;
+                row.updatedAt = Date.now();
+                return true;
+            });
+        },
         removePush(deviceId) { return update(data => { data.devices = data.devices.filter(d => d.deviceId !== deviceId); }); },
         // Optional lifecycle cleanup after retirement/reassignment. Never treat a
         // lookup failure as revocation: the mutation must fail without writing.

@@ -275,3 +275,23 @@ test('reapproval of the same device and route invalidates the old push authoriza
     await store.savePush(current);
     assert.deepEqual(await read(), [current]);
 });
+test('approval reassignment preserves an existing token for the same installation', async t => {
+    const old = device({ deviceId: 'current', pbxId: 'old-pbx', extension: '111', authorizationRevision: 1 });
+    const next = device({ deviceId: 'current', pbxId: 'new-pbx', extension: '333', authorizationRevision: 2 });
+    const { store, assignments, read } = await fixture(t, [old], [old]);
+    assignments.set('current', next);
+
+    assert.equal(await store.reassign('current', next), true);
+    const rows = await read();
+    assert.equal(rows[0].pbxId, 'new-pbx');
+    assert.equal(rows[0].extension, '333');
+    assert.equal(rows[0].authorizationRevision, 2);
+    assert.equal((await store.listPush('new-pbx', '333'))[0].deviceId, 'current');
+    assert.deepEqual(await store.listPush('old-pbx', '111'), []);
+});
+
+test('reassignment is a no-op for an installation without a registered token', async t => {
+    const current = device({ deviceId: 'missing', pbxId: 'new-pbx', extension: '333', authorizationRevision: 1 });
+    const { store } = await fixture(t, [], [current]);
+    assert.equal(await store.reassign('missing', current), false);
+});

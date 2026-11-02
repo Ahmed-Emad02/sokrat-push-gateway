@@ -238,10 +238,11 @@
       </details>
 
       <div class="table-tools">
-        <label class="filter-field" for="pbx-filter">
-          <span class="filter-label">Filter</span>
-          <input id="pbx-filter" type="search" aria-label="Filter PBX connections" placeholder="Name, URL, state" autocomplete="off" spellcheck="false">
+        <label class="search-field" for="pbx-search">
+          <span class="filter-label">Search</span>
+          <input id="pbx-search" type="search" aria-label="Search PBX connections" placeholder="Name, URL, state" autocomplete="off" spellcheck="false">
         </label>
+        <div id="pbx-filters" class="filter-selects" role="group" aria-label="PBX filters"></div>
         <button id="pbx-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
         <output id="pbx-filter-count" class="hint filter-count" aria-live="polite"></output>
       </div>
@@ -340,10 +341,11 @@
       </form>
 
       <div class="table-tools">
-        <label class="filter-field" for="ext-filter">
-          <span class="filter-label">Filter</span>
-          <input id="ext-filter" type="search" aria-label="Filter extensions" placeholder="PBX, extension, employee" autocomplete="off" spellcheck="false">
+        <label class="search-field" for="ext-search">
+          <span class="filter-label">Search</span>
+          <input id="ext-search" type="search" aria-label="Search extensions" placeholder="PBX, extension, employee" autocomplete="off" spellcheck="false">
         </label>
+        <div id="ext-filters" class="filter-selects" role="group" aria-label="Extension filters"></div>
         <button id="ext-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
         <output id="ext-filter-count" class="hint filter-count" aria-live="polite"></output>
       </div>
@@ -383,10 +385,11 @@
       </div>
 
       <div class="table-tools">
-        <label class="filter-field" for="pending-filter">
-          <span class="filter-label">Filter</span>
-          <input id="pending-filter" type="search" aria-label="Filter pending devices" placeholder="Device, ID, platform, IP" autocomplete="off" spellcheck="false">
+        <label class="search-field" for="pending-search">
+          <span class="filter-label">Search</span>
+          <input id="pending-search" type="search" aria-label="Search pending devices" placeholder="Device, ID, platform, IP" autocomplete="off" spellcheck="false">
         </label>
+        <div id="pending-filters" class="filter-selects" role="group" aria-label="Pending device filters"></div>
         <button id="pending-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
         <output id="pending-filter-count" class="hint filter-count" aria-live="polite"></output>
       </div>
@@ -424,10 +427,11 @@
         <p class="hint">Revoking drops the stored secret immediately and blocks future pushes.</p>
       </div>
       <div class="table-tools">
-        <label class="filter-field" for="approved-filter">
-          <span class="filter-label">Filter</span>
-          <input id="approved-filter" type="search" aria-label="Filter approved devices" placeholder="Device, PBX, extension" autocomplete="off" spellcheck="false">
+        <label class="search-field" for="approved-search">
+          <span class="filter-label">Search</span>
+          <input id="approved-search" type="search" aria-label="Search approved devices" placeholder="Device, PBX, extension" autocomplete="off" spellcheck="false">
         </label>
+        <div id="approved-filters" class="filter-selects" role="group" aria-label="Approved device filters"></div>
         <button id="approved-filter-clear" class="btn btn-ghost btn-sm" type="button" hidden>Clear</button>
         <output id="approved-filter-count" class="hint filter-count" aria-live="polite"></output>
       </div>

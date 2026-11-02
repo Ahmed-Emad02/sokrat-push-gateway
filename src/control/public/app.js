@@ -69,7 +69,8 @@
         pbxCancel: document.getElementById('pbx-cancel'),
         pbxRows: document.getElementById('pbx-rows'),
         pbxEmpty: document.getElementById('pbx-empty'),
-        pbxFilter: document.getElementById('pbx-filter'),
+        pbxSearch: document.getElementById('pbx-search'),
+        pbxFilters: document.getElementById('pbx-filters'),
         pbxFilterClear: document.getElementById('pbx-filter-clear'),
         pbxFilterCount: document.getElementById('pbx-filter-count'),
 
@@ -94,7 +95,8 @@
         extCancel: document.getElementById('ext-cancel'),
         extRows: document.getElementById('ext-rows'),
         extEmpty: document.getElementById('ext-empty'),
-        extFilter: document.getElementById('ext-filter'),
+        extSearch: document.getElementById('ext-search'),
+        extFilters: document.getElementById('ext-filters'),
         extFilterClear: document.getElementById('ext-filter-clear'),
         extFilterCount: document.getElementById('ext-filter-count'),
         secretPanel: document.getElementById('secret-panel'),
@@ -103,12 +105,14 @@
         secretDismiss: document.getElementById('secret-dismiss'),
         pendingRows: document.getElementById('pending-rows'),
         pendingEmpty: document.getElementById('pending-empty'),
-        pendingFilter: document.getElementById('pending-filter'),
+        pendingSearch: document.getElementById('pending-search'),
+        pendingFilters: document.getElementById('pending-filters'),
         pendingFilterClear: document.getElementById('pending-filter-clear'),
         pendingFilterCount: document.getElementById('pending-filter-count'),
         approvedRows: document.getElementById('approved-rows'),
         approvedEmpty: document.getElementById('approved-empty'),
-        approvedFilter: document.getElementById('approved-filter'),
+        approvedSearch: document.getElementById('approved-search'),
+        approvedFilters: document.getElementById('approved-filters'),
         approvedFilterClear: document.getElementById('approved-filter-clear'),
         approvedFilterCount: document.getElementById('approved-filter-count'),
         activityList: document.getElementById('activity-list'),
@@ -123,45 +127,69 @@
 
     const tableFilters = {
         pbx: {
-            input: refs.pbxFilter,
+            search: refs.pbxSearch,
+            menu: refs.pbxFilters,
             clear: refs.pbxFilterClear,
             count: refs.pbxFilterCount,
             empty: refs.pbxEmpty,
+            selections: {},
             render: renderPbx
         },
         extensions: {
-            input: refs.extFilter,
+            search: refs.extSearch,
+            menu: refs.extFilters,
             clear: refs.extFilterClear,
             count: refs.extFilterCount,
             empty: refs.extEmpty,
+            selections: {},
             render: renderExtensions
         },
         pending: {
-            input: refs.pendingFilter,
+            search: refs.pendingSearch,
+            menu: refs.pendingFilters,
             clear: refs.pendingFilterClear,
             count: refs.pendingFilterCount,
             empty: refs.pendingEmpty,
+            selections: {},
             render: renderPending
         },
         approved: {
-            input: refs.approvedFilter,
+            search: refs.approvedSearch,
+            menu: refs.approvedFilters,
             clear: refs.approvedFilterClear,
             count: refs.approvedFilterCount,
             empty: refs.approvedEmpty,
+            selections: {},
             render: renderApproved
         }
     };
 
     for (const filter of Object.values(tableFilters)) {
-        filter.input.addEventListener('input', () => {
+        filter.search.addEventListener('input', () => {
             if (snapshot) filter.render();
         });
         filter.clear.addEventListener('click', () => {
-            filter.input.value = '';
+            filter.search.value = '';
+            for (const selection of Object.values(filter.selections)) selection.clear();
+            syncFilterMenu(filter);
             if (snapshot) filter.render();
-            filter.input.focus();
+            filter.search.focus();
         });
     }
+
+    document.addEventListener('click', (event) => {
+        for (const details of document.querySelectorAll('.multi-select[open]')) {
+            if (!details.contains(event.target)) details.open = false;
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const open = document.querySelector('.multi-select[open]');
+        if (!open) return;
+        open.open = false;
+        const summary = open.querySelector('summary');
+        if (summary instanceof HTMLElement) summary.focus();
+    });
 
     refs.pendingRows.addEventListener('focusout', () => {
         setTimeout(() => {
@@ -318,27 +346,245 @@
     }
 
     /**
-     * Filter rows by every whitespace-separated term, using the text the row
-     * exposes to the operator. Terms are ANDed so "sales 111" narrows instead
-     * of widening the result.
+     * Multi-select filters are facets over columns, not free-form search. The
+     * search box remains beside them for names, IDs and URLs. Within one facet
+     * selections are ORed; different facets and search terms are ANDed.
      */
+    function getFacetDefinitions(name) {
+        const records = snapshot || {};
+        const pbxRecords = records.pbx || [];
+        const pbxById = new Map(pbxRecords.map((record) => [record.id, record]));
+        const fixed = (values, labelFor = (value) => value) =>
+            values.map((value) => ({ value, label: labelFor(value) }));
+
+        if (name === 'pbx') {
+            const provisioningValues = new Map();
+            for (const record of pbxRecords) {
+                const entry = provisioningEntry(record.id);
+                const value = entry ? entry.effectiveState : (provisioning ? 'not_reported' : 'unknown');
+                if (!provisioningValues.has(value)) {
+                    provisioningValues.set(value, PROVISIONING_STATE_LABELS[value] || value);
+                }
+            }
+            return [
+                {
+                    key: 'state',
+                    label: 'State',
+                    options: fixed(['enabled', 'disabled'], (value) =>
+                        value.charAt(0).toUpperCase() + value.slice(1)),
+                    value: (record) => (record.enabled ? 'enabled' : 'disabled')
+                },
+                {
+                    key: 'approval',
+                    label: 'Approval',
+                    options: fixed(['approved', 'pending', 'suspended', 'retired', 'unmanaged'],
+                        (value) => value === 'unmanaged' ? 'Unmanaged' : approvalLabel(value)),
+                    value: (record) => record.management?.approvalStatus || 'unmanaged'
+                },
+                {
+                    key: 'provisioning',
+                    label: 'Provisioning',
+                    options: [...provisioningValues].map(([value, label]) => ({ value, label })),
+                    value: (record) => {
+                        const entry = provisioningEntry(record.id);
+                        return entry ? entry.effectiveState : (provisioning ? 'not_reported' : 'unknown');
+                    }
+                }
+            ];
+        }
+
+        if (name === 'extensions') {
+            const extensions = Array.isArray(records.extensions) ? records.extensions : [];
+            const options = pbxRecords.map((record) => ({
+                value: record.id,
+                label: record.name + (record.enabled ? '' : ' (disabled)')
+            }));
+            if (extensions.some((record) => !record.pbxId || !pbxById.has(record.pbxId))) {
+                options.push({ value: '__removed__', label: 'Removed PBX' });
+            }
+            return [
+                {
+                    key: 'pbx',
+                    label: 'PBX',
+                    options,
+                    value: (record) => record.pbxId && pbxById.has(record.pbxId) ? record.pbxId : '__removed__'
+                },
+                {
+                    key: 'status',
+                    label: 'Status',
+                    options: fixed(['enabled', 'disabled', 'suspended'],
+                        (value) => extensionStatusLabel(value)),
+                    value: (record) => record.status || 'disabled'
+                }
+            ];
+        }
+
+        if (name === 'pending') {
+            const devices = (records.devices || []).filter((device) => device.status === 'pending');
+            const seen = new Set();
+            const options = [];
+            for (const device of devices) {
+                const value = device.platform || 'unknown';
+                if (seen.has(value)) continue;
+                seen.add(value);
+                options.push({ value, label: platformLabel(value) });
+            }
+            return [{
+                key: 'platform',
+                label: 'Platform',
+                options,
+                value: (device) => device.platform || 'unknown'
+            }];
+        }
+
+        if (name === 'approved') {
+            const devices = (records.devices || []).filter((device) => device.status === 'approved');
+            const options = pbxRecords.map((record) => ({
+                value: record.id,
+                label: record.name + (record.enabled ? '' : ' (disabled)')
+            }));
+            if (devices.some((device) => !device.pbxId || !pbxById.has(device.pbxId))) {
+                options.push({ value: '__removed__', label: 'Removed PBX' });
+            }
+            const platforms = [];
+            const seen = new Set();
+            for (const device of devices) {
+                const value = device.platform || 'unknown';
+                if (seen.has(value)) continue;
+                seen.add(value);
+                platforms.push({ value, label: platformLabel(value) });
+            }
+            return [
+                {
+                    key: 'pbx',
+                    label: 'PBX',
+                    options,
+                    value: (device) => device.pbxId && pbxById.has(device.pbxId) ? device.pbxId : '__removed__'
+                },
+                {
+                    key: 'platform',
+                    label: 'Platform',
+                    options: platforms,
+                    value: (device) => device.platform || 'unknown'
+                }
+            ];
+        }
+
+        return [];
+    }
+
+    function updateMultiSelectBadge(details, selected) {
+        const badge = details.querySelector('.multi-select-badge');
+        if (!badge) return;
+        badge.textContent = selected.size ? String(selected.size) : '';
+        badge.hidden = selected.size === 0;
+    }
+
+    function buildMultiSelect(filter, definition) {
+        const selected = filter.selections[definition.key];
+        const details = el('details', {
+            class: 'multi-select',
+            dataset: { filterKey: definition.key }
+        });
+        const badge = el('span', { class: 'multi-select-badge' });
+        const summary = el('summary', {},
+            el('span', { text: definition.label }),
+            badge);
+        const menu = el('div', {
+            class: 'multi-select-menu',
+            role: 'group',
+            'aria-label': `${definition.label} filter`
+        });
+
+        if (definition.options.length === 0) {
+            menu.append(el('p', { class: 'hint', text: 'No values available.' }));
+        } else {
+            for (const option of definition.options) {
+                const checkbox = el('input', {
+                    type: 'checkbox',
+                    value: option.value,
+                    checked: selected.has(option.value)
+                });
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) selected.add(option.value);
+                    else selected.delete(option.value);
+                    updateMultiSelectBadge(details, selected);
+                    filter.render();
+                });
+                menu.append(el('label', { class: 'multi-select-option' }, checkbox, option.label));
+            }
+        }
+
+        details.append(summary, menu);
+        updateMultiSelectBadge(details, selected);
+        details.addEventListener('toggle', () => {
+            if (!details.open) return;
+            for (const other of filter.menu.querySelectorAll('details[open]')) {
+                if (other !== details) other.open = false;
+            }
+        });
+        return details;
+    }
+
+    function ensureFilterMenus(name) {
+        const filter = tableFilters[name];
+        const definitions = getFacetDefinitions(name);
+        const signature = JSON.stringify(definitions.map((definition) => [
+            definition.key,
+            definition.label,
+            definition.options
+        ]));
+        if (filter.signature === signature) {
+            filter.definitions = definitions;
+            return;
+        }
+
+        filter.definitions = definitions;
+        for (const definition of definitions) {
+            if (!filter.selections[definition.key]) filter.selections[definition.key] = new Set();
+            const allowed = new Set(definition.options.map((option) => option.value));
+            for (const value of [...filter.selections[definition.key]]) {
+                if (!allowed.has(value)) filter.selections[definition.key].delete(value);
+            }
+        }
+        filter.menu.replaceChildren(...definitions.map((definition) => buildMultiSelect(filter, definition)));
+        filter.signature = signature;
+    }
+
+    function syncFilterMenu(filter) {
+        for (const details of filter.menu.querySelectorAll('details.multi-select')) {
+            const selected = filter.selections[details.dataset.filterKey] || new Set();
+            for (const checkbox of details.querySelectorAll('input[type="checkbox"]')) {
+                checkbox.checked = selected.has(checkbox.value);
+            }
+            updateMultiSelectBadge(details, selected);
+        }
+    }
+
     function filterRecords(name, records, textFor) {
         const filter = tableFilters[name];
-        const terms = String(filter.input.value || '').trim().toLowerCase().split(/\s+/)
+        const terms = String(filter.search.value || '').trim().toLowerCase().split(/\s+/)
             .filter(Boolean);
-        const visible = terms.length === 0
-            ? records
-            : records.filter((record) => {
-                const haystack = String(textFor(record) || '').toLowerCase();
-                return terms.every((term) => haystack.includes(term));
-            });
+        const definitions = filter.definitions || [];
+        const facetValues = definitions.map((definition) => ({
+            definition,
+            selected: filter.selections[definition.key] || new Set()
+        }));
+        const visible = records.filter((record) => {
+            const haystack = String(textFor(record) || '').toLowerCase();
+            if (!terms.every((term) => haystack.includes(term))) return false;
+            return facetValues.every(({ definition, selected }) =>
+                selected.size === 0 || selected.has(definition.value(record)));
+        });
 
-        if (filter.clear) filter.clear.hidden = terms.length === 0;
+        const selectedCount = facetValues.reduce((total, entry) => total + entry.selected.size, 0);
+        const active = terms.length > 0 || selectedCount > 0;
+        if (filter.clear) filter.clear.hidden = !active;
         const countText = records.length === 0
             ? '0 total'
-            : terms.length === 0
-                ? `${records.length} total`
-                : `${visible.length} of ${records.length}`;
+            : active
+                ? `${visible.length} of ${records.length}`
+                : `${records.length} total`;
         if (filter.count && filter.count.textContent !== countText) {
             filter.count.textContent = countText;
         }
@@ -914,6 +1160,7 @@
         }
 
         renderProvisioningSummary();
+        for (const name of Object.keys(tableFilters)) ensureFilterMenus(name);
         renderPbx();
         renderExtensionPbxOptions();
         renderExtensions();
@@ -1323,7 +1570,13 @@
             return el('tr', {},
                 el('th', { scope: 'row', dataset: { label: 'Device' } },
                     title,
-                    el('span', { class: 'cell-sub', text: deviceSubtitle(device) })),
+                    el('span', { class: 'cell-sub', text: deviceSubtitle(device) }),
+                    device.pushRegistered === false
+                        ? el('span', {
+                            class: 'cell-sub push-missing',
+                            text: 'No push token — notifications unavailable'
+                        })
+                        : null),
                 el('td', { dataset: { label: 'Platform' }, text: device.platform }),
                 el('td', { dataset: { label: 'PBX' }, text: pbx ? pbx.name : 'Removed PBX' }),
                 el('td', { dataset: { label: 'Extension' }, text: device.extension || '—' }),

@@ -609,12 +609,13 @@ select:user-invalid ~ .error-msg {
   flex-wrap: wrap;
 }
 
-.filter-field {
+.search-field {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  flex: 1 1 16rem;
+  flex: 1 1 14rem;
   min-inline-size: 0;
+  max-inline-size: 24rem;
 }
 
 .filter-label {
@@ -623,10 +624,114 @@ select:user-invalid ~ .error-msg {
   font-weight: 600;
 }
 
-.filter-field input {
+.search-field input {
   flex: 1 1 auto;
   inline-size: auto;
   min-inline-size: 0;
+}
+
+.filter-selects {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.multi-select {
+  position: relative;
+  z-index: 3;
+}
+
+.multi-select > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-block-size: 2.3rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.multi-select > summary::-webkit-details-marker {
+  display: none;
+}
+
+.multi-select > summary::after {
+  content: "\25BE";
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.multi-select[open] > summary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.multi-select-badge {
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 1.25rem;
+  min-block-size: 1.25rem;
+  padding-inline: 0.3rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.multi-select-menu {
+  position: absolute;
+  z-index: 20;
+  inset-block-start: calc(100% + 0.35rem);
+  inset-inline-start: 0;
+  display: grid;
+  gap: 0.1rem;
+  inline-size: max-content;
+  min-inline-size: 12rem;
+  max-inline-size: min(22rem, calc(100vw - 3rem));
+  max-block-size: 18rem;
+  overflow: auto;
+  padding: 0.45rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.multi-select-menu .hint {
+  padding: 0.35rem 0.45rem;
+}
+
+.multi-select-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.84rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.multi-select-option:hover {
+  background: var(--surface-2);
+}
+
+.multi-select-option input {
+  flex: none;
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .filter-count {
@@ -704,6 +809,11 @@ tbody tr:hover td {
   font-size: 0.76rem;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
+}
+
+.cell-sub.push-missing {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .url {

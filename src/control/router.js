@@ -372,9 +372,32 @@ function createControlRouter(options = {}) {
 
     router.get('/api/state', requireSession, (req, res) => {
         const snapshot = store.snapshot();
+        // Add a read-only, boolean-only view of the push registry so the
+        // operator can see approved devices that cannot receive a wake push.
+        // The registry itself remains owned by the tenant runtime.
+        const pushPath = process.env.TENANT_PUSH_FILE || '/var/lib/sokrat-gateway/push.json';
+        let pushRows = null;
+        try {
+            const registry = JSON.parse(fs.readFileSync(pushPath, 'utf8'));
+            if (registry && registry.version === 1 && Array.isArray(registry.devices)) {
+                pushRows = new Map(registry.devices.map((row) => [row.deviceId, row]));
+            }
+        } catch (_) {}
+        const devices = (snapshot.devices || []).map((device) => {
+            if (!pushRows) return device;
+            const row = pushRows.get(device.id);
+            const current = row &&
+                typeof row.token === 'string' && row.token.length > 0 &&
+                row.pbxId === device.pbxId &&
+                row.extension === String(device.extension || '') &&
+                (row.authorizationRevision || 0) === (device.authorizationRevision || 0) &&
+                row.updatedAt > Date.now() - 90 * 86400 * 1000;
+            return { ...device, pushRegistered: Boolean(current) };
+        });
         res.json({
             success: true,
             ...snapshot,
+            devices,
             session: {
                 expiresAt: new Date(req.controlSession.expiresAt).toISOString()
             }
@@ -811,6 +834,16 @@ function createControlRouter(options = {}) {
         const result = await store.approveDevice(String(req.params.id), approveBody, {
             actor: actorFor(req)
         });
+        if (typeof options.onDeviceApproved === 'function') {
+            try {
+                await options.onDeviceApproved(result.device, store);
+            } catch (error) {
+                console.warn(
+                    '[control] push token reassignment failed:',
+                    String(error && error.message ? error.message : error).slice(0, 160)
+                );
+            }
+        }
         if (!result.secret) {
             // Automatic enrollment: the device keeps the claim secret it
             // generated, so there is no secret for the operator to copy.

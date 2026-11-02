@@ -2,6 +2,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { fingerprintToken } = require('./push-errors');
 
 function createTenantPushStore(file, approvedAssignment) {
     let tail = Promise.resolve();
@@ -50,9 +51,14 @@ function createTenantPushStore(file, approvedAssignment) {
         approvedAssignment,
         savePush(device) {
             // Keep the authenticated registration fixed while queued/awaiting approval.
+            // A new registration always clears a previous invalid-token mark.
             const registration = { ...device };
+            delete registration.pushState;
+            delete registration.lastError;
+            delete registration.invalidAt;
             return update(async data => {
                 const conflicts = data.devices.filter(d => d.deviceId !== registration.deviceId &&
+                    d.pushState !== 'invalid' &&
                     (d.token === registration.token || (registration.voipToken && d.voipToken === registration.voipToken)));
                 const conflict = () => {
                     const error = new Error('Push token already belongs to another device');
@@ -98,28 +104,48 @@ function createTenantPushStore(file, approvedAssignment) {
             });
         },
         removePush(deviceId) { return update(data => { data.devices = data.devices.filter(d => d.deviceId !== deviceId); }); },
+        /**
+         * Quarantine the token that actually failed. The caller supplies the
+         * fingerprint captured at dispatch time; if the device has since
+         * registered a newer token, this is a no-op. This prevents a slow error
+         * for token A from invalidating freshly registered token B.
+         */
+        markInvalid(deviceId, tokenFingerprint, code) {
+            return update(data => {
+                const row = data.devices.find(d => d.deviceId === deviceId);
+                if (!row || !tokenFingerprint || fingerprintToken(row.token) !== tokenFingerprint) return false;
+                row.pushState = 'invalid';
+                row.lastError = String(code || 'invalid-token').slice(0, 96);
+                row.invalidAt = Date.now();
+                return true;
+            });
+        },
         // Optional lifecycle cleanup after retirement/reassignment. Never treat a
         // lookup failure as revocation: the mutation must fail without writing.
         pruneInvalidPush() {
             return update(async data => {
                 if (typeof approvedAssignment !== 'function') throw new Error('Device approval lookup unavailable');
                 const current = await Promise.all(data.devices.map(isCurrent));
-                const removed = current.filter(valid => !valid).length;
-                data.devices = data.devices.filter((_, index) => current[index]);
+                const removed = data.devices.filter((row, index) =>
+                    !current[index] || row.pushState === 'invalid').length;
+                data.devices = data.devices.filter((row, index) =>
+                    current[index] && row.pushState !== 'invalid');
                 return removed;
             });
         },
         async listPush(pbxId, extension) {
             await tail;
             const data = await load();
-            const candidates = data.devices.filter(d => d.pbxId === pbxId && d.extension === extension && d.updatedAt > Date.now() - 90 * 86400000);
+            const candidates = data.devices.filter(d => d.pbxId === pbxId && d.extension === extension &&
+                d.pushState !== 'invalid' && d.updatedAt > Date.now() - 90 * 86400000);
             const current = await Promise.all(candidates.map(isCurrent));
             return candidates.filter((_, index) => current[index]);
         },
         async listAllPush() {
             await tail;
             const data = await load();
-            const candidates = data.devices.filter(d => d.updatedAt > Date.now() - 90 * 86400000);
+            const candidates = data.devices.filter(d => d.pushState !== 'invalid' &&
+                d.updatedAt > Date.now() - 90 * 86400000);
             const current = await Promise.all(candidates.map(isCurrent));
             return candidates.filter((_, index) => current[index]);
         }

@@ -1,9 +1,24 @@
 'use strict';
 const { tenantCallId } = require('./tenant-call-id');
+const { fingerprintToken, isPermanentTokenError } = require('./push-errors');
 
 // Tenant registries are local to the gateway; never combine PBX-local rows by
 // extension alone. The approved assignment supplies pbxId and extension.
 function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId }) {
+    async function quarantineInvalid(device, error) {
+        if (!isPermanentTokenError(error)) return false;
+        const reason = String(error?.code || 'invalid-token').slice(0, 96);
+        try {
+            if (typeof store.markInvalid === 'function') {
+                await store.markInvalid(device.deviceId, fingerprintToken(device.token), reason);
+            } else if (typeof store.removePush === 'function') {
+                await store.removePush(device.deviceId);
+            }
+        } catch (cleanupError) {
+            console.warn(`[tenant-push] invalid-token quarantine failed device=${device.deviceId} code=${String(cleanupError.code || 'unknown').slice(0, 96)}`);
+        }
+        return true;
+    }
     router.post('/register-device', async (req, res) => {
         try {
             const assignment = await authorizeDevice(req);
@@ -43,6 +58,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             let count = 0;
             let failed = 0;
             let skipped = 0;
+            const results = [];
             if (!devices.length) {
                 console.warn(`[tenant-push] no approved push devices extension=${callee} callId=${id}`);
             }
@@ -50,6 +66,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                 const assignment = await store.approvedAssignment(device.deviceId);
                 if (!assignment || assignment.pbxId !== pbx.id || assignment.extension !== callee) {
                     skipped++;
+                    results.push({ deviceId: device.deviceId, status: 'skipped' });
                     continue;
                 }
                 try {
@@ -58,6 +75,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                         extension: callee, callId: id, timestamp: Date.now(), sipWss: ''
                     });
                     count++;
+                    results.push({ deviceId: device.deviceId, status: 'dispatched' });
                     // FCM accepts a message for delivery; this ID is not proof the
                     // phone woke. It is intentionally free of tokens/caller data.
                     if (messageId) {
@@ -65,16 +83,58 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                     }
                 } catch (error) {
                     failed++;
-                    console.warn(`[tenant-push] dispatch failed extension=${callee} callId=${id} code=${String(error.code || error.message || 'unknown').slice(0, 96)}`);
-                    if (/registration-token-not-registered|unregistered|invalid-registration-token|baddevicetoken/i.test(String(error.code || error.message || ''))) {
-                        await store.removePush(device.deviceId);
-                    }
+                    const reason = String(error.code || 'unknown').slice(0, 96);
+                    console.warn(`[tenant-push] dispatch failed extension=${callee} callId=${id} code=${reason}`);
+                    await quarantineInvalid(device, error);
+                    results.push({ deviceId: device.deviceId, status: 'failed', code: reason });
                 }
             }
             console.log(`[tenant-push] incoming-call extension=${callee} callId=${id} devices=${devices.length} dispatched=${count} failed=${failed} skipped=${skipped}`);
-            res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed });
+            res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed, results });
         } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
     });
+    router.post('/chat-message', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            const pbx = await authorizePbx(req);
+            if (!pbx) return res.status(403).json({ error: 'PBX authentication required' });
+            const body = req.body || {};
+            const conversationId = Number(body.conversationId);
+            const recipients = Array.isArray(body.recipients) ? body.recipients : [];
+            const message = body.message;
+            if (!Number.isInteger(conversationId) || conversationId <= 0 || recipients.length > 100
+                || recipients.some(ext => typeof ext !== 'string' || !/^[A-Za-z0-9*#._-]{1,64}$/.test(ext))
+                || !message || typeof message.id !== 'number' || typeof message.sender_extension !== 'string') {
+                return res.status(400).json({ error: 'Invalid chat notification' });
+            }
+            const preview = String(message.preview || message.body || 'New chat message').replace(/\s+/g, ' ').slice(0, 140);
+            let count = 0;
+            let failed = 0;
+            for (const recipient of [...new Set(recipients)]) {
+                if (recipient === message.sender_extension) continue;
+                const devices = await store.listPush(pbx.id, recipient);
+                for (const device of devices) {
+                    const assignment = await store.approvedAssignment(device.deviceId);
+                    if (!assignment || assignment.pbxId !== pbx.id || assignment.extension !== recipient) continue;
+                    try {
+                        await sendToDevice({ ...device, device_uuid: assignment.deviceUuid, voip_token: device.voipToken }, {
+                            msg: 'chat-message', type: 'chat-message',
+                            conversationId, messageId: message.id,
+                            senderExtension: message.sender_extension,
+                            extension: recipient, preview,
+                            timestamp: message.created_at || Date.now(),
+                            title: 'Chat · ' + message.sender_extension,
+                        });
+                        count++;
+                    } catch (error) { failed++; await quarantineInvalid(device, error); }
+                }
+            }
+            return res.json({ status: failed ? 'partial' : 'dispatched', count, failed });
+        } catch (_) {
+            return res.status(503).json({ error: 'Chat notification unavailable' });
+        }
+    });
+
     router.post('/cancel-call', async (req, res) => {
         res.set('Cache-Control', 'no-store');
         try {

@@ -392,7 +392,16 @@ function createControlRouter(options = {}) {
                 row.extension === String(device.extension || '') &&
                 (row.authorizationRevision || 0) === (device.authorizationRevision || 0) &&
                 row.updatedAt > Date.now() - 90 * 86400 * 1000;
-            return { ...device, pushRegistered: Boolean(current) };
+            const stale = row && typeof row.token === 'string' && row.token.length > 0 &&
+                row.updatedAt <= Date.now() - 90 * 86400 * 1000;
+            return {
+                ...device,
+                pushRegistered: Boolean(current),
+                pushState: row?.pushState || (current ? 'active' : stale ? 'stale' : 'missing'),
+                pushError: row?.lastError || null,
+                invalidAt: row?.invalidAt || null,
+                lastRegisteredAt: row?.updatedAt || null,
+            };
         });
         res.json({
             success: true,

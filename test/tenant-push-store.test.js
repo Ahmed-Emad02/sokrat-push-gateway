@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createTenantPushStore } = require('../src/tenant-push-store');
+const { fingerprintToken } = require('../src/push-errors');
 
 function device(overrides = {}) {
     return { deviceId: 'current', deviceUuid: 'installation-a', pbxId: 'current-pbx', extension: '111',
@@ -294,4 +295,47 @@ test('reassignment is a no-op for an installation without a registered token', a
     const current = device({ deviceId: 'missing', pbxId: 'new-pbx', extension: '333', authorizationRevision: 1 });
     const { store } = await fixture(t, [], [current]);
     assert.equal(await store.reassign('missing', current), false);
+});
+
+test('invalid token is quarantined until the device registers again', async t => {
+    const current = device();
+    const { store, read } = await fixture(t, [current], [current]);
+
+    assert.equal(await store.markInvalid(current.deviceId, fingerprintToken(current.token), 'messaging/registration-token-not-registered'), true);
+    const [invalid] = await read();
+    assert.equal(invalid.pushState, 'invalid');
+    assert.match(invalid.lastError, /registration-token-not-registered/);
+    assert.equal(typeof invalid.invalidAt, 'number');
+    assert.deepEqual(await store.listPush(current.pbxId, current.extension), []);
+    assert.deepEqual(await store.listAllPush(), []);
+
+    await store.savePush(current);
+    assert.deepEqual(await read(), [current]);
+    assert.deepEqual(await store.listPush(current.pbxId, current.extension), [current]);
+});
+
+test('a delayed old-token failure cannot invalidate a newly registered token', async t => {
+    const now = Date.now();
+    const first = device({ token: 'token-a', updatedAt: now - 1000 });
+    const second = device({ token: 'token-b', updatedAt: now });
+    const { store, read } = await fixture(t, [first], [second]);
+    await store.savePush(first);
+    await store.savePush(second);
+
+    assert.equal(await store.markInvalid(first.deviceId, fingerprintToken(first.token), 'messaging/registration-token-not-registered'), false);
+    const [row] = await read();
+    assert.equal(row.token, 'token-b');
+    assert.notEqual(row.pushState, 'invalid');
+    assert.deepEqual(await store.listPush(second.pbxId, second.extension), [second]);
+
+    assert.equal(await store.markInvalid(second.deviceId, fingerprintToken(second.token), 'messaging/registration-token-not-registered'), true);
+    assert.deepEqual(await store.listPush(second.pbxId, second.extension), []);
+});
+
+test('pruning removes a quarantined token even when its approval is still current', async t => {
+    const current = device();
+    const { store, read } = await fixture(t, [current], [current]);
+    await store.markInvalid(current.deviceId, fingerprintToken(current.token), 'unregistered');
+    assert.equal(await store.pruneInvalidPush(), 1);
+    assert.deepEqual(await read(), []);
 });

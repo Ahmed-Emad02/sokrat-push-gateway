@@ -1,4 +1,5 @@
 'use strict';
+const { fingerprintToken, isPermanentTokenError } = require('./push-errors');
 
 const DEFAULT_TICK_MS = 30 * 1000;
 const DEFAULT_STALE_MS = 3 * 60 * 1000;
@@ -21,6 +22,7 @@ function delay(ms) {
 function createHeartbeatScheduler({
     listDevices,
     sendToDevice,
+    markInvalid,
     enabled = false,
     staleMs = DEFAULT_STALE_MS,
     tickMs = DEFAULT_TICK_MS,
@@ -43,7 +45,7 @@ function createHeartbeatScheduler({
 
     function stateFor(deviceId) {
         if (!states.has(deviceId)) {
-            states.set(deviceId, { lastSeenAt: 0, lastWakeAt: 0, nextWakeAt: 0, failures: 0 });
+            states.set(deviceId, { lastSeenAt: 0, lastWakeAt: 0, nextWakeAt: 0, failures: 0, invalid: false, invalidLogged: false, tokenFingerprint: '' });
         }
         return states.get(deviceId);
     }
@@ -53,6 +55,8 @@ function createHeartbeatScheduler({
         state.lastSeenAt = seenAt;
         state.nextWakeAt = seenAt + stale;
         state.failures = 0;
+        state.invalid = false;
+        state.invalidLogged = false;
     }
 
     async function run() {
@@ -64,7 +68,8 @@ function createHeartbeatScheduler({
         try {
             const devices = await listDevices();
             for (const device of Array.isArray(devices) ? devices : []) {
-                if (device.platform !== 'android' || typeof device.token !== 'string' || !device.token) {
+                if (device.platform !== 'android' || typeof device.token !== 'string' || !device.token ||
+                    device.pushState === 'invalid') {
                     skipped++;
                     continue;
                 }
@@ -73,6 +78,18 @@ function createHeartbeatScheduler({
                     continue;
                 }
                 const state = stateFor(device.deviceId);
+                const tokenFingerprint = fingerprintToken(device.token);
+                if (state.tokenFingerprint !== tokenFingerprint) {
+                    state.tokenFingerprint = tokenFingerprint;
+                    state.invalid = false;
+                    state.invalidLogged = false;
+                    state.failures = 0;
+                    state.nextWakeAt = 0;
+                }
+                if (state.invalid) {
+                    skipped++;
+                    continue;
+                }
                 const current = now();
                 if (current - state.lastSeenAt < stale) {
                     skipped++;
@@ -99,10 +116,33 @@ function createHeartbeatScheduler({
                     logger.log(`[heartbeat] wake sent extension=${device.extension} pbx=${device.pbxId}`);
                 } catch (error) {
                     failed++;
+                    const code = String(error?.code || 'unknown').slice(0, 96);
+                    if (isPermanentTokenError(error)) {
+                        let quarantined = true;
+                        if (typeof markInvalid === 'function') {
+                            try {
+                                quarantined = await markInvalid(device.deviceId, tokenFingerprint, code) !== false;
+                            } catch (markError) {
+                                logger.warn(`[heartbeat] invalid-token quarantine failed extension=${device.extension} pbx=${device.pbxId} code=${String(markError?.code || 'unknown').slice(0, 96)}`);
+                            }
+                        }
+                        if (quarantined) {
+                            state.invalid = true;
+                            if (!state.invalidLogged) {
+                                state.invalidLogged = true;
+                                logger.warn(`[heartbeat] token invalid; re-registration required extension=${device.extension} pbx=${device.pbxId} code=${code}`);
+                            }
+                            continue;
+                        }
+                        // The token changed while this failure was in flight; do
+                        // not suppress the newly registered token.
+                        state.failures = 0;
+                        state.nextWakeAt = 0;
+                    }
                     state.failures++;
                     const backoff = Math.min(stale, 60_000 * (2 ** Math.min(state.failures, 4)));
                     state.nextWakeAt = current + backoff;
-                    logger.warn(`[heartbeat] wake failed extension=${device.extension} pbx=${device.pbxId} code=${String(error?.code || error?.message || 'unknown').slice(0, 96)}`);
+                    logger.warn(`[heartbeat] wake failed extension=${device.extension} pbx=${device.pbxId} code=${code}`);
                 }
                 if (jitterMs > 0) await sleep(jitterMs);
             }

@@ -72,6 +72,7 @@ async function startTenantServer(control, env = process.env) {
     // rather than append untrusted client headers. Admin proxy trust is separate.
     app.use('/api/gateway/enrollment', createEnrollmentRouter({ store: control.store, trustProxy: true }));
     app.post('/api/gateway/tunnel/register', control.router);
+    app.use('/api/extension-chat/v1', runtime.chatProxy);
     app.use('/api/gateway', runtime.router);
     app.use((error, req, res, next) => {
         if (res.headersSent) return next(error);

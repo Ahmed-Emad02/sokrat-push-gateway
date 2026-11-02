@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createHeartbeatScheduler } = require('../src/heartbeat-scheduler');
+const { fingerprintToken } = require('../src/push-errors');
 
 function device(overrides = {}) {
     return {
@@ -93,6 +94,66 @@ test('failed wake backs off and is not retried on the next tick', async () => {
     assert.deepEqual(await scheduler.run(), { sent: 0, failed: 1, skipped: 0 });
     now += 60_000;
     assert.deepEqual(await scheduler.run(), { sent: 0, failed: 0, skipped: 1 });
+});
+
+test('quarantined invalid token is never retried by the heartbeat scheduler', async () => {
+    const sent = [];
+    const scheduler = createHeartbeatScheduler({
+        listDevices: async () => [device({ pushState: 'invalid' })],
+        sendToDevice: async dev => sent.push(dev.deviceId),
+        enabled: true,
+        staleMs: 180_000,
+        pbxIds: ['pbx-test'],
+        now: () => 1_000_000,
+        sleep: async () => {},
+    });
+    assert.deepEqual(await scheduler.run(), { sent: 0, failed: 0, skipped: 1 });
+    assert.deepEqual(sent, []);
+});
+
+test('permanent token failure marks invalid once and stops retrying', async () => {
+    let now = 1_000_000;
+    const marked = [];
+    const warnings = [];
+    const scheduler = createHeartbeatScheduler({
+        listDevices: async () => [device({ token: 'dead-token' })],
+        sendToDevice: async () => { const error = new Error('dead'); error.code = 'messaging/registration-token-not-registered'; throw error; },
+        markInvalid: async (...args) => marked.push(args),
+        enabled: true,
+        staleMs: 180_000,
+        pbxIds: ['pbx-test'],
+        now: () => now,
+        sleep: async () => {},
+        logger: { log() {}, warn: message => warnings.push(message), error() {} },
+    });
+    assert.deepEqual(await scheduler.run(), { sent: 0, failed: 1, skipped: 0 });
+    assert.deepEqual(marked, [['device-a', fingerprintToken('dead-token'), 'messaging/registration-token-not-registered']]);
+    assert.equal(warnings.filter(message => message.includes('token invalid')).length, 1);
+    now += 180_000;
+    assert.deepEqual(await scheduler.run(), { sent: 0, failed: 0, skipped: 1 });
+    assert.equal(marked.length, 1);
+});
+
+test('transient heartbeat failure remains retryable and is not marked invalid', async () => {
+    let now = 1_000_000;
+    const marked = [];
+    let attempts = 0;
+    const scheduler = createHeartbeatScheduler({
+        listDevices: async () => [device()],
+        sendToDevice: async () => { attempts++; const error = new Error('network'); error.code = 'messaging/server-unavailable'; throw error; },
+        markInvalid: async (...args) => marked.push(args),
+        enabled: true,
+        staleMs: 180_000,
+        pbxIds: ['pbx-test'],
+        now: () => now,
+        sleep: async () => {},
+        logger: { log() {}, warn() {}, error() {} },
+    });
+    assert.deepEqual(await scheduler.run(), { sent: 0, failed: 1, skipped: 0 });
+    assert.deepEqual(marked, []);
+    now += 120_001;
+    assert.deepEqual(await scheduler.run(), { sent: 0, failed: 1, skipped: 0 });
+    assert.equal(attempts, 2);
 });
 
 test('device heartbeat endpoint records liveness using the approved device identity', async () => {

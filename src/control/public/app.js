@@ -466,6 +466,13 @@
                     label: 'Platform',
                     options: platforms,
                     value: (device) => device.platform || 'unknown'
+                },
+                {
+                    key: 'push',
+                    label: 'Push',
+                    options: fixed(['active', 'invalid', 'stale', 'missing'], (value) =>
+                        value.charAt(0).toUpperCase() + value.slice(1)),
+                    value: (device) => device.pushState || (device.pushRegistered === false ? 'missing' : 'active')
                 }
             ];
         }
@@ -1571,12 +1578,22 @@
                 el('th', { scope: 'row', dataset: { label: 'Device' } },
                     title,
                     el('span', { class: 'cell-sub', text: deviceSubtitle(device) }),
-                    device.pushRegistered === false
+                    device.pushState === 'invalid'
                         ? el('span', {
                             class: 'cell-sub push-missing',
-                            text: 'No push token — notifications unavailable'
+                            text: 'Token invalid — re-register required'
                         })
-                        : null),
+                        : device.pushState === 'stale'
+                            ? el('span', {
+                                class: 'cell-sub push-missing',
+                                text: 'Push token stale — re-register required'
+                            })
+                            : device.pushRegistered === false
+                            ? el('span', {
+                                class: 'cell-sub push-missing',
+                                text: 'No push token — notifications unavailable'
+                            })
+                            : null),
                 el('td', { dataset: { label: 'Platform' }, text: device.platform }),
                 el('td', { dataset: { label: 'PBX' }, text: pbx ? pbx.name : 'Removed PBX' }),
                 el('td', { dataset: { label: 'Extension' }, text: device.extension || '—' }),

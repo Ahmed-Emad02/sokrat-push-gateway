@@ -187,7 +187,10 @@ async function initFcm() {
         }
         fcmMessaging = getMessaging(fcmApp);
         fcmReady = true;
-        console.log(`[push-gateway] FCM provider ready (using ${path.basename(credentialSource)})`);
+        const credentialLabel = typeof credentialSource === 'string'
+            ? path.basename(credentialSource)
+            : 'bundled-service-account';
+        console.log(`[push-gateway] FCM provider ready (using ${credentialLabel})`);
     } catch (err) {
         console.error('[push-gateway] FCM init failed (continue without):', err.message);
     }
@@ -202,6 +205,26 @@ async function buildCtx() {
         }
         if (dev.platform === 'android') {
             if (!fcmReady || !fcmMessaging) throw new Error('FCM provider unavailable');
+            if (call.type === 'chat-message') {
+                return await fcmMessaging.send({
+                    token: dev.token,
+                    notification: {
+                        title: String(call.title || 'New chat message').slice(0, 80),
+                        body: String(call.preview || 'Chat message').slice(0, 160),
+                    },
+                    android: { priority: 'high' },
+                    data: {
+                        msg: 'chat-message',
+                        type: 'chat-message',
+                        conversationId: String(call.conversationId || ''),
+                        messageId: String(call.messageId || ''),
+                        senderExtension: String(call.senderExtension || ''),
+                        extension: String(call.extension || ''),
+                        preview: String(call.preview || ''),
+                        timestamp: String(call.timestamp || Date.now()),
+                    },
+                });
+            }
             return await fcmMessaging.send({
                 token: dev.token,
                 android: { priority: 'high' },

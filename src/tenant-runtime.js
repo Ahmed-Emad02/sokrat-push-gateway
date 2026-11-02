@@ -8,6 +8,9 @@ const { createTenantPushStore } = require('./tenant-push-store');
 const { createDeviceTickets } = require('./device-tickets');
 const { tenantCallId } = require('./tenant-call-id');
 const { createHeartbeatScheduler } = require('./heartbeat-scheduler');
+const { createChatProxy } = require('./tenant-chat-proxy');
+const { createChatTickets } = require('./chat-tickets');
+const { attachChatSocketProxy } = require('./tenant-chat-socket');
 
 // Explicit integration factory: opt in only after enrollment clients have been
 // deployed. No fallback to the legacy/single-PBX route is permitted here.
@@ -30,9 +33,13 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         return match && deviceId ? authorize(deviceId, match[1]) : null;
     }
     const pushStore = createTenantPushStore(pushFile, assignment);
+    const chatTickets = createChatTickets();
+    const chatProxy = createChatProxy({ authorizeDevice });
     const heartbeat = createHeartbeatScheduler({
         listDevices: () => pushStore.listAllPush(),
         sendToDevice,
+        markInvalid: heartbeatOptions.markInvalid || ((deviceId, tokenFingerprint, code) =>
+            pushStore.markInvalid(deviceId, tokenFingerprint, code)),
         enabled: heartbeatOptions.enabled === true,
         staleMs: heartbeatOptions.staleMs,
         tickMs: heartbeatOptions.tickMs,
@@ -44,17 +51,6 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     let attachedProxy = null;
     const router = express.Router();
     router.use(express.json({ limit: '16kb' }));
-    const requests = new Map();
-    router.use((req, res, next) => {
-        const now = Date.now();
-        for (const [key, entry] of requests) if (entry.reset <= now) requests.delete(key);
-        const key = `${req.socket.remoteAddress}|${String(req.get('X-Sokrat-Device') || req.get('X-Sokrat-Pbx') || '').slice(0, 128)}`;
-        const entry = requests.get(key) || { count: 0, reset: now + 60000 };
-        if (requests.size >= 10000 && !requests.has(key)) return res.status(429).json({ error: 'Request capacity exceeded' });
-        requests.set(key, entry);
-        if (++entry.count > 120) return res.status(429).json({ error: 'Request limit reached' });
-        next();
-    });
     router.get('/capabilities', (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.json({ version: 1, deviceApproval: true, sipPort: 8088,
@@ -68,8 +64,18 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             if (!route) return res.status(403).json({ error: 'Device approval required' });
             const token = req.get('Authorization').slice(7);
             const ticket = tickets.issue(route.deviceId, token, route);
-            return ticket ? res.json({ ticket, expiresIn: 30 }) : res.status(429).json({ error: 'Ticket limit reached' });
+            return res.json({ ticket, expiresIn: 30 });
         } catch (_) { return res.status(503).json({ error: 'Ticket unavailable' }); }
+    });
+    router.post('/chat-ticket', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            const route = await authorizeDevice(req);
+            if (!route) return res.status(403).json({ error: 'Device approval required' });
+            return res.json(chatTickets.issue(route));
+        } catch (_) {
+            return res.status(503).json({ error: 'Chat ticket unavailable' });
+        }
     });
     router.post('/device/heartbeat', async (req, res) => {
         try {
@@ -103,7 +109,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     require('./contacts-proxy').installContactsProxy(router, { authorizeDevice });
     installTenantPush(router, { store: pushStore, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId });
     return {
-        router, assignment, authorize, pushStore, heartbeat,
+        router, assignment, authorize, pushStore, heartbeat, chatProxy,
         getActiveCalls: () => attachedProxy?.getActiveCalls?.() || [],
         getNetworkStats: () => attachedProxy?.getNetworkStats?.() || { inBytes: 0, outBytes: 0, byPbx: [] },
         start() { heartbeat.start(); },
@@ -116,6 +122,9 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
                     return !!current && current.pbxId === previous.pbxId && current.extension === previous.extension
                         && current.wsUrl === previous.wsUrl && current.authorizationRevision === previous.authorizationRevision;
                 } });
+            const closeChatProxy = attachChatSocketProxy(server, { consume: chatTickets.consume });
+            const closeSip = attachedProxy.close.bind(attachedProxy);
+            attachedProxy.close = () => { closeChatProxy(); closeSip(); };
             return attachedProxy;
         }
     };

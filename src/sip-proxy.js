@@ -23,6 +23,11 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
     let pending = 0;
     server.on('upgrade', async (req, socket, head) => {
         socket.on('error', () => {});
+        // Another upgrade listener (tenant chat proxy) owns its own path.
+        // Do not close it just because it is not the SIP endpoint.
+        try {
+            if (new URL(req.url, 'http://gateway.invalid').pathname !== '/ws') return;
+        } catch (_) { return; }
         if (sessions.size + pending >= 1000) {
             socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return;
         }
@@ -65,9 +70,6 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                 socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
             }
             if (socket.destroyed) return;
-            if (!previous && [...sessions].filter(session => session.device === device).length >= 3) {
-                socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n'); return;
-            }
             wss.handleUpgrade(req, socket, head, initialClient => {
                 if (previous && sessions.has(previous)) {
                     previous.bindClient(initialClient);

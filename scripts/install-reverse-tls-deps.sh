@@ -4,12 +4,13 @@ set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 if [ "$(id -u)" -ne 0 ]; then echo 'Root is required for host reverse-TLS dependencies' >&2; exit 1; fi
 if ! command -v openvpn >/dev/null || ! command -v iptables >/dev/null ||
-   ! command -v ip >/dev/null || ! python3 -c 'import cryptography' >/dev/null 2>&1; then
+   ! command -v ip >/dev/null || ! command -v turnserver >/dev/null ||
+   ! python3 -c 'import cryptography' >/dev/null 2>&1; then
     if command -v apt-get >/dev/null; then
         apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openvpn iptables iproute2 python3-cryptography
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openvpn iptables iproute2 coturn python3-cryptography
     elif command -v dnf >/dev/null; then
-        dnf install -y openvpn iptables iproute python3-cryptography
+        dnf install -y openvpn iptables iproute coturn python3-cryptography
     else
         echo 'Install OpenVPN >=2.4, iptables, iproute and Python cryptography using the host package manager' >&2
         exit 1
@@ -25,4 +26,9 @@ if result.returncode not in (0, 1) or not match or tuple(map(int, match.groups()
     raise SystemExit('Supported OpenVPN >=2.4 required')
 PY
 test -c /dev/net/tun
+# Per-tenant relays use the host turnserver binary. The bundled container
+# has its own legacy coturn on 3478; never run the distro service on that port.
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now coturn 2>/dev/null || true
+fi
 echo 'Host reverse-TLS dependencies verified; no network configuration changed'

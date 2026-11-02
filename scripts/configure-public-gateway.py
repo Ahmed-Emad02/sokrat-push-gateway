@@ -7,6 +7,9 @@ modified files. TURN relays on the private link: no public RTP range is needed.
 import datetime
 import ipaddress
 import os
+
+if os.environ.get('SOKRAT_TRANSPORT', 'legacy') != 'legacy':
+    raise SystemExit('This helper is legacy-only; use sync-tenant-runtime.py in openvpn-frp mode')
 from pathlib import Path
 import re
 import secrets

@@ -8,6 +8,9 @@ instances or change the single-PBX service. Run as root after operator review.
 import ipaddress
 import json
 import os
+
+if os.environ.get('SOKRAT_TRANSPORT', 'legacy') != 'legacy':
+    raise SystemExit('This helper is legacy-only; use sync-tenant-runtime.py in openvpn-frp mode')
 from pathlib import Path
 import re
 import secrets

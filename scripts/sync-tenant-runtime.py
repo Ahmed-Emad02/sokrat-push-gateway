@@ -70,9 +70,9 @@ USAGE
   ./scripts/sync-tenant-runtime.py --dry-run
 
   # Apply (root). Environment supplies the deployment addresses.
-   sudo GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \\
+   sudo SOKRAT_TRANSPORT=openvpn-frp \\
+        GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \\
         GATEWAY_LISTEN_IP="$GATEWAY_LISTEN_IP" \\
-        GATEWAY_PRIVATE_IP="$GATEWAY_PRIVATE_IP" \\
        ./scripts/sync-tenant-runtime.py
 
   # Machine-readable plan/summary (never contains secrets).
@@ -95,17 +95,23 @@ USAGE
 REQUIRED ENVIRONMENT
   GATEWAY_PUBLIC_HOST   public hostname clients use for TURN (no scheme/port)
   GATEWAY_LISTEN_IP     local address coturn binds its listener to (IPv4)
-  GATEWAY_PRIVATE_IP    private/Tailscale address coturn relays from (IPv4)
+  GATEWAY_PRIVATE_IP    legacy private/Tailscale relay address (IPv4)
 
 OPTIONAL ENVIRONMENT / FLAGS
+  SOKRAT_TRANSPORT      legacy (default) or openvpn-frp
+  GATEWAY_MEDIA_POOL    per-PBX media pool for enrollment (validated elsewhere)
   GATEWAY_CONTROL_FILE  default /var/lib/sokrat-gateway/control.json
   GATEWAY_STATE_DIR     default /var/lib/sokrat-gateway
   GATEWAY_TURN_ROOT     default /etc/sokrat/turn
   GATEWAY_UNIT_DIR      default /etc/systemd/system
-  GATEWAY_PRIVATE_IFACE default tailscale0 (peer ACL interface)
+  GATEWAY_PRIVATE_IFACE legacy peer ACL interface (default tailscale0)
   GATEWAY_SERVICE_USER  default sokrat-push
   --control --state-dir --turn-root --unit-dir --iface --service-user
-  --dry-run  --json  --no-firewall  --env-file
+  --transport --dry-run  --json  --no-firewall  --env-file
+
+In openvpn-frp mode each enabled PBX MUST have its root-installed
+/etc/sokrat/media/<pbxId>/plan.json. The relay address and interface come from
+that plan; there is no fallback to GATEWAY_PRIVATE_IP or tailscale0.
 
 EXIT CODES
   0  success (or a clean dry run)
@@ -623,8 +629,8 @@ def load_env_file(path):
             fail(f"environment file line {number} is not KEY=VALUE", "env_invalid")
         key, value = text.split("=", 1)
         key = key.strip()
-        if not key.startswith("GATEWAY_"):
-            fail(f"environment file line {number} sets a non-GATEWAY variable", "env_invalid")
+        if not key.startswith("GATEWAY_") and key != "SOKRAT_TRANSPORT":
+            fail(f"environment file line {number} sets an unsupported variable", "env_invalid")
         os.environ.setdefault(key, value.strip().strip("'\""))
 
 
@@ -651,15 +657,26 @@ def load_config(args):
     if len(public_host) > 253 or not HOST_RE.match(public_host) or ".." in public_host:
         fail("GATEWAY_PUBLIC_HOST is not a valid hostname", "env_invalid")
     listen_ip = normalized_ip(require_env("GATEWAY_LISTEN_IP"), "GATEWAY_LISTEN_IP")
-    relay_ip = normalized_ip(require_env("GATEWAY_PRIVATE_IP"), "GATEWAY_PRIVATE_IP")
-    for label, value in (("GATEWAY_LISTEN_IP", listen_ip), ("GATEWAY_PRIVATE_IP", relay_ip)):
-        if ipaddress.ip_address(value).version != 4:
-            fail(f"{label} must be an IPv4 address for coturn", "env_invalid")
+    if ipaddress.ip_address(listen_ip).version != 4:
+        fail("GATEWAY_LISTEN_IP must be an IPv4 address for coturn", "env_invalid")
 
-    iface = args.iface or os.environ.get("GATEWAY_PRIVATE_IFACE") or "tailscale0"
-    iface = iface.strip() or "tailscale0"
-    if not IFACE_RE.match(iface):
-        fail("GATEWAY_PRIVATE_IFACE is not a valid interface name", "env_invalid")
+    transport = (args.transport or os.environ.get("SOKRAT_TRANSPORT") or "legacy").strip()
+    if transport not in ("legacy", "openvpn-frp"):
+        fail("SOKRAT_TRANSPORT must be legacy or openvpn-frp", "env_invalid")
+    if transport == "legacy":
+        relay_ip = normalized_ip(require_env("GATEWAY_PRIVATE_IP"), "GATEWAY_PRIVATE_IP")
+        iface = args.iface or os.environ.get("GATEWAY_PRIVATE_IFACE") or "tailscale0"
+        iface = iface.strip() or "tailscale0"
+        if not IFACE_RE.match(iface):
+            fail("GATEWAY_PRIVATE_IFACE is not a valid interface name", "env_invalid")
+    else:
+        # No global private/provider address is trusted in VPN-free mode. Keep a
+        # compatibility value for the legacy single-PBX container only; every
+        # tenant's relay address and interface come from its media plan.
+        relay_ip = listen_ip
+        if args.iface or os.environ.get("GATEWAY_PRIVATE_IFACE"):
+            fail("GATEWAY_PRIVATE_IFACE is legacy-only; set interface in the media plan", "env_invalid")
+        iface = None
     service_user = args.service_user or os.environ.get("GATEWAY_SERVICE_USER") or "sokrat-push"
     if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", service_user):
         fail("GATEWAY_SERVICE_USER is not a valid account name", "env_invalid")
@@ -680,6 +697,7 @@ def load_config(args):
         "listen_ip": listen_ip,
         "relay_ip": relay_ip,
         "iface": iface,
+        "transport": transport,
         "service_user": service_user,
         "firewall": not args.no_firewall,
     }
@@ -749,10 +767,13 @@ def require_traversable_ancestors(path, config, warnings):
 
 def build_unit(config):
     conf_pattern = f"{config['turn_root']}/%i/turnserver.conf"
+    after = "network-online.target"
+    if config.get("transport", "legacy") == "legacy":
+        after += " tailscaled.service"
     return f"""# {CONF_MARKER} — do not edit by hand.
 [Unit]
 Description=Sokrat isolated tenant TURN relay %i
-After=network-online.target tailscaled.service
+After={after}
 Wants=network-online.target
 ConditionPathExists={conf_pattern}
 
@@ -870,6 +891,8 @@ def prepare(args):
         # store cannot select an arbitrary relay bind address or interface.
         media_dir = Path('/etc/sokrat/media') / pbx_id
         media_plan = media_dir / 'plan.json'
+        if config.get("transport") == "openvpn-frp" and enabled and not media_plan.exists():
+            fail(f"Enabled PBX {pbx_id} has no enrolled media plan; re-enroll it before syncing", "media_plan_required")
         if media_plan.exists():
             ensure_no_symlink_ancestors(media_plan)
             info = media_plan.lstat()
@@ -886,6 +909,11 @@ def prepare(args):
                 fail('Invalid media link plan', 'control_corrupt')
             if link['pbxId'] != pbx_id or link['slot'] != tenant['slot']:
                 fail('Media and TURN allocation mismatch', 'plan_corrupt')
+            if config.get("transport") == "openvpn-frp" and enabled and peers != [link['pbxIp']]:
+                fail(
+                    f"PBX {pbx_id} mediaIps do not match its enrolled media plan",
+                    "media_plan_mismatch",
+                )
             # Keep the interface for removing old rules after disable/retire,
             # when the dashboard no longer supplies any current peer list.
             if allocation['peerIps'] == [link['pbxIp']]:
@@ -1082,10 +1110,16 @@ def listener_firewall(tenant, add, warnings):
 
 
 def peer_firewall(tenant, peer, add, warnings, config, relay_ip=None, iface=None):
+    transport = config.get("transport", "legacy")
+    selected_iface = iface or tenant.get("mediaIface")
+    if not selected_iface and transport == "legacy":
+        selected_iface = config.get("iface")
+    if not selected_iface:
+        fail(f"PBX {tenant['pbxId']} has no media interface for its peer firewall rule", "media_plan_required")
     spec = [
         "in",
         "on",
-        iface or tenant.get("mediaIface", config["iface"]),
+        selected_iface,
         "from",
         peer,
         "to",
@@ -1100,6 +1134,9 @@ def peer_firewall(tenant, peer, add, warnings, config, relay_ip=None, iface=None
 
 def provision_tenant(tenant, state, warnings):
     config = state["config"]
+    if config.get("transport") == "openvpn-frp" and not tenant.get("mediaIface"):
+        fail(f"PBX {tenant['pbxId']} has no media interface; refusing to start its relay",
+             "media_plan_required")
     user = tenant["user"]
     ensure_service_user(user, warnings)
     account = pwd.getpwnam(user)
@@ -1226,6 +1263,7 @@ def apply_state(state, args):
             "publicHost": config["public_host"],
             "listenIp": config["listen_ip"],
             "relayIp": config["relay_ip"],
+            "transport": config.get("transport", "legacy"),
         },
         "allocations": {key: state["allocations"][key] for key in sorted(state["allocations"])},
     }
@@ -1275,6 +1313,7 @@ def emit(state, mode):
             "publicHost": config["public_host"],
             "listenIp": config["listen_ip"],
             "relayIp": config["relay_ip"],
+            "transport": config.get("transport", "legacy"),
             "state": {
                 "planFile": str(config["plan_file"]),
                 "manifestFile": str(config["manifest_file"]),
@@ -1379,7 +1418,9 @@ def parse_args(argv):
     parser.add_argument("--trusted-state-dir", help="root-owned directory for allocation plan and hook tokens")
     parser.add_argument("--turn-root", help="coturn config root (default /etc/sokrat/turn)")
     parser.add_argument("--unit-dir", help="systemd unit directory (default /etc/systemd/system)")
-    parser.add_argument("--iface", dest="iface", help="private interface for peer ACLs (default tailscale0)")
+    parser.add_argument("--transport", choices=("legacy", "openvpn-frp"),
+                        help="transport mode (default: SOKRAT_TRANSPORT or legacy)")
+    parser.add_argument("--iface", dest="iface", help="legacy private interface for peer ACLs (default tailscale0)")
     parser.add_argument("--service-user", help="account that runs the gateway (default sokrat-push)")
     parser.add_argument("--env-file", help="read GATEWAY_* variables from a private KEY=VALUE file")
     parser.add_argument("--dry-run", action="store_true", help="validate and print the plan only")

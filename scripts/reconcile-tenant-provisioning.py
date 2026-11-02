@@ -573,7 +573,7 @@ def load_config(path, test_mode):
     if not isinstance(runtime, dict):
         refuse("configuration_invalid", 'worker config field "runtime" must be an object')
     runtime_allowed = {"syncScript", "envFile", "gatewayUrl", "stateDir", "trustedStateDir", "turnRoot",
-                        "unitDir", "iface", "serviceUser", "manageFirewall"}
+                        "unitDir", "iface", "transport", "serviceUser", "manageFirewall"}
     unknown = sorted(set(runtime) - runtime_allowed)
     if unknown:
         refuse("configuration_invalid", f"unsupported runtime field(s): {', '.join(unknown)}")
@@ -584,9 +584,17 @@ def load_config(path, test_mode):
     service_user = runtime.get("serviceUser", DEFAULT_SERVICE_USER)
     if not isinstance(service_user, str) or not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", service_user):
         refuse("configuration_invalid", "runtime.serviceUser is not a valid account name")
-    iface = runtime.get("iface", DEFAULT_IFACE)
-    if not isinstance(iface, str) or not IFACE_RE.match(iface):
-        refuse("configuration_invalid", "runtime.iface is not a valid interface name")
+    transport = runtime.get("transport", "legacy")
+    if transport not in ("legacy", "openvpn-frp"):
+        refuse("configuration_invalid", "runtime.transport must be legacy or openvpn-frp")
+    iface = runtime.get("iface")
+    if transport == "legacy":
+        iface = iface or DEFAULT_IFACE
+        if not isinstance(iface, str) or not IFACE_RE.match(iface):
+            refuse("configuration_invalid", "runtime.iface is not a valid interface name")
+    elif iface is not None:
+        refuse("configuration_invalid", "runtime.iface is legacy-only; use per-PBX media plans")
+
     if type(runtime.get('manageFirewall',True)) is not bool:
         refuse('configuration_invalid','runtime.manageFirewall must be boolean')
     if runtime.get('manageFirewall') is False and not data.get('firewallAdapter'):
@@ -619,6 +627,7 @@ def load_config(path, test_mode):
         "turnRoot": path_field(runtime.get("turnRoot"), "runtime.turnRoot", DEFAULT_TURN_ROOT),
         "unitDir": path_field(runtime.get("unitDir"), "runtime.unitDir", DEFAULT_UNIT_DIR),
         "iface": iface,
+        "transport": transport,
         "serviceUser": service_user,
         "serviceUid": service_uid,
         "serviceGid": service_gid,
@@ -1144,7 +1153,8 @@ def run_sync(config, snapshot):
         "--state-dir", str(config["stateDir"]),
         "--turn-root", str(config["turnRoot"]),
         "--unit-dir", str(config["unitDir"]),
-        "--iface", config["iface"],
+        "--transport", config["transport"],
+        *(["--iface", config["iface"]] if config["iface"] else []),
         "--service-user", config["serviceUser"],
         "--env-file", str(config["envFile"]),
         "--json",

@@ -1,0 +1,7 @@
+[Unit]
+Description=Backup Sokrat gateway state
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sokrat-backup-gateway

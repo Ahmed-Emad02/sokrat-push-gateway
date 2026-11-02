@@ -55,6 +55,33 @@ server {
         add_header Cache-Control "no-store" always;
     }
 
+    location /api/extension-chat/ {
+        limit_req zone=push_reg burst=40 nodelay;
+        client_max_body_size 50m;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_pass http://127.0.0.1:9097;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        access_log off;
+    }
+
+    location /api/gateway/chat/socket.io {
+        access_log off;
+        if ($http_upgrade !~* "^websocket$") { return 426; }
+        proxy_pass http://127.0.0.1:9097;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
     location /api/gateway/ {
         limit_req zone=push_reg burst=20 nodelay;
         proxy_pass http://127.0.0.1:9097;

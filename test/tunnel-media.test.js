@@ -141,3 +141,24 @@ with patch.object(m,'ensure_service_user'),patch.object(m.pwd,'getpwnam',return_
  assert rules.call_args_list[1].kwargs=={'relay_ip':'100.64.0.1','iface':'tailscale0'}
 print('ok')`).trim(), 'ok');
 });
+
+test('VPN-free TURN unit has no Tailscale ordering dependency', () => {
+    assert.equal(python(`import importlib.util
+s=importlib.util.spec_from_file_location('sync','sync-tenant-runtime.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+from pathlib import Path
+unit=m.build_unit({'turn_root':Path('/etc/sokrat/turn'),'transport':'openvpn-frp'})
+assert 'After=network-online.target' in unit
+assert 'tailscaled.service' not in unit
+print('ok')`).trim(), 'ok');
+});
+
+test('legacy TURN unit retains the legacy Tailscale ordering dependency', () => {
+    assert.equal(python(`import importlib.util
+s=importlib.util.spec_from_file_location('sync','sync-tenant-runtime.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+from pathlib import Path
+unit=m.build_unit({'turn_root':Path('/etc/sokrat/turn'),'transport':'legacy'})
+assert 'After=network-online.target tailscaled.service' in unit
+print('ok')`).trim(), 'ok');
+});

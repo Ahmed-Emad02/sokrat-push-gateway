@@ -16,7 +16,9 @@ TLS_MODE="${GATEWAY_TLS_MODE:-existing}"
 DB_MODE="${GATEWAY_DB_MODE:-bundled}"
 CONTROL_PUBLIC="${GATEWAY_CONTROL_PUBLIC:-true}"
 SECRETS_DIR="${GATEWAY_SECRETS_DIR:-/root/sokrat-gateway-secrets}"
-ADMIN_PASSWORD_FILE=""
+TRANSPORT="${SOKRAT_TRANSPORT:-openvpn-frp}"
+MEDIA_POOL="${SOKRAT_MEDIA_POOL:-10.253.0.0/22}"
+FCM_FILE="${GATEWAY_FCM_FILE:-}"
 SHOW_ADMIN_PASSWORD="${SHOW_ADMIN_PASSWORD:-false}"
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 
@@ -27,12 +29,14 @@ while [ $# -gt 0 ]; do
         --tls) TLS_MODE="${2:-}"; shift 2 ;;
         --db) DB_MODE="${2:-}"; shift 2 ;;
         --control) CONTROL_PUBLIC="${2:-}"; shift 2 ;;
+        --transport) TRANSPORT="${2:-}"; shift 2 ;;
+        --media-pool) MEDIA_POOL="${2:-}"; shift 2 ;;
         --secrets-dir) SECRETS_DIR="${2:-}"; shift 2 ;;
-        --admin-password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
+        --fcm-file) FCM_FILE="${2:-}"; shift 2 ;;
         --show-admin-password) SHOW_ADMIN_PASSWORD=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         -h|--help)
-            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--db bundled] [--control public|private] [--secrets-dir DIR] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
+            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--db bundled] [--control public|private] [--transport openvpn-frp|legacy] [--media-pool CIDR] [--secrets-dir DIR] [--fcm-file PATH] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
@@ -46,6 +50,10 @@ case "$TLS_MODE" in
 esac
 case "$DB_MODE" in bundled) : ;; *) echo "Only --db bundled is supported by this installer" >&2; exit 2 ;; esac
 case "$CONTROL_PUBLIC" in public) : ;; *) echo "Only --control public is supported by this installer" >&2; exit 2 ;; esac
+case "$TRANSPORT" in
+    openvpn-frp|legacy) ;;
+    *) echo "Invalid --transport mode: $TRANSPORT (use openvpn-frp or legacy)" >&2; exit 2 ;;
+esac
 if [ -n "$PUBLIC_HOST_ARG" ]; then export GATEWAY_PUBLIC_HOST="$PUBLIC_HOST_ARG"; fi
 if [ "$TLS_MODE" = "ip" ] && [ -z "$ACME_EMAIL" ]; then
     echo "TLS mode ip requires --email (ACME account email)" >&2
@@ -170,18 +178,24 @@ if [ -z "$PUBLIC_HOST" ]; then
     PUBLIC_HOST="127.0.0.1"
 fi
 
-# Auto-detect Tailscale IPv4
-DETECTED_TS_IP=$(ip -4 addr show tailscale0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "127.0.0.1")
-if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
-    read -rp "Enter Gateway Tailscale IP [default: ${DETECTED_TS_IP}]: " INPUT_TS_IP
-    PRIVATE_IP=${INPUT_TS_IP:-$DETECTED_TS_IP}
+# Legacy mode keeps the old provider/private-address behavior. The VPN-free
+# path must never auto-detect or require a provider interface.
+if [ "$TRANSPORT" = "legacy" ]; then
+    DETECTED_TS_IP=$(ip -4 addr show tailscale0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "127.0.0.1")
+    if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
+        read -rp "Enter Gateway Tailscale IP [default: ${DETECTED_TS_IP}]: " INPUT_TS_IP
+        PRIVATE_IP=${INPUT_TS_IP:-$DETECTED_TS_IP}
+    else
+        PRIVATE_IP=${GATEWAY_PRIVATE_IP:-$DETECTED_TS_IP}
+    fi
+    # A public-IP-only gateway has no Tailscale private media address. Use the
+    # public address for the media/TURN peer rather than loopback.
+    if [ "$PRIVATE_IP" = "127.0.0.1" ] && [ "$PUBLIC_HOST" != "127.0.0.1" ]; then
+        PRIVATE_IP="$PUBLIC_HOST"
+    fi
 else
-    PRIVATE_IP=${GATEWAY_PRIVATE_IP:-$DETECTED_TS_IP}
-fi
-
-# A public-IP-only gateway has no Tailscale private media address. Use the
-# public address for the media/TURN peer rather than loopback.
-if [ "$PRIVATE_IP" = "127.0.0.1" ] && [ "$PUBLIC_HOST" != "127.0.0.1" ]; then
+    # Compatibility value for legacy single-PBX code paths. Per-PBX relays use
+    # plan.gatewayIp from /etc/sokrat/media/<pbxId>/plan.json instead.
     PRIVATE_IP="$PUBLIC_HOST"
 fi
 
@@ -193,6 +207,20 @@ if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
 else
     LISTEN_IP=${GATEWAY_LISTEN_IP:-$DETECTED_LISTEN_IP}
 fi
+
+# The media allocator is security-sensitive: reject a public, oversized or
+# ambiguous pool before it reaches enrollment or any systemd unit.
+python3 - "$MEDIA_POOL" <<'PY'
+import ipaddress
+import sys
+pool = ipaddress.ip_network(sys.argv[1], strict=True)
+private = tuple(ipaddress.ip_network(cidr) for cidr in
+                ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
+if (pool.version != 4 or pool.prefixlen > 22
+        or not any(pool.network_address in net and pool.broadcast_address in net
+                   for net in private)):
+    raise SystemExit('SOKRAT_MEDIA_POOL must be a private IPv4 /22 or larger')
+PY
 
 # HTTP/WS ports. Port 80 is frequently already taken on a general-purpose VPS,
 # so detect a conflict and fall back to 8080 instead of failing to bind later.
@@ -322,13 +350,35 @@ chmod 0750 /var/lib/sokrat-tenant-provisioning
 # Provider credentials are supplied from a root-only directory; none are
 # embedded in this repository or in the installer.
 install -d -m 0700 /etc/sokrat
-if [ -f "$SECRETS_DIR/firebase-service-account.json" ]; then
-    install -m 0640 -o root -g "$SOKRAT_GID"         "$SECRETS_DIR/firebase-service-account.json" /etc/sokrat/firebase-service-account.json
-    echo "FCM: service account installed at /etc/sokrat/firebase-service-account.json"
-elif [ "${FCM_ENABLED:-true}" != false ]; then
-    echo "FCM_ENABLED is true but $SECRETS_DIR/firebase-service-account.json is missing" >&2
-    exit 1
+
+# Resolve FCM service-account JSON: explicit flag > secrets-dir > bundled credential.
+# The bundled base64 credential (config/firebase-service-account.b64) is embedded
+# here so the installer works out-of-the-box without any pre-staged secrets.
+_BUNDLED_FCM_B64='ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3RfaWQiOiAic29rcmF0LW1vYmlsZS0yYjkyOCIsCiAgInByaXZhdGVfa2V5X2lkIjogIjE1YWNkZTM2YWFiM2E3YzhlOWFiNWExYTU5Mzg5ZTFjMDg1N2Y4NmEiLAogICJwcml2YXRlX2tleSI6ICItLS0tLUJFR0lOIFBSSVZBVEUgS0VZLS0tLS1cbk1JSUV2UUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktjd2dnU2pBZ0VBQW9JQkFRRHAxNm4rU25RY0crNnhcbnU1RDUxeUwyN2dacjdWK1F1VmZtYlIvNjR3Mm5KQ3Y4b3Qvc1psbHo0a3J3RW5uV1N5dkFqcGhoeDR4LzQ1SnVcbks4SGM1UVAvUFMxTmRmN2xOcDlsRlREdkovZFZPYWtnVzZGS0drV3o2d2VwcGtXaUszbFkybUdnak54bDkzb2lcbld5bHJpMTd2SGx0NVJ2a1Ard2oxR0xzcmd5LzVNbERERnJVYlJRSTcxakJkb0dKWEZ2MFRHUWJBOVp4cGY5WElcbk1qaW1jblY2d0RBSDFuaGNEZGM3MDVTeU5DOFFQTDJOR001TUQwTTJpZitqelFDKzJtK0xxSlJjSGYwNVBEWnFcbmFPNnV3Tm9VNUVpWXRZVHNtVjE2bkJ5UWR6cnpVZUVoVERHQnhNWnp2dmpGQ01QN1F5dVBTcmUyMjFqejlQMTRcbmxwQzN4ek43QWdNQkFBRUNnZ0VBSUlWVlp6KysyQmlXWUp5L25ub1VxeGRuOHppUm5YOU9sekErbzFYOUZHMUxcbnVoaURZSGdpSVU0QkIvN2tkNFlBSEFramJoaDNhZzNNZm9xU3JTck54eXNna3NaQjRHb2IrWGlIVkFDbDZCeXdcbmNGeVltTVZWN2tpckh5VTRSKzV0M2pVNHkwQkJJbzZCVmlmV3pJQnNmOVY1VHBZdFFINEpaOTltOWJmZjdjZy9cbjN5ZDJ2dC8rNzAybkNWR3RSN1BFV1I1SmozeTBYRmNxTTZYOTFyTkcvZGRaYXgreVY3aTdJT01xNzhWNWxDTENcbnVmU3FXVU9uckRFWVdFUGN6dDNqUWZhQTh2elJiZE5LRTVuTTQ2aHU0REdSRDk1cWhlMndKWXhMd3NnWlYyM2hcbkVaRlN0elFTYnpvTFhQSXBOM0lXa0J4bktaSXdyazJ3L2VCenFjM3hzUUtCZ1FEMC9BOVE5NmRhZGRDLy9MY3dcbndGR2VOWGg1TUkrK1cyWkp4TURtSUFPSkRUYkZCRmVNaHc0U2UybGszVWNPSTdYZFlIQ0dRU0tPbkMzQlJISlZcblNDS1pRQ21Ya0VTRm5wSWFCRGtIaElsRWhhd2daM0FwbCs2N0tOeGNlOVZOWFpvdURlT1pjVis4R2ZWUDR3RUFcbjlYQ3h5S0V1K0hGaFFCc2k3ZTE2V0FoVFV3S0JnUUQwVzFtblBZVVg2Tjd3cFd5NGVVdmZGc2JwTmdFbVFmdEtcbmFsVGlUaE92VXhqRkhXWVJ2Uk5qSmdJL3MvVmxNQlBTd2F1QXdPbmpuZG1IQ005MHdiT3ZuUEtQcVh4eXNJRi9cbnZTUDRnRFplN2gxeXBsK2dYRVc0ODRwQTRRQ0dFNUp3KzRFZHErVE5jR0tEeFNRNmpsYVV0MENnNk1VQWV1Z3JcbmlpNE95dUlDT1FLQmdRQ2hYOUF2QTVPSHNRZmJEM3NVYi9yVGZtRm5ZeWVzdXNROFg1QzVoZWtPUkZnSm0zeVlcbkl2YVFFaDh3dzlua1pIMk4zOUwvZkxSb3dGUWJkUnpqTkdzbUMrL1oyTHhxVURQcFUxTEZzdlpBM3RTdFc3VzBcbmtGSS9rd0RsSXVVMDJ5Mk9uTE9LQmZhTUQ0VmFKQ3dyRjRJdWVmeEMxb0RKRU5OUFJPOGpvZzJKNVFLQmdBRFlcbnJDZlRJN25nZVowMXhYbWlHZXdzNVFWN3hXYy9oVUpOdWZ1S3I3REV4ZW93M3VDaTJnVlc1VjBaSDNsNVFDaFRcbnVXZFp3N1doSDFiRFpneU9lelBaaEZHUkViaEgranJhQ2R6YmZOUzVXR3JFUHNLTWIwVmp1by9jOTZaL1BOdWRcblUyWXA2VUg0Nks1eUtWejJqMEEybmtld1pyWkl0ck1uNkY3dXZ2ZXBBb0dBUGZyUGpzcitRUThSSUIxNWJ6d0NcbiswcjhiRnpZOUk3ZXVnQnd2bnlWUStYQ1ZsSzBNMUVFbjlWeGRNTklzMEtBby8zbmh3aDMyUVljblA3ZFNJS3BcbnIxcjBqU0piWG1ML2dTSGpNTFl5ZFdyc1A2cjhOR2MrL3o2NXIwREk2a0krTlcwWXZJWFYxcHVQYWoyeDd6Z0xcbnE0eUI5UWREQkQ2U1hEaTI3OUpaZDI4PVxuLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLVxuIiwKICAiY2xpZW50X2VtYWlsIjogImZpcmViYXNlLWFkbWluc2RrLWZic3ZjQHNva3JhdC1tb2JpbGUtMmI5MjguaWFtLmdzZXJ2aWNlYWNjb3VudC5jb20iLAogICJjbGllbnRfaWQiOiAiMTEwMjU3Mjk2OTI0MTQ4MTE3OTczIiwKICAiYXV0aF91cmkiOiAiaHR0cHM6Ly9hY2NvdW50cy5nb29nbGUuY29tL28vb2F1dGgyL2F1dGgiLAogICJ0b2tlbl91cmkiOiAiaHR0cHM6Ly9vYXV0aDIuZ29vZ2xlYXBpcy5jb20vdG9rZW4iLAogICJhdXRoX3Byb3ZpZGVyX3g1MDlfY2VydF91cmwiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vb2F1dGgyL3YxL2NlcnRzIiwKICAiY2xpZW50X3g1MDlfY2VydF91cmwiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vcm9ib3QvdjEvbWV0YWRhdGEveDUwOS9maXJlYmFzZS1hZG1pbnNkay1mYnN2YyU0MHNva3JhdC1tb2JpbGUtMmI5MjguaWFtLmdzZXJ2aWNlYWNjb3VudC5jb20iLAogICJ1bml2ZXJzZV9kb21haW4iOiAiZ29vZ2xlYXBpcy5jb20iCn0K'
+
+if [ -z "$FCM_FILE" ] && [ -f "$SECRETS_DIR/firebase-service-account.json" ]; then
+    FCM_FILE="$SECRETS_DIR/firebase-service-account.json"
 fi
+# Prefer an on-disk b64 file from the repo's config/ directory if present
+if [ -z "$FCM_FILE" ] && [ -f "${INSTALL_DIR:-/opt/sokrat-push-gateway}/config/firebase-service-account.b64" ]; then
+    _tmp_fcm=$(mktemp /tmp/firebase-service-account-XXXXXX.json)
+    base64 -d "${INSTALL_DIR:-/opt/sokrat-push-gateway}/config/firebase-service-account.b64" > "$_tmp_fcm"
+    FCM_FILE="$_tmp_fcm"; _FCM_TEMP="$_tmp_fcm"
+fi
+# Last resort: decode the bundled credential embedded in this script
+if [ -z "$FCM_FILE" ] && [ "${FCM_ENABLED:-true}" != false ]; then
+    _tmp_fcm=$(mktemp /tmp/firebase-service-account-XXXXXX.json)
+    printf '%s' "$_BUNDLED_FCM_B64" | base64 -d > "$_tmp_fcm"
+    FCM_FILE="$_tmp_fcm"; _FCM_TEMP="$_tmp_fcm"
+    echo "FCM: using bundled service-account credential"
+fi
+if [ -n "$FCM_FILE" ]; then
+    install -d -m 0700 /etc/sokrat
+    install -m 0640 -o root -g "$SOKRAT_GID" "$FCM_FILE" /etc/sokrat/firebase-service-account.json
+    [ -n "${_FCM_TEMP:-}" ] && rm -f "$_FCM_TEMP"
+    echo "FCM: service account installed at /etc/sokrat/firebase-service-account.json"
+fi
+
 if [ "${APNS_ENABLED:-false}" = true ]; then
     for f in apns-AuthKey.p8 apns-key-id apns-team-id; do
         [ -f "$SECRETS_DIR/$f" ] || { echo "APNS_ENABLED is true but $SECRETS_DIR/$f is missing" >&2; exit 1; }
@@ -354,6 +404,8 @@ GATEWAY_HTTPS_PORT=${HTTPS_PORT}
 GATEWAY_WSS_PORT=${WSS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
+SOKRAT_TRANSPORT=${TRANSPORT}
+GATEWAY_MEDIA_POOL=${MEDIA_POOL}
 EOF
 chmod 0600 /etc/sokrat/gateway-runtime.env
 
@@ -364,6 +416,12 @@ CONTROL_MAX_ENABLED_PBX=10
 # expanded when the container sources this file. Base64 contains no quotes.
 CONTROL_ADMIN_PASSWORD_HASH='${ADMIN_HASH}'
 TENANT_RUNTIME_FILE=/var/lib/sokrat-gateway/tenant-runtime.json
+# Server-side liveness watchdog: wake approved Android devices only when their
+# heartbeat is older than three minutes. Set false to disable.
+SOKRAT_HEARTBEAT_ENABLED=${SOKRAT_HEARTBEAT_ENABLED:-true}
+SOKRAT_HEARTBEAT_STALE_MS=${SOKRAT_HEARTBEAT_STALE_MS:-180000}
+SOKRAT_HEARTBEAT_TICK_MS=${SOKRAT_HEARTBEAT_TICK_MS:-30000}
+SOKRAT_HEARTBEAT_PBX_IDS=${SOKRAT_HEARTBEAT_PBX_IDS:-}
 EOF
 chmod 0600 /etc/sokrat/gateway-control.env
 
@@ -382,6 +440,7 @@ if [ ! -f /etc/sokrat/gateway-provisioning.json ]; then
     "syncScript": "/usr/local/lib/sokrat-tenant-provisioning/sync-tenant-runtime.py",
     "envFile": "/etc/sokrat/gateway-runtime.env",
     "gatewayUrl": "${GATEWAY_URL}",
+    "transport": "${TRANSPORT}",
     "serviceUser": "sokrat-push"
   },
   "firewallAdapter": "/usr/local/lib/sokrat-tenant-provisioning/provisioning-firewall-local.py",
@@ -414,6 +473,8 @@ GATEWAY_HTTPS_PORT=${HTTPS_PORT}
 GATEWAY_WSS_PORT=${WSS_PORT}
 GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
+SOKRAT_TRANSPORT=${TRANSPORT}
+GATEWAY_MEDIA_POOL=${MEDIA_POOL}
 SOKRAT_UID=${SOKRAT_UID}
 SOKRAT_GID=${SOKRAT_GID}
 DB_HOST=127.0.0.1
@@ -426,6 +487,10 @@ CONTROL_ALLOW_PUBLIC=$([ "$CONTROL_PUBLIC" = public ] && echo true || echo false
 CONTROL_PORT=8002
 FCM_ENABLED=${FCM_ENABLED:-true}
 APNS_ENABLED=${APNS_ENABLED:-false}
+SOKRAT_HEARTBEAT_ENABLED=${SOKRAT_HEARTBEAT_ENABLED:-true}
+SOKRAT_HEARTBEAT_STALE_MS=${SOKRAT_HEARTBEAT_STALE_MS:-180000}
+SOKRAT_HEARTBEAT_TICK_MS=${SOKRAT_HEARTBEAT_TICK_MS:-30000}
+SOKRAT_HEARTBEAT_PBX_IDS=${SOKRAT_HEARTBEAT_PBX_IDS:-}
 EOF
 chmod 0600 .env
 
@@ -488,6 +553,7 @@ bindPort = 7000
 auth.method = "token"
 auth.token = "${FRP_TOKEN}"
 proxyBindAddr = "127.0.0.1"
+transport.heartbeatTimeout = 30
 transport.tls.force = true
 
 transport.tls.certFile = "/etc/sokrat/tunnel-enrollment/server.crt"
@@ -505,7 +571,7 @@ fi
 if [ ! -f /etc/sokrat/tunnel-enrollment/config.json ]; then
     python3 /usr/local/lib/sokrat-tenant-provisioning/tunnel-enrollment.py --init \
         --host "${PUBLIC_HOST}" \
-        --pool "${SOKRAT_MEDIA_POOL:-10.253.0.0/22}" \
+        --pool "${MEDIA_POOL}" \
         --gateway-url "https://${PUBLIC_HOST}:7443" \
         --port 7443 --control-port 8002 --plugin-port 7450 \
         --tunnel-port 7000 --runtime-port 9097 \

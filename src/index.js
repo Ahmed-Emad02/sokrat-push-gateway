@@ -76,6 +76,7 @@ const PORT = parseInt(process.env.PORT, 10) || 8095;
 // ----------------------------------------------------------------------------
 const dbConfig = {
     host: process.env.DB_HOST || '127.0.0.1',
+    port: parseInt(process.env.DB_PORT, 10) || 3306,
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASS !== undefined ? process.env.DB_PASS : '',
     database: process.env.DB_NAME || 'asterisk',
@@ -446,10 +447,17 @@ app.get('/api/push/cancel-call', async (req, res) => {
 });
 
 // Liveness
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
+app.get('/health', async (req, res) => {
+    let database = false;
+    try {
+        await pool.query('SELECT 1');
+        database = true;
+    } catch (_) {}
+    const ready = database;
+    res.status(ready ? 200 : 503).json({
+        status: ready ? 'ok' : 'degraded',
         service: 'sokrat-push-gateway',
+        database,
         apns: apnsReady,
         fcm: fcmReady,
         timestamp: new Date().toISOString()

@@ -38,7 +38,7 @@ test('explicit or incomplete TLS refuses plaintext-only startup', t => {
     assert.notEqual(f.run().status, 0);
     assert.equal(fs.existsSync(f.output), false);
 });
-test('TLS rendering retains nginx variables and limits public API exposure', t => {
+test('TLS rendering retains nginx variables and exposes control only through 443', t => {
     const f = fixture(t); f.certificates();
     assert.equal(f.run().status, 0);
     const rendered = fs.readFileSync(f.output, 'utf8');
@@ -49,7 +49,9 @@ test('TLS rendering retains nginx variables and limits public API exposure', t =
     assert.match(rendered, /location = \/ws/);
     assert.match(rendered, /\$sokrat_ws_upstream\$request_uri/);
     assert.match(rendered, /X-Forwarded-For \$remote_addr/);
-    assert.doesNotMatch(rendered, /8002|9096|8095|\/control|\/api\/push/);
+    assert.match(rendered, /location \/control\//);
+    assert.match(rendered, /proxy_pass http:\/\/127\.0\.0\.1:8002/);
+    assert.doesNotMatch(rendered, /\/api\/push/);
     assert.doesNotMatch(rendered, /\$\{GATEWAY_/);
     assert.equal(f.run().status, 0);
 });

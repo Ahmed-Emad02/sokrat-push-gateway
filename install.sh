@@ -10,6 +10,48 @@
 # ==============================================================================
 set -euo pipefail
 
+PUBLIC_HOST_ARG=""
+ACME_EMAIL="${GATEWAY_ACME_EMAIL:-}"
+TLS_MODE="${GATEWAY_TLS_MODE:-existing}"
+DB_MODE="${GATEWAY_DB_MODE:-bundled}"
+CONTROL_PUBLIC="${GATEWAY_CONTROL_PUBLIC:-true}"
+SECRETS_DIR="${GATEWAY_SECRETS_DIR:-/root/sokrat-gateway-secrets}"
+ADMIN_PASSWORD_FILE=""
+SHOW_ADMIN_PASSWORD="${SHOW_ADMIN_PASSWORD:-false}"
+NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --host) PUBLIC_HOST_ARG="${2:-}"; shift 2 ;;
+        --email) ACME_EMAIL="${2:-}"; shift 2 ;;
+        --tls) TLS_MODE="${2:-}"; shift 2 ;;
+        --db) DB_MODE="${2:-}"; shift 2 ;;
+        --control) CONTROL_PUBLIC="${2:-}"; shift 2 ;;
+        --secrets-dir) SECRETS_DIR="${2:-}"; shift 2 ;;
+        --admin-password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
+        --show-admin-password) SHOW_ADMIN_PASSWORD=true; shift ;;
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
+        -h|--help)
+            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--db bundled] [--control public|private] [--secrets-dir DIR] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+case "$TLS_MODE" in
+    ip) export GATEWAY_TLS_ENABLED=true ;;
+    existing|auto) : ;;
+    none) export GATEWAY_TLS_ENABLED=false ;;
+    *) echo "Invalid --tls mode: $TLS_MODE" >&2; exit 2 ;;
+esac
+case "$DB_MODE" in bundled) : ;; *) echo "Only --db bundled is supported by this installer" >&2; exit 2 ;; esac
+case "$CONTROL_PUBLIC" in public) : ;; *) echo "Only --control public is supported by this installer" >&2; exit 2 ;; esac
+if [ -n "$PUBLIC_HOST_ARG" ]; then export GATEWAY_PUBLIC_HOST="$PUBLIC_HOST_ARG"; fi
+if [ "$TLS_MODE" = "ip" ] && [ -z "$ACME_EMAIL" ]; then
+    echo "TLS mode ip requires --email (ACME account email)" >&2
+    exit 2
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -118,7 +160,7 @@ echo -e "${GREEN}[2/8] Detecting Network Configuration...${NC}"
 
 # Auto-detect Public IPv4
 DETECTED_PUBLIC_IP=$(curl -4 -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || curl -4 -s --connect-timeout 5 https://icanhazip.com 2>/dev/null || echo "")
-if [ -t 0 ]; then
+if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
     read -rp "Enter Gateway Public Host/IP [default: ${DETECTED_PUBLIC_IP}]: " INPUT_PUBLIC_IP
     PUBLIC_HOST=${INPUT_PUBLIC_IP:-$DETECTED_PUBLIC_IP}
 else
@@ -130,16 +172,22 @@ fi
 
 # Auto-detect Tailscale IPv4
 DETECTED_TS_IP=$(ip -4 addr show tailscale0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "127.0.0.1")
-if [ -t 0 ]; then
+if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
     read -rp "Enter Gateway Tailscale IP [default: ${DETECTED_TS_IP}]: " INPUT_TS_IP
     PRIVATE_IP=${INPUT_TS_IP:-$DETECTED_TS_IP}
 else
     PRIVATE_IP=${GATEWAY_PRIVATE_IP:-$DETECTED_TS_IP}
 fi
 
+# A public-IP-only gateway has no Tailscale private media address. Use the
+# public address for the media/TURN peer rather than loopback.
+if [ "$PRIVATE_IP" = "127.0.0.1" ] && [ "$PUBLIC_HOST" != "127.0.0.1" ]; then
+    PRIVATE_IP="$PUBLIC_HOST"
+fi
+
 # Detect Primary Listening Interface IP
 DETECTED_LISTEN_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' || echo "0.0.0.0")
-if [ -t 0 ]; then
+if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
     read -rp "Enter Gateway Interface Listening IP [default: ${DETECTED_LISTEN_IP}]: " INPUT_LISTEN_IP
     LISTEN_IP=${INPUT_LISTEN_IP:-$DETECTED_LISTEN_IP}
 else
@@ -177,6 +225,8 @@ if [ "$TLS_ENABLED" != false ]; then
         if port_in_use "$HTTPS_PORT" || port_in_use "$WSS_PORT"; then
             echo 'HTTPS/WSS port occupied; use reviewed free ports' >&2; exit 1
         fi
+    elif [ "$TLS_MODE" = "ip" ]; then
+        : # certificate is issued later, before the container starts
     elif [ "$TLS_ENABLED" = true ] || [ -e /etc/sokrat/tls/fullchain.pem ] || [ -e /etc/sokrat/tls/privkey.pem ]; then
         echo 'Trusted TLS certificate/key pair required before installation' >&2; exit 1
     fi
@@ -195,8 +245,12 @@ echo -e "Gateway API will be served at ${GREEN}${GATEWAY_URL}${NC}"
 echo -e "${GREEN}[3/8] Setting Up Control Dashboard Credentials...${NC}"
 
 ADMIN_PASS="${CONTROL_ADMIN_PASSWORD:-}"
+if [ -n "$ADMIN_PASSWORD_FILE" ]; then
+    [ -r "$ADMIN_PASSWORD_FILE" ] || { echo "Cannot read admin password file: $ADMIN_PASSWORD_FILE" >&2; exit 1; }
+    ADMIN_PASS=$(tr -d '\r\n' < "$ADMIN_PASSWORD_FILE")
+fi
 if [ -z "$ADMIN_PASS" ]; then
-    if [ -t 0 ]; then
+    if [ -t 0 ] && [ "$NON_INTERACTIVE" != true ]; then
         while [ -z "$ADMIN_PASS" ]; do
             read -rsp "Enter Sokrat Gateway Dashboard Admin Password (min 8 chars): " ADMIN_PASS
             echo
@@ -258,13 +312,36 @@ chmod 0700 /etc/sokrat/ssh
 if [ "${SAVE_INITIAL_PASSWORD:-false}" = true ]; then
     (umask 077; printf '%s\n' "$ADMIN_PASS" > /etc/sokrat/gateway-admin-initial-password)
 fi
-unset ADMIN_PASS
 mkdir -p /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-tenant-provisioning/locks
 chown root:root /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-tenant-provisioning/locks
 chmod 0700 /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-tenant-provisioning/locks
 
 chown "root:${SOKRAT_GID}" /var/lib/sokrat-tenant-provisioning
 chmod 0750 /var/lib/sokrat-tenant-provisioning
+
+# Provider credentials are supplied from a root-only directory; none are
+# embedded in this repository or in the installer.
+install -d -m 0700 /etc/sokrat
+if [ -f "$SECRETS_DIR/firebase-service-account.json" ]; then
+    install -m 0640 -o root -g "$SOKRAT_GID"         "$SECRETS_DIR/firebase-service-account.json" /etc/sokrat/firebase-service-account.json
+    echo "FCM: service account installed at /etc/sokrat/firebase-service-account.json"
+elif [ "${FCM_ENABLED:-true}" != false ]; then
+    echo "FCM_ENABLED is true but $SECRETS_DIR/firebase-service-account.json is missing" >&2
+    exit 1
+fi
+if [ "${APNS_ENABLED:-false}" = true ]; then
+    for f in apns-AuthKey.p8 apns-key-id apns-team-id; do
+        [ -f "$SECRETS_DIR/$f" ] || { echo "APNS_ENABLED is true but $SECRETS_DIR/$f is missing" >&2; exit 1; }
+    done
+    install -d -m 0700 /etc/sokrat/apns
+    install -m 0600 -o root -g "$SOKRAT_GID" "$SECRETS_DIR/apns-AuthKey.p8" /etc/sokrat/apns/AuthKey.p8
+fi
+
+# Issue/reuse the IP-only certificate before the container starts.
+if [ "$TLS_MODE" = "ip" ]; then
+    bash scripts/install-ip-tls.sh "$PUBLIC_HOST" "$ACME_EMAIL" "${GATEWAY_ACME_STAGING:-false}"
+    TLS_READY=true
+fi
 
 echo -e "${GREEN}[5/8] Writing Production Environment & Configs...${NC}"
 
@@ -323,6 +400,11 @@ EOF
     chmod 0600 /etc/sokrat/gateway-provisioning-adapters.json
 fi
 
+# Bundled database credentials are generated per installation.
+DB_PASS=$(openssl rand -hex 24)
+DB_ROOT_PASSWORD=$(openssl rand -hex 32)
+DB_PORT=${DB_PORT:-3307}
+
 cat << EOF > .env
 GATEWAY_PUBLIC_HOST=${PUBLIC_HOST}
 GATEWAY_HTTP_PORT=${HTTP_PORT}
@@ -334,6 +416,16 @@ GATEWAY_LISTEN_IP=${LISTEN_IP}
 GATEWAY_PRIVATE_IP=${PRIVATE_IP}
 SOKRAT_UID=${SOKRAT_UID}
 SOKRAT_GID=${SOKRAT_GID}
+DB_HOST=127.0.0.1
+DB_PORT=${DB_PORT}
+DB_USER=sokrat
+DB_PASS=${DB_PASS}
+DB_NAME=asterisk
+DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+CONTROL_ALLOW_PUBLIC=$([ "$CONTROL_PUBLIC" = public ] && echo true || echo false)
+CONTROL_PORT=8002
+FCM_ENABLED=${FCM_ENABLED:-true}
+APNS_ENABLED=${APNS_ENABLED:-false}
 EOF
 chmod 0600 .env
 
@@ -344,7 +436,6 @@ echo -e "${GREEN}[6/8] Opening Host Firewall Ports...${NC}"
 if command -v ufw > /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow "${HTTP_PORT}/tcp" > /dev/null
     ufw allow "${WS_PORT}/tcp" > /dev/null
-    ufw allow 8002/tcp > /dev/null
     ufw allow 7000/tcp > /dev/null
     ufw allow 7443/tcp > /dev/null
     if [ "$TLS_READY" = true ]; then
@@ -355,9 +446,9 @@ if command -v ufw > /dev/null && ufw status 2>/dev/null | grep -q "Status: activ
     ufw allow 3478/udp > /dev/null
     ufw allow 3500:3654/tcp > /dev/null
     ufw allow 3500:3654/udp > /dev/null
-    echo -e "${GREEN}✓ UFW rules added for ${HTTP_PORT}, ${WS_PORT}, 8002, 7000, 3478 and 3500-3654.${NC}"
+    echo -e "${GREEN}✓ UFW rules added for ${HTTP_PORT}, ${WS_PORT}, 443, 7000, 3478 and 3500-3654.${NC}"
 else
-    echo -e "${YELLOW}⚠ UFW is not active; ensure your provider firewall allows ${HTTP_PORT}, ${WS_PORT}, 8002, 7000, 3478 and 3500-3654.${NC}"
+    echo -e "${YELLOW}⚠ UFW is not active; ensure your provider firewall allows ${HTTP_PORT}, ${WS_PORT}, 443, 7000, 3478 and 3500-3654.${NC}"
 fi
 
 echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
@@ -453,7 +544,7 @@ echo
 if [ "$HEALTH_OK" = true ]; then
     echo -e "${GREEN}✓ Push Gateway is healthy at ${GATEWAY_URL}/health${NC}"
 else
-    echo -e "${YELLOW}⚠ Push Gateway did not respond immediately. Check logs with: docker logs sokrat-gateway${NC}"
+    echo -e "${YELLOW}⚠ Push Gateway did not respond immediately. Check logs with: docker compose logs -f${NC}"
 fi
 
 echo
@@ -461,7 +552,7 @@ echo -e "${BLUE}================================================================
 echo -e "${GREEN}  Installation Complete! Sokrat Gateway Container is Running.      ${NC}"
 echo -e "${BLUE}===================================================================${NC}"
 echo -e "Public Web Ingress:      ${GREEN}${GATEWAY_URL}${NC}"
-echo -e "Control Dashboard:       ${GREEN}http://${PUBLIC_HOST}:8002/control/${NC}"
+echo -e "Control Dashboard:       ${GREEN}https://${PUBLIC_HOST}/control/${NC}"
 echo -e "SIP WebSocket Ingress:   ${GREEN}ws://${PUBLIC_HOST}:${WS_PORT}/ws${NC}"
 if [ "$TLS_READY" = true ]; then
     echo "Employee HTTPS: https://${PUBLIC_HOST}:${HTTPS_PORT}"
@@ -474,8 +565,14 @@ echo -e "Reverse Tunnel Ingress:  ${GREEN}${PUBLIC_HOST}:7000 (TLS)${NC}"
 echo -e "CoTURN STUN/TURN:        ${GREEN}${PUBLIC_HOST}:3478 (UDP/TCP)${NC}"
 echo
 echo -e "Access the Control Dashboard directly in your browser:"
-echo -e "   ${GREEN}http://${PUBLIC_HOST}:8002/control/${NC}"
-echo -e "Log in with your admin password."
+echo -e "   ${GREEN}https://${PUBLIC_HOST}/control/${NC}"
+echo -e "Admin user:             root"
+if [ -n "${ADMIN_PASS:-}" ]; then
+    echo -e "Admin password:         ${YELLOW}${ADMIN_PASS}${NC}"
+fi
+if [ -f /etc/sokrat/gateway-admin-initial-password ]; then
+    echo -e "Password file:          /etc/sokrat/gateway-admin-initial-password"
+fi
 echo
 echo -e "Useful Commands:"
 echo -e "  View container status:  ${BLUE}docker compose ps${NC}"

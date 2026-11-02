@@ -31,10 +31,13 @@ sudo install -m 0600 /path/to/firebase-service-account.json \
 Install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ahmed-Emad02/sokrat-push-gateway/<pinned-release>/install.sh \
+PUBLIC_HOST=169.58.109.172
+ACME_EMAIL=ops@example.com
+
+curl -fsSL https://raw.githubusercontent.com/Ahmed-Emad02/sokrat-push-gateway/main/install.sh \
   | sudo -E bash -s -- \
-      --host 169.58.109.172 \
-      --email ops@example.com \
+      --host "$PUBLIC_HOST" \
+      --email "$ACME_EMAIL" \
       --tls ip \
       --db bundled \
       --control public \
@@ -42,6 +45,10 @@ curl -fsSL https://raw.githubusercontent.com/Ahmed-Emad02/sokrat-push-gateway/<p
       --non-interactive \
       --show-admin-password
 ```
+
+For a reproducible production install, replace `main` with a reviewed commit SHA.
+The installer refuses to run over an existing gateway configuration; this is a
+first-install command, not an upgrader.
 
 The installer:
 

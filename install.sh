@@ -360,7 +360,7 @@ chmod 0600 /etc/sokrat/gateway-runtime.env
 cat << EOF > /etc/sokrat/gateway-control.env
 CONTROL_DATA_FILE=/var/lib/sokrat-gateway/control.json
 CONTROL_MAX_ENABLED_PBX=10
-# Single-quoted: the scrypt hash contains \$N\$r\$p segments that must not be
+# Single-quoted: the scrypt hash contains dollar-separated parameters that must not be
 # expanded when the container sources this file. Base64 contains no quotes.
 CONTROL_ADMIN_PASSWORD_HASH='${ADMIN_HASH}'
 TENANT_RUNTIME_FILE=/var/lib/sokrat-gateway/tenant-runtime.json

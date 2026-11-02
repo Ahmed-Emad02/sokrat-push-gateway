@@ -12,7 +12,7 @@ HOOK=/usr/local/bin/sokrat-cert-deploy
 
 valid_ip_cert() {
     [ -s "$DEST/fullchain.pem" ] && [ -s "$DEST/privkey.pem" ] &&
-        openssl x509 -in "$DEST/fullchain.pem" -noout -checkhost "$HOST" >/dev/null 2>&1
+        openssl x509 -in "$DEST/fullchain.pem" -noout -checkip "$HOST" >/dev/null 2>&1
 }
 
 if valid_ip_cert; then
@@ -75,5 +75,5 @@ LINEAGE="/etc/letsencrypt/live/$CERT_NAME"
 }
 install -m 0644 "$LINEAGE/fullchain.pem" "$DEST/fullchain.pem"
 install -m 0600 "$LINEAGE/privkey.pem" "$DEST/privkey.pem"
-openssl x509 -in "$DEST/fullchain.pem" -noout -checkhost "$HOST" >/dev/null
+openssl x509 -in "$DEST/fullchain.pem" -noout -checkip "$HOST" >/dev/null
 echo "TLS: valid IP certificate installed for $HOST"

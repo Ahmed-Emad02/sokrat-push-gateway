@@ -477,6 +477,62 @@ app.get('/health', async (req, res) => {
     });
 });
 
+// Reconcile calls that arrived while the app/device was offline. The app
+// passes its device UUID so an extension list cannot be harvested anonymously.
+app.get('/api/push/missed-calls', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        if (dbGuard(res)) return;
+        const extension = String(req.query.extension || '').trim();
+        const deviceUuid = String(req.query.deviceUuid || '').trim();
+        const since = new Date(String(req.query.since || ''));
+        if (!extension || !UUID_PATTERN.test(deviceUuid)) {
+            return res.status(400).json({ success: false, error: 'extension and deviceUuid are required' });
+        }
+        if (Number.isNaN(since.getTime())) {
+            return res.status(400).json({ success: false, error: 'since must be an ISO timestamp' });
+        }
+        const [devices] = await pool.execute(
+            'SELECT id FROM mobile_devices WHERE extension = ? AND device_uuid = ?',
+            [extension, deviceUuid]
+        );
+        if (!devices.length) {
+            return res.status(403).json({ success: false, error: 'device is not registered for this extension' });
+        }
+        const [rows] = await pool.execute(
+            `SELECT c.calldate, c.src, c.dst, c.disposition, c.uniqueid,
+                    u.name AS caller_name
+               FROM asteriskcdrdb.cdr c
+               LEFT JOIN users u ON u.extension = c.src
+              WHERE c.dst = ? AND c.calldate >= ?
+                AND c.disposition IN ('NO ANSWER', 'BUSY', 'FAILED')
+              ORDER BY c.calldate ASC
+              LIMIT 100`,
+            [extension, since]
+        );
+        const seen = new Set();
+        const missedCalls = [];
+        for (const row of rows) {
+            const rawId = String(row.uniqueid || '');
+            if (!rawId || seen.has(rawId)) continue;
+            seen.add(rawId);
+            missedCalls.push({
+                callId: normalizeCallId(rawId),
+                callerId: String(row.src || ''),
+                callerName: String(row.caller_name || row.src || ''),
+                extension,
+                disposition: String(row.disposition || 'NO ANSWER'),
+                timestamp: new Date(row.calldate).getTime(),
+                duration: Number(row.duration || 0)
+            });
+        }
+        res.json({ success: true, missedCalls });
+    } catch (err) {
+        console.error('[push-gateway] missed-calls error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // List PBX extensions for 1-click call transfer
 app.get('/api/push/extensions', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');

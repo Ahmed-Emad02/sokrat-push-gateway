@@ -5,6 +5,16 @@ const { fingerprintToken, isPermanentTokenError } = require('./push-errors');
 // Tenant registries are local to the gateway; never combine PBX-local rows by
 // extension alone. The approved assignment supplies pbxId and extension.
 function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId }) {
+    // A cancel-call is emitted when the caller gives up before the mobile
+    // answers. Remember the matching incoming-call so its caller identity can
+    // become a missed-call record even when the device was offline.
+    const pendingCalls = new Map();
+    function prunePendingCalls(now = Date.now()) {
+        for (const [key, call] of pendingCalls) {
+            if (now - call.timestamp > 10 * 60_000) pendingCalls.delete(key);
+        }
+    }
+
     async function markDelivered(device) {
         if (typeof store.markDelivered !== 'function') return;
         try {
@@ -66,6 +76,15 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             let id;
             try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
             catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
+            prunePendingCalls();
+            pendingCalls.set(`${pbx.id}:${id}`, {
+                pbxId: pbx.id,
+                extension: callee,
+                callId: id,
+                callerId: String(caller || '').slice(0, 128),
+                callerName: String(callerName || caller || '').slice(0, 256),
+                timestamp: Date.now(),
+            });
             const devices = await store.listPush(pbx.id, callee);
             let count = 0;
             let failed = 0;
@@ -160,6 +179,11 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             let id;
             try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
             catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
+            const pending = pendingCalls.get(`${pbx.id}:${id}`);
+            if (pending && pending.extension === callee) {
+                pendingCalls.delete(`${pbx.id}:${id}`);
+                await store.recordMissed(pending);
+            }
             const devices = await store.listPush(pbx.id, callee);
             let count = 0;
             for (const device of devices) {
@@ -176,6 +200,19 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             }
             res.json({ status: 'cancelled', callId: id, count });
         } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
+    });
+    if (typeof router.get === 'function') router.get('/missed-calls', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            const route = await authorizeDevice(req);
+            if (!route) return res.status(403).json({ error: 'Device approval required' });
+            const since = new Date(String(req.query.since || ''));
+            if (Number.isNaN(since.getTime())) return res.status(400).json({ error: 'since must be an ISO timestamp' });
+            const missedCalls = await store.listMissed(route.pbxId, route.extension, since.getTime());
+            res.json({ success: true, missedCalls });
+        } catch (_) {
+            res.status(503).json({ error: 'Missed-call store unavailable' });
+        }
     });
 }
 

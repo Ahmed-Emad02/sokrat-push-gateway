@@ -36,6 +36,7 @@ const path = require('path');
 const express = require('express');
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
+const { isPermanentTokenError } = require('./push-errors');
 const UUID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CALL_NAMESPACE = Buffer.from('b32a7f284bcc5a56a51f2ad6f65f746b', 'hex');
@@ -157,22 +158,11 @@ async function initFcm() {
         let credentialSource = null;
         const envPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
         const standardPath = '/etc/sokrat/firebase/service-account.json';
-        const bundledJsonPath = path.join(__dirname, '../config/firebase-service-account.json');
-        const bundledB64Path = path.join(__dirname, '../config/firebase-service-account.b64');
 
         if (envPath && fs.existsSync(envPath)) {
             credentialSource = envPath;
         } else if (fs.existsSync(standardPath)) {
             credentialSource = standardPath;
-        } else if (fs.existsSync(bundledJsonPath)) {
-            credentialSource = bundledJsonPath;
-        } else if (fs.existsSync(bundledB64Path)) {
-            try {
-                const rawB64 = fs.readFileSync(bundledB64Path, 'utf8').trim();
-                credentialSource = JSON.parse(Buffer.from(rawB64, 'base64').toString('utf8'));
-            } catch (b64Err) {
-                console.warn('[push-gateway] Failed to parse bundled base64 credentials:', b64Err.message);
-            }
         }
 
         if (!credentialSource) {
@@ -396,7 +386,7 @@ app.get('/api/push/incoming-call', async (req, res) => {
                 console.warn(
                     `[callId=${callId} device=${dev.device_uuid || dev.id}] push failed: ${message}`
                 );
-                if (/bad.*token|registration-token-not-registered|unregistered|invalid/i.test(message)) {
+                if (isPermanentTokenError(err)) {
                     await pool.execute('DELETE FROM mobile_devices WHERE id = ?', [dev.id]);
                     console.warn(`[callId=${callId} device=${dev.id}] invalid token deleted`);
                 } else {

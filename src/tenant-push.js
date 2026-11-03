@@ -5,6 +5,15 @@ const { fingerprintToken, isPermanentTokenError } = require('./push-errors');
 // Tenant registries are local to the gateway; never combine PBX-local rows by
 // extension alone. The approved assignment supplies pbxId and extension.
 function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId }) {
+    async function markDelivered(device) {
+        if (typeof store.markDelivered !== 'function') return;
+        try {
+            await store.markDelivered(device.deviceId, fingerprintToken(device.token));
+        } catch (error) {
+            console.warn(`[tenant-push] delivery timestamp update failed device=${device.deviceId}`);
+        }
+    }
+
     async function quarantineInvalid(device, error) {
         if (!isPermanentTokenError(error)) return false;
         const reason = String(error?.code || 'invalid-token').slice(0, 96);
@@ -13,6 +22,9 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                 await store.markInvalid(device.deviceId, fingerprintToken(device.token), reason);
             } else if (typeof store.removePush === 'function') {
                 await store.removePush(device.deviceId);
+            }
+            if (typeof store.pruneInvalidPush === 'function') {
+                await store.pruneInvalidPush();
             }
         } catch (cleanupError) {
             console.warn(`[tenant-push] invalid-token quarantine failed device=${device.deviceId} code=${String(cleanupError.code || 'unknown').slice(0, 96)}`);
@@ -75,6 +87,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                         extension: callee, callId: id, timestamp: Date.now(), sipWss: ''
                     });
                     count++;
+                    await markDelivered(device);
                     results.push({ deviceId: device.deviceId, status: 'dispatched' });
                     // FCM accepts a message for delivery; this ID is not proof the
                     // phone woke. It is intentionally free of tokens/caller data.
@@ -126,6 +139,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                             title: 'Chat · ' + message.sender_extension,
                         });
                         count++;
+                        await markDelivered(device);
                     } catch (error) { failed++; await quarantineInvalid(device, error); }
                 }
             }
@@ -157,6 +171,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                         extension: callee, callId: id, timestamp: Date.now(), sipWss: ''
                     });
                     count++;
+                    await markDelivered(device);
                 } catch (_) {}
             }
             res.json({ status: 'cancelled', callId: id, count });

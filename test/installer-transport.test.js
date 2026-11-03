@@ -59,9 +59,9 @@ test('fresh installer defaults to the VPN-free transport and exposes the media p
     assert.match(installer, /--pool "\$\{MEDIA_POOL\}"/);
 });
 
-test('fresh installer enables the three-minute heartbeat watchdog by default', () => {
+test('fresh installer enables the one-minute heartbeat watchdog by default', () => {
     assert.match(installer, /SOKRAT_HEARTBEAT_ENABLED=\$\{SOKRAT_HEARTBEAT_ENABLED:-true\}/);
-    assert.match(installer, /SOKRAT_HEARTBEAT_STALE_MS=\$\{SOKRAT_HEARTBEAT_STALE_MS:-180000\}/);
+    assert.match(installer, /SOKRAT_HEARTBEAT_STALE_MS=\$\{SOKRAT_HEARTBEAT_STALE_MS:-60000\}/);
     assert.match(installer, /SOKRAT_HEARTBEAT_TICK_MS=\$\{SOKRAT_HEARTBEAT_TICK_MS:-30000\}/);
     const compose = fs.readFileSync(path.resolve(__dirname, '../docker-compose.yml'), 'utf8');
     assert.match(compose, /SOKRAT_HEARTBEAT_ENABLED=\$\{SOKRAT_HEARTBEAT_ENABLED:-true\}/);

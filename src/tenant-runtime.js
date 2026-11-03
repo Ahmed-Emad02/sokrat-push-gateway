@@ -40,6 +40,8 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         sendToDevice,
         markInvalid: heartbeatOptions.markInvalid || ((deviceId, tokenFingerprint, code) =>
             pushStore.markInvalid(deviceId, tokenFingerprint, code)),
+        markDelivered: heartbeatOptions.markDelivered || (device =>
+            pushStore.markDelivered(device.deviceId, require('./push-errors').fingerprintToken(device.token))),
         enabled: heartbeatOptions.enabled === true,
         staleMs: heartbeatOptions.staleMs,
         tickMs: heartbeatOptions.tickMs,
@@ -49,6 +51,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         sleep: heartbeatOptions.sleep,
     });
     let attachedProxy = null;
+    let cleanupTimer = null;
     const router = express.Router();
     router.use(express.json({ limit: '16kb' }));
     router.get('/capabilities', (req, res) => {
@@ -82,6 +85,16 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             const route = await authorizeDevice(req);
             if (!route) return res.status(403).json({ error: 'Device approval required' });
             heartbeat.markSeen(route.deviceId);
+            try {
+                const heartbeatBody = req.body || {};
+                // The wake ACK is deliberately minimal (sipState=wake). It
+                // must not replace the device's full diagnostic snapshot.
+                if (heartbeatBody.reportedAt || heartbeatBody.appVersion) {
+                    await pushStore.recordTelemetry(route.deviceId, heartbeatBody);
+                }
+            } catch (_) {
+                // Telemetry is diagnostic only; never fail the heartbeat.
+            }
             console.log(`[heartbeat] seen extension=${route.extension} pbx=${route.pbxId}`);
             res.json({ ok: true, nextWakeInMs: heartbeat.staleMs });
         } catch (_) {
@@ -112,8 +125,24 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         router, assignment, authorize, pushStore, heartbeat, chatProxy,
         getActiveCalls: () => attachedProxy?.getActiveCalls?.() || [],
         getNetworkStats: () => attachedProxy?.getNetworkStats?.() || { inBytes: 0, outBytes: 0, byPbx: [] },
-        start() { heartbeat.start(); },
-        stop() { heartbeat.stop(); },
+        start() {
+            heartbeat.start();
+            const cleanup = async () => {
+                try { await pushStore.pruneInvalidPush(); }
+                catch (error) { console.warn('[push-store] invalid-token cleanup skipped:', error?.message || error); }
+                try { await pushStore.pruneExpiredPush(); }
+                catch (error) { console.warn('[push-store] expired-token cleanup skipped:', error?.message || error); }
+            };
+            void cleanup();
+            if (!cleanupTimer) {
+                cleanupTimer = setInterval(() => { void cleanup(); }, 6 * 60 * 60 * 1000);
+                cleanupTimer.unref?.();
+            }
+        },
+        stop() {
+            heartbeat.stop();
+            if (cleanupTimer) { clearInterval(cleanupTimer); cleanupTimer = null; }
+        },
         attach(server) {
             attachedProxy = attachSipProxy(server, { authorize, consumeTicket: tickets.consume,
                 scopeIncomingCallId: (value, route) => tenantCallId(normalizeCallId, route.pbxId, value),

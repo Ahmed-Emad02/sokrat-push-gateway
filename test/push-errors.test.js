@@ -16,7 +16,10 @@ test('classifies only permanent token errors as invalidating', () => {
         'messaging/unregistered',
         'BadDeviceToken',
         'Unregistered',
+        'NotRegistered',
+        'registration token is not a valid FCM registration token',
     ]) assert.equal(isPermanentTokenError({ code }), true, code);
+    assert.equal(isPermanentTokenError({ code: 'messaging/invalid-argument', message: 'The registration token is not a valid FCM registration token' }), true);
     for (const code of [
         'messaging/server-unavailable',
         'messaging/internal-error',

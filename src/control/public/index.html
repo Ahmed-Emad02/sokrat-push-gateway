@@ -425,7 +425,9 @@
       <div class="card-head">
         <h2 id="approved-title">Approved devices</h2>
         <p class="hint">Revoking drops the stored secret immediately and blocks future pushes.</p>
+        <button id="approved-cleanup" class="btn btn-ghost btn-sm" type="button">Clean up stale approvals</button>
       </div>
+      <p id="approved-token-warning" class="notice notice-warn" hidden></p>
       <div class="table-tools">
         <label class="search-field" for="approved-search">
           <span class="filter-label">Search</span>

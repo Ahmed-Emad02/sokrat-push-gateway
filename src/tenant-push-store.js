@@ -4,6 +4,12 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { fingerprintToken } = require('./push-errors');
 
+const TOKEN_TTL_MS = 90 * 86400000;
+
+function tokenFreshness(row) {
+    return Number(row.lastSuccessAt || row.updatedAt) || 0;
+}
+
 function createTenantPushStore(file, approvedAssignment) {
     let tail = Promise.resolve();
     function matchesAssignment(device, assignment) {
@@ -75,6 +81,11 @@ function createTenantPushStore(file, approvedAssignment) {
                 if (!await isCurrent(registration)) {
                     throw new Error('Device approval changed');
                 }
+                const previous = data.devices.find(d => d.deviceId === registration.deviceId);
+                if (previous?.telemetry) {
+                    registration.telemetry = previous.telemetry;
+                    registration.telemetryAt = previous.telemetryAt;
+                }
                 data.devices = data.devices.filter(d => d.deviceId !== registration.deviceId && !conflicts.includes(d));
                 data.devices.push(registration);
             });
@@ -105,6 +116,45 @@ function createTenantPushStore(file, approvedAssignment) {
         },
         removePush(deviceId) { return update(data => { data.devices = data.devices.filter(d => d.deviceId !== deviceId); }); },
         /**
+         * Persist a small, sanitized diagnostic snapshot from the authenticated
+         * device. Raw tokens, credentials and caller data are never accepted.
+         */
+        recordTelemetry(deviceId, telemetry) {
+            const allowed = new Set(['appVersion', 'sipState', 'gatewayState', 'appState',
+                'networkConnected', 'networkType', 'activeCall', 'fcmTokenPresent',
+                'fcmLastTokenAt', 'fcmLastError', 'pushRegisteredAt', 'pushLastError',
+                'reportedAt']);
+            if (!deviceId || !telemetry || typeof telemetry !== 'object' || Array.isArray(telemetry)) return false;
+            const clean = {};
+            for (const [key, value] of Object.entries(telemetry)) {
+                if (!allowed.has(key) || value === null || value === undefined) continue;
+                if (!['string', 'number', 'boolean'].includes(typeof value)) continue;
+                clean[key] = String(value).slice(0, 256);
+            }
+            return update(async data => {
+                let row = data.devices.find(d => d.deviceId === deviceId);
+                if (!row) {
+                    const assignment = typeof approvedAssignment === 'function'
+                        ? await approvedAssignment(deviceId) : null;
+                    if (!assignment) return false;
+                    row = {
+                        deviceId,
+                        deviceUuid: assignment.deviceUuid,
+                        pbxId: assignment.pbxId,
+                        extension: assignment.extension,
+                        authorizationRevision: assignment.authorizationRevision || 0,
+                        updatedAt: Date.now(),
+                    };
+                    data.devices.push(row);
+                } else if (typeof approvedAssignment === 'function' && !await isCurrent(row)) {
+                    return false;
+                }
+                row.telemetry = clean;
+                row.telemetryAt = Date.now();
+                return true;
+            });
+        },
+        /**
          * Quarantine the token that actually failed. The caller supplies the
          * fingerprint captured at dispatch time; if the device has since
          * registered a newer token, this is a no-op. This prevents a slow error
@@ -133,11 +183,38 @@ function createTenantPushStore(file, approvedAssignment) {
                 return removed;
             });
         },
+        /**
+         * Record a successful provider send. The delivery timestamp is the
+         * authoritative freshness signal for TTL cleanup; registration time is
+         * only a fallback for tokens that have never delivered.
+         */
+        markDelivered(deviceId, tokenFingerprint) {
+            return update(data => {
+                const row = data.devices.find(d => d.deviceId === deviceId);
+                if (!row || !tokenFingerprint || fingerprintToken(row.token) !== tokenFingerprint) return false;
+                row.lastSuccessAt = Date.now();
+                return true;
+            });
+        },
+        /**
+         * Drop registrations whose token has exceeded the delivery TTL. The
+         * 90-day filter in listPush/listAllPush prevents delivery but leaving
+         * the rows behind kept stale devices visible in the dashboard forever.
+         * This is a hard cleanup: a device must register again after expiry.
+         */
+        pruneExpiredPush(now = Date.now()) {
+            return update(data => {
+                const cutoff = now - TOKEN_TTL_MS;
+                const before = data.devices.length;
+                data.devices = data.devices.filter(row => tokenFreshness(row) > cutoff);
+                return before - data.devices.length;
+            });
+        },
         async listPush(pbxId, extension) {
             await tail;
             const data = await load();
             const candidates = data.devices.filter(d => d.pbxId === pbxId && d.extension === extension &&
-                d.pushState !== 'invalid' && d.updatedAt > Date.now() - 90 * 86400000);
+                d.pushState !== 'invalid' && tokenFreshness(d) > Date.now() - TOKEN_TTL_MS);
             const current = await Promise.all(candidates.map(isCurrent));
             return candidates.filter((_, index) => current[index]);
         },
@@ -151,4 +228,4 @@ function createTenantPushStore(file, approvedAssignment) {
         }
     };
 }
-module.exports = { createTenantPushStore };
+module.exports = { createTenantPushStore, TOKEN_TTL_MS };

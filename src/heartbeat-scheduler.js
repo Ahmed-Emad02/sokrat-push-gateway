@@ -23,6 +23,7 @@ function createHeartbeatScheduler({
     listDevices,
     sendToDevice,
     markInvalid,
+    markDelivered,
     enabled = false,
     staleMs = DEFAULT_STALE_MS,
     tickMs = DEFAULT_TICK_MS,
@@ -111,6 +112,10 @@ function createHeartbeatScheduler({
                         timestamp: String(current),
                     });
                     sent++;
+                    if (typeof markDelivered === 'function') {
+                        try { await markDelivered(device); }
+                        catch (_) { /* delivery accounting is best effort */ }
+                    }
                     state.failures = 0;
                     state.nextWakeAt = current + stale;
                     logger.log(`[heartbeat] wake sent extension=${device.extension} pbx=${device.pbxId}`);

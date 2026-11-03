@@ -422,6 +422,47 @@ test('enrollment → approval → revoke works end to end over HTTP', async (t) 
     assert.equal(harness.store.verifyDeviceSecret(deviceId, approved.body.secret).ok, false);
 });
 
+test('prune-stale revokes duplicate approvals without revoking the active device', async (t) => {
+    const harness = await createHarness();
+    const pushFile = path.join(harness.dir, 'push.json');
+    const previousPushFile = process.env.TENANT_PUSH_FILE;
+    process.env.TENANT_PUSH_FILE = pushFile;
+    t.after(async () => {
+        if (previousPushFile === undefined) delete process.env.TENANT_PUSH_FILE;
+        else process.env.TENANT_PUSH_FILE = previousPushFile;
+        await harness.close();
+    });
+    const csrf = await harness.login();
+    const pbx = await harness.store.addPbx(PBX_BODY, { actor: 'test' });
+    await harness.store.updatePbx(pbx.id, { management: { approvalStatus: 'approved' } });
+    await harness.store.addExtension({ pbxId: pbx.id, extension: '150', status: 'enabled',
+        maxDevices: 5, allowedPlatforms: ['android'] });
+    const createDevice = async (uuid, name) => {
+        const invite = await harness.store.createEnrollmentToken({ label: name }, { actor: 'test' });
+        const enrolled = await harness.store.enrollDevice({
+            token: invite.token, platform: 'android', deviceUuid: uuid, deviceName: name
+        });
+        return harness.store.approveDevice(enrolled.device.id, {
+            pbxId: pbx.id, extension: '150'
+        }, { actor: 'test' });
+    };
+    const active = await createDevice('11111111-1111-4111-8111-111111111111', 'Active');
+    const stale = await createDevice('22222222-2222-4222-8222-222222222222', 'Stale');
+    await fsp.writeFile(pushFile, JSON.stringify({ version: 1, devices: [{
+        deviceId: active.device.id, deviceUuid: active.device.deviceUuid,
+        pbxId: pbx.id, extension: '150', platform: 'android',
+        token: 'active-token', updatedAt: Date.now(), authorizationRevision: 0
+    }] }), { mode: 0o600 });
+    const result = await harness.client.request('/control/api/devices/prune-stale', {
+        method: 'POST', body: {}, csrf
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.devices, [stale.device.id]);
+    const state = await harness.client.request('/control/api/state');
+    assert.equal(state.body.devices.filter(device => device.status === 'approved').length, 1);
+    assert.equal(state.body.devices.find(device => device.id === active.device.id).status, 'approved');
+});
+
 test('enrollment rejects a missing or forged token; UUID alone is not auth', async (t) => {
     const harness = await createHarness();
     t.after(() => harness.close());

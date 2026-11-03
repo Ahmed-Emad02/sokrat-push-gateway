@@ -1072,3 +1072,69 @@ tbody tr:hover td {
     border-block-end: 0;
   }
 }
+
+.device-telemetry {
+  margin-top: 0.5rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.device-telemetry > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 1rem;
+  margin: 0.55rem 0 0.15rem;
+}
+
+.telemetry-pair {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.telemetry-pair dt {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.telemetry-pair dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 42rem) {
+  .telemetry-grid { grid-template-columns: 1fr; }
+}
+
+.push-active {
+  color: var(--success);
+}
+
+.approved-diagnostics > td {
+  padding: 0 0.9rem 0.85rem;
+  border-top: 0;
+  background: color-mix(in srgb, var(--surface) 92%, var(--border));
+}
+
+.approved-diagnostics .device-telemetry {
+  margin-top: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.approved-diagnostics .telemetry-grid {
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.6rem 1.5rem;
+}
+
+@media (max-width: 42rem) {
+  .approved-diagnostics > td { padding-inline: 0.45rem; }
+  .approved-diagnostics .telemetry-grid { grid-template-columns: 1fr; }
+}

@@ -6,10 +6,12 @@ const { fingerprintToken } = require('../src/push-errors');
 test('permanently invalid FCM token is quarantined instead of remaining dispatchable', async () => {
     const routes = {};
     const marked = [];
+    let pruned = 0;
     const store = {
         listPush: async () => [{ deviceId: 'a', token: 'dead-token' }],
         approvedAssignment: async () => ({ pbxId: 'A', extension: '100', deviceUuid: 'uuid-a' }),
         markInvalid: async (deviceId, tokenFingerprint, code) => marked.push({ deviceId, tokenFingerprint, code }),
+        pruneInvalidPush: async () => { pruned += 1; },
     };
     installTenantPush({ post: (path, handler) => { routes[path] = handler; } }, {
         store, authorizePbx: async () => ({ id: 'A' }), authorizeDevice: async () => null,
@@ -21,6 +23,7 @@ test('permanently invalid FCM token is quarantined instead of remaining dispatch
     assert.equal(res.body.status, 'partial');
     assert.equal(res.body.failed, 1);
     assert.deepEqual(marked, [{ deviceId: 'a', tokenFingerprint: fingerprintToken('dead-token'), code: 'messaging/registration-token-not-registered' }]);
+    assert.equal(pruned, 1);
 });
 
 test('two valid devices on one extension both receive the incoming-call push', async () => {

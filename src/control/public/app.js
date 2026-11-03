@@ -14,6 +14,7 @@
 
 (() => {
     const base = String(document.body.dataset.controlBase || '').replace(/\/+$/, '');
+    const openDiagnostics = new Set();
     const endpoint = (path) => `${base}${path}`;
 
     const refs = {
@@ -115,6 +116,8 @@
         approvedFilters: document.getElementById('approved-filters'),
         approvedFilterClear: document.getElementById('approved-filter-clear'),
         approvedFilterCount: document.getElementById('approved-filter-count'),
+        approvedTokenWarning: document.getElementById('approved-token-warning'),
+        approvedCleanup: document.getElementById('approved-cleanup'),
         activityList: document.getElementById('activity-list'),
         activityEmpty: document.getElementById('activity-empty'),
         showTunnelTokenBtn: document.getElementById('show-tunnel-token-btn'),
@@ -684,7 +687,9 @@
     function deviceSubtitle(device) {
         const parts = [device.platform];
         if (device.osVersion) parts.push(device.osVersion);
-        if (device.appVersion) parts.push(`app ${device.appVersion}`);
+        const currentAppVersion = device.telemetry && device.telemetry.appVersion;
+        if (currentAppVersion) parts.push(`app ${currentAppVersion}`);
+        else if (device.appVersion) parts.push(`app ${device.appVersion}`);
         parts.push(shortId(device.deviceUuid));
         return parts.join(' · ');
     }
@@ -1561,8 +1566,86 @@
         }));
     }
 
+
+    function formatDiagnosticTime(value) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) return dateFormatter.format(number);
+        return formatTime(value);
+    }
+
+    function renderPushState(device) {
+        if (device.legacyPushRegistered && !device.pushRegistered) {
+            return el('span', {
+                class: device.legacyPushError ? 'cell-sub push-missing' : 'cell-sub',
+                text: `Legacy push token registered${device.legacyPushUpdatedAt ? ` · ${formatDiagnosticTime(device.legacyPushUpdatedAt)}` : ''}${device.legacyPushError ? ` · ${device.legacyPushError}` : ''}`
+            });
+        }
+        if (device.pushRegistered) {
+            return el('span', {
+                class: 'cell-sub push-active',
+                text: `Push token active${device.lastRegisteredAt ? ` · ${formatDiagnosticTime(device.lastRegisteredAt)}` : ''}`
+            });
+        }
+        if (device.pushState === 'invalid') {
+            return el('span', { class: 'cell-sub push-missing', text: 'Token invalid — re-register required' });
+        }
+        if (device.pushState === 'stale') {
+            return el('span', { class: 'cell-sub push-missing', text: 'Push token stale — re-register required' });
+        }
+        if (device.pushRegistered === false) {
+            return el('span', { class: 'cell-sub push-missing', text: 'No push token — notifications unavailable' });
+        }
+        return null;
+    }
+
+    function renderDeviceTelemetry(device) {
+        const telemetry = device.telemetry && typeof device.telemetry === 'object' ? device.telemetry : null;
+        const labels = {
+            appVersion: 'App version',
+            sipState: 'SIP',
+            gatewayState: 'Gateway',
+            appState: 'App state',
+            networkConnected: 'Network connected',
+            networkType: 'Network type',
+            activeCall: 'Active call',
+            fcmTokenPresent: 'FCM token',
+            fcmLastTokenAt: 'FCM token refreshed',
+            fcmLastError: 'FCM error',
+            pushRegisteredAt: 'Push registered',
+            pushLastError: 'Push error',
+            reportedAt: 'Reported at',
+        };
+        const rows = telemetry ? Object.entries(telemetry)
+            .filter(([key, value]) => !['fcmLastError', 'pushLastError'].includes(key) || String(value ?? '').trim())
+            .map(([key, value]) => {
+                let text = String(value ?? '—');
+                if (key === 'fcmLastTokenAt' || key === 'pushRegisteredAt') text = formatDiagnosticTime(value);
+                if (key === 'reportedAt') text = formatTime(value);
+                if (key === 'networkConnected') text = value === 'true' || value === true ? 'Yes' : 'No';
+                if (key === 'fcmTokenPresent') text = value === 'true' || value === true ? 'Present' : 'Missing';
+                return el('div', { class: 'telemetry-pair' },
+                    el('dt', { text: labels[key] || key }),
+                    el('dd', { text: text || '—' }));
+            }) : [];
+        const details = el('details', { class: 'device-telemetry' },
+            el('summary', {
+                text: telemetry
+                    ? `Device diagnostics · ${formatDiagnosticTime(device.telemetryAt)}`
+                    : 'Device diagnostics · none received',
+            }),
+            telemetry
+                ? el('dl', { class: 'telemetry-grid' }, ...rows)
+                : el('p', { class: 'hint', text: 'This device has not sent a diagnostic heartbeat yet.' }));
+        details.open = openDiagnostics.has(device.id);
+        details.addEventListener('toggle', () => {
+            if (details.open) openDiagnostics.add(device.id);
+            else openDiagnostics.delete(device.id);
+        });
+        return details;
+    }
     function renderApproved() {
-        const allApproved = (snapshot.devices || []).filter((device) => device.status === 'approved');
+        const allApproved = (snapshot.devices || []).filter((device) => device.status === 'approved')
+            .sort((a, b) => (Date.parse(b.reviewedAt || '') || 0) - (Date.parse(a.reviewedAt || '') || 0));
         const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
         const approved = filterRecords(
             'approved',
@@ -1571,40 +1654,39 @@
         );
 
         updateFilterEmpty('approved', approved.length, allApproved.length);
-        refs.approvedRows.replaceChildren(...approved.map((device) => {
+        const noToken = allApproved.filter(device => !device.pushRegistered && !device.legacyPushRegistered);
+        const noTokenExtensions = [...new Set(noToken.map(device => String(device.extension || 'unknown')))];
+        if (refs.approvedTokenWarning) {
+            refs.approvedTokenWarning.hidden = noToken.length === 0;
+            refs.approvedTokenWarning.textContent = noToken.length
+                ? `${noToken.length} approved device${noToken.length === 1 ? '' : 's'} have no active push token (${noTokenExtensions.join(', ')}).`
+                : '';
+        }
+        refs.approvedRows.replaceChildren(...approved.flatMap((device) => {
             const title = deviceTitle(device);
             const pbx = device.pbxId ? pbxById.get(device.pbxId) : null;
-            return el('tr', {},
-                el('th', { scope: 'row', dataset: { label: 'Device' } },
-                    title,
-                    el('span', { class: 'cell-sub', text: deviceSubtitle(device) }),
-                    device.pushState === 'invalid'
-                        ? el('span', {
-                            class: 'cell-sub push-missing',
-                            text: 'Token invalid — re-register required'
-                        })
-                        : device.pushState === 'stale'
-                            ? el('span', {
-                                class: 'cell-sub push-missing',
-                                text: 'Push token stale — re-register required'
-                            })
-                            : device.pushRegistered === false
-                            ? el('span', {
-                                class: 'cell-sub push-missing',
-                                text: 'No push token — notifications unavailable'
-                            })
-                            : null),
-                el('td', { dataset: { label: 'Platform' }, text: device.platform }),
-                el('td', { dataset: { label: 'PBX' }, text: pbx ? pbx.name : 'Removed PBX' }),
-                el('td', { dataset: { label: 'Extension' }, text: device.extension || '—' }),
-                el('td', { dataset: { label: 'Approved' }, text: formatTime(device.reviewedAt) }),
-                el('td', { dataset: { label: 'Actions' } },
-                    el('button', {
-                        class: 'btn btn-danger btn-sm',
-                        type: 'button',
-                        onclick: () => revokeDevice(device)
-                    }, 'Revoke'))
-            );
+            return [
+                el('tr', {},
+                    el('th', { scope: 'row', dataset: { label: 'Device' } },
+                        title,
+                        el('span', { class: 'cell-sub', text: deviceSubtitle(device) }),
+                        renderPushState(device)),
+                    el('td', { dataset: { label: 'Platform' }, text: device.platform }),
+                    el('td', { dataset: { label: 'PBX' }, text: pbx ? pbx.name : 'Removed PBX' }),
+                    el('td', { dataset: { label: 'Extension' }, text: device.extension || '—' }),
+                    el('td', { dataset: { label: 'Approved' }, text: formatTime(device.reviewedAt) }),
+                    el('td', { dataset: { label: 'Actions' } },
+                        el('button', {
+                            class: 'btn btn-danger btn-sm',
+                            type: 'button',
+                            onclick: () => revokeDevice(device)
+                        }, 'Revoke'))
+                ),
+                // Keep diagnostics out of the narrow Device cell and give the
+                // grid the full width of the table on every viewport.
+                el('tr', { class: 'approved-diagnostics' },
+                    el('td', { colspan: '6' }, renderDeviceTelemetry(device)))
+            ];
         }));
     }
 
@@ -2033,6 +2115,25 @@
         }
     }
 
+    async function pruneStaleApprovals() {
+        const confirmed = window.confirm(
+            'Revoke approved devices that have no active push token when another device on the same PBX and extension is active? Active devices are kept.'
+        );
+        if (!confirmed) return;
+        setBusy(refs.approvedCleanup, true, 'Cleaning…');
+        try {
+            const result = await api('/api/devices/prune-stale', { method: 'POST', body: {} });
+            showStatus(result.revoked
+                ? `Removed ${result.revoked} stale approved device${result.revoked === 1 ? '' : 's'}.`
+                : 'No stale duplicate approvals found.');
+            await refresh();
+        } catch (error) {
+            handleError(error);
+        } finally {
+            setBusy(refs.approvedCleanup, false);
+        }
+    }
+
     async function revokeDevice(device) {
         const confirmed = window.confirm(
             `Revoke "${deviceTitle(device)}"? Its stored secret is deleted immediately.`
@@ -2156,6 +2257,7 @@
         refs.extForm.addEventListener('submit', submitExtension);
         if (refs.inviteForm) refs.inviteForm.addEventListener('submit', createInvite);
         refs.signOut.addEventListener('click', signOut);
+        if (refs.approvedCleanup) refs.approvedCleanup.addEventListener('click', pruneStaleApprovals);
         refs.pbxManaged.addEventListener('change', syncManagementFields);
         refs.pbxCancel.addEventListener('click', () => {
             resetPbxForm();

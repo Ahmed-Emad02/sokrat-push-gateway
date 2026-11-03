@@ -34,6 +34,7 @@
 const express = require('express');
 const { ControlStoreError, CLAIM_RETRY_HINT_MS } = require('./store');
 const { LoginRateLimiter, clientIp, isPrivateIp } = require('./auth');
+const { verifyLocalExtensionHeaders } = require('../local-sip-auth');
 
 const BODY_LIMIT = '8kb';
 
@@ -218,6 +219,46 @@ function createEnrollmentRouter(options = {}) {
 
     const addressOf = (req) => clientIp(req, { trustProxy }) || 'unknown';
 
+    async function maybeAutoApproveLocal(result, req) {
+        if (process.env.LOCAL_AUTO_APPROVE !== 'true' || result.status !== 'pending') return result;
+        const pbxId = String(process.env.LOCAL_PBX_ID || '').trim();
+        const body = req.body || {};
+        const extension = String(body.extension || result.device?.suggestedExtension || '').trim();
+        const headers = {
+            'X-Sokrat-Extension': req.get('X-Sokrat-Extension'),
+            'X-Sokrat-Timestamp': req.get('X-Sokrat-Timestamp'),
+            'X-Sokrat-Signature': req.get('X-Sokrat-Signature'),
+        };
+        if (!/^pbx_[a-f0-9]{16}$/.test(pbxId) || !extension ||
+            headers['X-Sokrat-Extension'] !== extension) {
+            console.warn('[enrollment] local auto proof missing', {
+                extension,
+                pbxId: /^pbx_[a-f0-9]{16}$/.test(pbxId),
+                headerExtension: Boolean(headers['X-Sokrat-Extension']),
+                sameExtension: headers['X-Sokrat-Extension'] === extension,
+            });
+            return result;
+        }
+        if (!await verifyLocalExtensionHeaders(extension, headers)) return result;
+        try {
+            const approved = await store.approveDevice(result.device.id, {
+                pbxId,
+                extension,
+                autoCreatePolicy: true,
+            }, { actor: 'local-auto-approval' });
+            return {
+                ...result,
+                device: approved.device,
+                status: 'approved',
+            };
+        } catch (error) {
+            // Leave the request pending if the local policy/cap rejects it.
+            // Never log the submitted SIP password.
+            console.warn('[enrollment] local auto-approval rejected:', error?.code || 'unknown');
+            return result;
+        }
+    }
+
     // --- enrollment --------------------------------------------------------
 
     router.post('/enroll', wrap(async (req, res) => {
@@ -241,6 +282,7 @@ function createEnrollmentRouter(options = {}) {
             throw error;
         }
 
+        result = await maybeAutoApproveLocal(result, req);
         const device = result.device;
         res.status(result.created ? 201 : 200).json({
             success: true,

@@ -165,6 +165,26 @@ function createControlRouter(options = {}) {
 
     const router = express.Router();
 
+    function readPushRegistry() {
+        const pushPath = process.env.TENANT_PUSH_FILE || '/var/lib/sokrat-gateway/push.json';
+        try {
+            const registry = JSON.parse(fs.readFileSync(pushPath, 'utf8'));
+            if (registry && registry.version === 1 && Array.isArray(registry.devices)) {
+                return new Map(registry.devices.map((row) => [row.deviceId, row]));
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function hasActivePush(device, row) {
+        return Boolean(row &&
+            typeof row.token === 'string' && row.token.length > 0 &&
+            row.pbxId === device.pbxId &&
+            row.extension === String(device.extension || '') &&
+            (row.authorizationRevision || 0) === (device.authorizationRevision || 0) &&
+            (row.lastSuccessAt || row.updatedAt) > Date.now() - 90 * 86400 * 1000);
+    }
+
     // --- cross-cutting -----------------------------------------------------
 
     router.use((req, res, next) => {
@@ -370,30 +390,33 @@ function createControlRouter(options = {}) {
 
     // --- dashboard state ---------------------------------------------------
 
-    router.get('/api/state', requireSession, (req, res) => {
+    router.get('/api/state', requireSession, async (req, res) => {
         const snapshot = store.snapshot();
         // Add a read-only, boolean-only view of the push registry so the
         // operator can see approved devices that cannot receive a wake push.
         // The registry itself remains owned by the tenant runtime.
-        const pushPath = process.env.TENANT_PUSH_FILE || '/var/lib/sokrat-gateway/push.json';
-        let pushRows = null;
+        const pushRows = readPushRegistry();
+        let legacyRows = [];
         try {
-            const registry = JSON.parse(fs.readFileSync(pushPath, 'utf8'));
-            if (registry && registry.version === 1 && Array.isArray(registry.devices)) {
-                pushRows = new Map(registry.devices.map((row) => [row.deviceId, row]));
-            }
-        } catch (_) {}
+            legacyRows = typeof options.getLegacyPushRows === 'function'
+                ? await options.getLegacyPushRows() : [];
+        } catch (_) { legacyRows = []; }
+        const legacyByUuid = new Map((legacyRows || [])
+            .filter(row => row && row.deviceUuid)
+            .map(row => [row.deviceUuid, row]));
         const devices = (snapshot.devices || []).map((device) => {
-            if (!pushRows) return device;
+            const legacy = device.deviceUuid ? legacyByUuid.get(device.deviceUuid) : null;
+            const legacyFields = {
+                legacyPushRegistered: Boolean(legacy),
+                legacyPushUpdatedAt: legacy?.updatedAt || null,
+                legacyPushError: legacy?.lastError || null,
+                legacyAppVersion: legacy?.appVersion || null,
+            };
+            if (!pushRows) return { ...device, ...legacyFields };
             const row = pushRows.get(device.id);
-            const current = row &&
-                typeof row.token === 'string' && row.token.length > 0 &&
-                row.pbxId === device.pbxId &&
-                row.extension === String(device.extension || '') &&
-                (row.authorizationRevision || 0) === (device.authorizationRevision || 0) &&
-                row.updatedAt > Date.now() - 90 * 86400 * 1000;
+            const current = hasActivePush(device, row);
             const stale = row && typeof row.token === 'string' && row.token.length > 0 &&
-                row.updatedAt <= Date.now() - 90 * 86400 * 1000;
+                (row.lastSuccessAt || row.updatedAt) <= Date.now() - 90 * 86400 * 1000;
             return {
                 ...device,
                 pushRegistered: Boolean(current),
@@ -401,6 +424,9 @@ function createControlRouter(options = {}) {
                 pushError: row?.lastError || null,
                 invalidAt: row?.invalidAt || null,
                 lastRegisteredAt: row?.updatedAt || null,
+                telemetry: row?.telemetry || null,
+                telemetryAt: row?.telemetryAt || null,
+                ...legacyFields,
             };
         });
         res.json({
@@ -887,6 +913,38 @@ function createControlRouter(options = {}) {
             actor: actorFor(req)
         });
         res.json({ success: true, device });
+    }));
+
+    /**
+     * Revoke approved duplicate approvals that cannot receive pushes when the
+     * same PBX/extension still has an active token-bearing device. This applies
+     * to every extension, never to a hard-coded test device. Active devices are
+     * never revoked; multiple active registrations are preserved.
+     */
+    router.post('/api/devices/prune-stale', requireSession, requireCsrf, wrap(async (req, res) => {
+        const snapshot = store.snapshot();
+        const rows = readPushRegistry();
+        if (!rows) return res.status(503).json({ success: false, error: 'push_registry_unavailable' });
+        const groups = new Map();
+        for (const device of (snapshot.devices || []).filter(item => item.status === 'approved')) {
+            const row = rows.get(device.id);
+            const active = hasActivePush(device, row);
+            const key = `${device.pbxId || ''}\u0000${device.extension || ''}`;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push({ device, active });
+        }
+        const revoked = [];
+        for (const group of groups.values()) {
+            if (group.length < 2 || !group.some(item => item.active)) continue;
+            for (const item of group) {
+                if (item.active) continue;
+                await store.revokeDevice(item.device.id, {
+                    reason: 'stale duplicate approval cleanup'
+                }, { actor: actorFor(req) });
+                revoked.push(item.device.id);
+            }
+        }
+        res.json({ success: true, revoked: revoked.length, devices: revoked });
     }));
 
     // --- fallbacks ---------------------------------------------------------

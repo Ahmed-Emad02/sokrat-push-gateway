@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { createTenantPushStore } = require('../src/tenant-push-store');
+const { createTenantPushStore, TOKEN_TTL_MS } = require('../src/tenant-push-store');
 const { fingerprintToken } = require('../src/push-errors');
 
 function device(overrides = {}) {
@@ -330,6 +330,60 @@ test('a delayed old-token failure cannot invalidate a newly registered token', a
 
     assert.equal(await store.markInvalid(second.deviceId, fingerprintToken(second.token), 'messaging/registration-token-not-registered'), true);
     assert.deepEqual(await store.listPush(second.pbxId, second.extension), []);
+});
+
+test('records sanitized telemetry before a push token exists and preserves it on registration', async t => {
+    const current = device();
+    const { store, read } = await fixture(t, [], [current]);
+    assert.equal(await store.recordTelemetry(current.deviceId, {
+        sipState: 'registered',
+        fcmTokenPresent: 'false',
+        pushLastError: 'x'.repeat(500),
+        token: 'must-not-be-stored',
+    }), true);
+    const before = (await read())[0];
+    assert.equal(before.token, undefined);
+    assert.equal(before.telemetry.sipState, 'registered');
+    assert.equal(before.telemetry.fcmTokenPresent, 'false');
+    assert.equal(before.telemetry.pushLastError.length, 256);
+    assert.equal(before.telemetry.token, undefined);
+    assert.equal(typeof before.telemetryAt, 'number');
+
+    await store.savePush(current);
+    const after = (await read())[0];
+    assert.equal(after.token, current.token);
+    assert.deepEqual(after.telemetry, before.telemetry);
+    assert.equal(after.telemetryAt, before.telemetryAt);
+
+    assert.equal(await store.recordTelemetry(current.deviceId, { sipState: 'failed' }), true);
+    assert.equal((await read())[0].telemetry.sipState, 'failed');
+});
+
+test('expired registrations are pruned and fresh registrations survive', async t => {
+    const now = Date.now();
+    const expired = device({ deviceId: 'expired', token: 'expired-token', updatedAt: now - TOKEN_TTL_MS - 1 });
+    const fresh = device({ deviceId: 'fresh', token: 'fresh-token', updatedAt: now - 1000 });
+    const { store, read } = await fixture(t, [expired, fresh], [expired, fresh]);
+    assert.equal(await store.pruneExpiredPush(now), 1);
+    assert.deepEqual(await read(), [fresh]);
+    assert.equal(await store.pruneExpiredPush(now), 0);
+});
+
+test('a successful delivery refreshes TTL even when registration is old', async t => {
+    const now = Date.now();
+    const row = device({ deviceId: 'delivered', token: 'delivered-token', updatedAt: now - TOKEN_TTL_MS - 1 });
+    const { store, read } = await fixture(t, [row], [row]);
+    assert.equal(await store.markDelivered(row.deviceId, fingerprintToken(row.token)), true);
+    const [fresh] = await read();
+    assert.equal(typeof fresh.lastSuccessAt, 'number');
+    assert.equal(await store.pruneExpiredPush(now), 0);
+    assert.deepEqual(await store.listPush(row.pbxId, row.extension), [fresh]);
+});
+
+test('telemetry without an approved assignment is rejected without writing', async t => {
+    const { store, read } = await fixture(t, [], []);
+    assert.equal(await store.recordTelemetry('missing-device', { sipState: 'failed' }), false);
+    assert.deepEqual(await read(), []);
 });
 
 test('pruning removes a quarantined token even when its approval is still current', async t => {

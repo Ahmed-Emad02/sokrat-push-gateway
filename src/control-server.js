@@ -4,6 +4,45 @@ const express = require('express');
 const { createControl } = require('./control');
 const { createSystemMetrics } = require('./system-metrics');
 
+
+function createLegacyPushLookup() {
+    let pool = null;
+    let cachedAt = 0;
+    let cached = [];
+    return async function getLegacyPushRows() {
+        if (Date.now() - cachedAt < 5000) return cached;
+        if (!process.env.DB_HOST || !process.env.DB_NAME) return [];
+        try {
+            const mysql = require('mysql2/promise');
+            pool ||= mysql.createPool({
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT) || 3306,
+                user: process.env.DB_USER || 'root',
+                password: process.env.DB_PASS !== undefined ? process.env.DB_PASS : '',
+                database: process.env.DB_NAME,
+                connectionLimit: 2,
+                waitForConnections: true,
+            });
+            const [rows] = await pool.query(
+                'SELECT extension, platform, device_uuid, app_version, last_push_error, updated_at FROM mobile_devices'
+            );
+            cached = rows.map((row) => ({
+                extension: row.extension,
+                platform: row.platform,
+                deviceUuid: row.device_uuid,
+                appVersion: row.app_version,
+                lastError: row.last_push_error,
+                updatedAt: row.updated_at,
+            }));
+            cachedAt = Date.now();
+            return cached;
+        } catch (error) {
+            console.warn('[control] legacy push lookup failed:', error.message);
+            return cached;
+        }
+    };
+}
+
 async function start() {
     let tenant = null;
     let metrics = null;
@@ -14,6 +53,7 @@ async function start() {
         allowPublic: isPublic,
         getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
         getMetrics: () => metrics?.snapshot?.() || null,
+        getLegacyPushRows: createLegacyPushLookup(),
         onDeviceApproved: async (device) => {
             const pushStore = tenant?.runtime?.pushStore;
             if (pushStore && typeof pushStore.reassign === 'function') {

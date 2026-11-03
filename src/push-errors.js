@@ -21,6 +21,8 @@ const PERMANENT_TOKEN_ERRORS = new Set([
     'notregistered',
     'invalid device token',
     'registration token is not registered',
+    'registration token is not a valid fcm registration token',
+    'registration token is not a valid registration token',
 ]);
 
 function normalizeErrorCode(error) {
@@ -32,8 +34,13 @@ function normalizeErrorCode(error) {
 
 function isPermanentTokenError(error) {
     const code = normalizeErrorCode(error);
+    const message = String(error?.message || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (message && /registration token is not a valid(?: fcm)? registration token/.test(message)) return true;
     if (!code) return false;
     if (PERMANENT_TOKEN_ERRORS.has(code)) return true;
+    // Firebase Admin sometimes wraps a malformed token as invalid-argument
+    // while keeping a specific token message in error.message.
+    if (/registration token is not a valid(?: fcm)? registration token/i.test(code)) return true;
     // Firebase sometimes wraps the code in a longer message. Match only the
     // known permanent suffixes, never the generic word "invalid".
     return /(?:^|\s)(?:messaging\/)?(?:registration-token-not-registered|invalid-registration-token|unregistered|baddevicetoken|notregistered)(?:$|\s|:)/i.test(code);

@@ -47,7 +47,7 @@ async function startTenantServer(control, env = process.env) {
     };
     const heartbeatOptions = {
         enabled: env.SOKRAT_HEARTBEAT_ENABLED === 'true',
-        staleMs: positive(env.SOKRAT_HEARTBEAT_STALE_MS, 180000),
+        staleMs: positive(env.SOKRAT_HEARTBEAT_STALE_MS, 60000),
         tickMs: positive(env.SOKRAT_HEARTBEAT_TICK_MS, 30000),
         pbxIds: String(env.SOKRAT_HEARTBEAT_PBX_IDS || '').split(',').map(value => value.trim()).filter(Boolean),
     };

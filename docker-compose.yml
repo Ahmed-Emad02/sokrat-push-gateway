@@ -61,7 +61,9 @@ services:
       - AMI_USER=${AMI_USER:-}
       - AMI_PASS=${AMI_PASS:-}
       - FCM_ENABLED=${FCM_ENABLED:-true}
-      - APNS_ENABLED=${APNS_ENABLED:-false}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-/var/lib/sokrat-gateway/push/firebase-service-account.json}
+      - APNS_ENABLED=${APNS_ENABLED:-auto}
+      - APNS_KEY_FILE=${APNS_KEY_FILE:-/var/lib/sokrat-gateway/push/apns/AuthKey.p8}
       - SOKRAT_HEARTBEAT_ENABLED=${SOKRAT_HEARTBEAT_ENABLED:-true}
       - SOKRAT_HEARTBEAT_STALE_MS=${SOKRAT_HEARTBEAT_STALE_MS:-60000}
       - SOKRAT_HEARTBEAT_TICK_MS=${SOKRAT_HEARTBEAT_TICK_MS:-30000}

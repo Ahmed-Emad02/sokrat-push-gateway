@@ -332,6 +332,8 @@ echo -e "Service account sokrat-push: uid=${SOKRAT_UID} gid=${SOKRAT_GID}"
 
 chown -R "${SOKRAT_UID}:${SOKRAT_GID}" /var/lib/sokrat-gateway
 chmod 0700 /var/lib/sokrat-gateway
+PUSH_DIR=/var/lib/sokrat-gateway/push
+install -d -m 0700 -o "${SOKRAT_UID}" -g "${SOKRAT_GID}" "$PUSH_DIR" "$PUSH_DIR/apns"
 
 # Other Sokrat components may already own files under this shared directory.
 chown root:root /etc/sokrat
@@ -347,28 +349,40 @@ chmod 0700 /var/lib/sokrat-tenant-provisioning/runtime-state /var/lib/sokrat-ten
 chown "root:${SOKRAT_GID}" /var/lib/sokrat-tenant-provisioning
 chmod 0750 /var/lib/sokrat-tenant-provisioning
 
-# Provider credentials are supplied from a root-only directory; none are
-# embedded in this repository or in the installer.
-install -d -m 0700 /etc/sokrat
-
-# Resolve FCM service-account JSON from an explicit flag or a root-only secrets directory.
-
+# Provider credentials are optional at install time. The control dashboard can
+# install them later; keep them in the gateway service-owned credential store.
 if [ -z "$FCM_FILE" ] && [ -f "$SECRETS_DIR/firebase-service-account.json" ]; then
     FCM_FILE="$SECRETS_DIR/firebase-service-account.json"
 fi
 if [ -n "$FCM_FILE" ]; then
-    install -d -m 0700 /etc/sokrat
-    install -m 0640 -o root -g "$SOKRAT_GID" "$FCM_FILE" /etc/sokrat/firebase-service-account.json
+    install -m 0600 -o "${SOKRAT_UID}" -g "${SOKRAT_GID}" "$FCM_FILE" "$PUSH_DIR/firebase-service-account.json"
     [ -n "${_FCM_TEMP:-}" ] && rm -f "$_FCM_TEMP"
-    echo "FCM: service account installed at /etc/sokrat/firebase-service-account.json"
+    echo "FCM: service account installed in the dashboard-managed credential store"
 fi
 
-if [ "${APNS_ENABLED:-false}" = true ]; then
+if [ "${APNS_ENABLED:-auto}" = true ] || [ -f "$SECRETS_DIR/apns-AuthKey.p8" ]; then
     for f in apns-AuthKey.p8 apns-key-id apns-team-id; do
-        [ -f "$SECRETS_DIR/$f" ] || { echo "APNS_ENABLED is true but $SECRETS_DIR/$f is missing" >&2; exit 1; }
+        [ -f "$SECRETS_DIR/$f" ] || { echo "APNs credential set is incomplete: $SECRETS_DIR/$f is missing" >&2; exit 1; }
     done
-    install -d -m 0700 /etc/sokrat/apns
-    install -m 0600 -o root -g "$SOKRAT_GID" "$SECRETS_DIR/apns-AuthKey.p8" /etc/sokrat/apns/AuthKey.p8
+    install -m 0600 -o "${SOKRAT_UID}" -g "${SOKRAT_GID}" \
+        "$SECRETS_DIR/apns-AuthKey.p8" "$PUSH_DIR/apns/AuthKey.p8"
+    python3 - "$PUSH_DIR/apns.json" "$SECRETS_DIR" <<'PY'
+import json
+import pathlib
+import sys
+
+target = pathlib.Path(sys.argv[1])
+source = pathlib.Path(sys.argv[2])
+metadata = {
+    "keyId": (source / "apns-key-id").read_text().strip(),
+    "teamId": (source / "apns-team-id").read_text().strip(),
+    "topic": (source / "apns-topic").read_text().strip() if (source / "apns-topic").exists() else "com.sokrat.voice.voip",
+    "environment": (source / "apns-env").read_text().strip() if (source / "apns-env").exists() else "production",
+}
+target.write_text(json.dumps(metadata, indent=2) + "\n")
+PY
+    chown "${SOKRAT_UID}:${SOKRAT_GID}" "$PUSH_DIR/apns/AuthKey.p8" "$PUSH_DIR/apns.json"
+    chmod 0600 "$PUSH_DIR/apns/AuthKey.p8" "$PUSH_DIR/apns.json"
 fi
 
 # Issue/reuse the IP-only certificate before the container starts.
@@ -470,7 +484,9 @@ DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
 CONTROL_ALLOW_PUBLIC=$([ "$CONTROL_PUBLIC" = public ] && echo true || echo false)
 CONTROL_PORT=8002
 FCM_ENABLED=${FCM_ENABLED:-true}
-APNS_ENABLED=${APNS_ENABLED:-false}
+GOOGLE_APPLICATION_CREDENTIALS=${PUSH_DIR}/firebase-service-account.json
+APNS_ENABLED=${APNS_ENABLED:-auto}
+APNS_KEY_FILE=${PUSH_DIR}/apns/AuthKey.p8
 SOKRAT_HEARTBEAT_ENABLED=${SOKRAT_HEARTBEAT_ENABLED:-true}
 SOKRAT_HEARTBEAT_STALE_MS=${SOKRAT_HEARTBEAT_STALE_MS:-60000}
 SOKRAT_HEARTBEAT_TICK_MS=${SOKRAT_HEARTBEAT_TICK_MS:-30000}

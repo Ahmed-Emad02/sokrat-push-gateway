@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 const { ControlStoreError } = require('./store');
+const pushCredentials = require('./push-credentials');
 const { getProvisioningStatus, resolveStatusFile } = require('./provisioning');
 const {
     SessionManager,
@@ -479,6 +480,29 @@ function createControlRouter(options = {}) {
         catch (_) { firewall = null; }
         res.set('Cache-Control', 'no-store');
         res.json({ success: true, firewall });
+    });
+
+    router.get('/api/push-credentials', requireSession, (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, credentials: pushCredentials.status() });
+    });
+
+    router.post('/api/push-credentials/fcm', requireSession, requireCsrf, (req, res) => {
+        try {
+            const credentials = pushCredentials.saveFcm(req.body && req.body.serviceAccount);
+            res.json({ success: true, credentials });
+        } catch (error) {
+            res.status(400).json({ success: false, error: error.message || 'FCM credentials were refused' });
+        }
+    });
+
+    router.post('/api/push-credentials/apns', requireSession, requireCsrf, (req, res) => {
+        try {
+            const credentials = pushCredentials.saveApns(req.body || {});
+            res.json({ success: true, credentials });
+        } catch (error) {
+            res.status(400).json({ success: false, error: error.message || 'APNs credentials were refused' });
+        }
     });
 
     router.get('/api/tunnel-token', requireSession, (req, res) => {

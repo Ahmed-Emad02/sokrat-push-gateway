@@ -41,6 +41,9 @@ test('fresh installer enables an installer-managed host firewall', () => {
     assert.match(installer, /ufw --force enable/);
     assert.match(installer, /host-firewall\.json/);
     assert.match(installer, /GATEWAY_SSH_PORT/);
+    assert.match(installer, /PUSH_DIR=\/var\/lib\/sokrat-gateway\/push/);
+    assert.match(installer, /APNS_ENABLED=\$\{APNS_ENABLED:-auto\}/);
+    assert.match(installer, /GOOGLE_APPLICATION_CREDENTIALS=\$\{PUSH_DIR\}\/firebase-service-account\.json/);
 });
 test('renewal hook is shipped and private build credentials stay out of Docker context', () => {
     const hook = path.resolve(__dirname, '../scripts/deploy-public-certificate.sh');

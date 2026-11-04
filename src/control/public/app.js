@@ -35,6 +35,17 @@
         statCap: document.getElementById('stat-cap'),
         firewallState: document.getElementById('firewall-state'),
         firewallSummary: document.getElementById('firewall-summary'),
+        pushCredentialsToggle: document.getElementById('push-credentials-toggle'),
+        pushCredentialsPanel: document.getElementById('push-credentials-panel'),
+        pushCredentialsStatus: document.getElementById('push-credentials-status'),
+        pushFcmFile: document.getElementById('push-fcm-file'),
+        pushFcmSave: document.getElementById('push-fcm-save'),
+        pushApnsFile: document.getElementById('push-apns-file'),
+        pushApnsKeyId: document.getElementById('push-apns-key-id'),
+        pushApnsTeamId: document.getElementById('push-apns-team-id'),
+        pushApnsTopic: document.getElementById('push-apns-topic'),
+        pushApnsEnvironment: document.getElementById('push-apns-environment'),
+        pushApnsSave: document.getElementById('push-apns-save'),
         activeCallsList: document.getElementById('active-calls-list'),
         activeCallsTotal: document.getElementById('active-calls-total'),
         activeCallsEmpty: document.getElementById('active-calls-empty'),
@@ -1083,6 +1094,89 @@
         }
     }
 
+    function renderPushCredentials(credentials) {
+        if (!refs.pushCredentialsStatus) return;
+        const fcm = credentials && credentials.fcm && credentials.fcm.configured === true;
+        const apns = credentials && credentials.apns && credentials.apns.configured === true;
+        const apnsDetail = apns && credentials.apns.keyId
+            ? ` (${credentials.apns.keyId})`
+            : '';
+        refs.pushCredentialsStatus.textContent =
+            `FCM: ${fcm ? 'configured' : 'not configured'} · APNs: ${apns ? `configured${apnsDetail}` : 'not configured'}`;
+    }
+
+    async function refreshPushCredentials() {
+        if (!refs.pushCredentialsStatus) return;
+        try {
+            const payload = await api('/api/push-credentials');
+            renderPushCredentials(payload && payload.credentials);
+        } catch (_) {
+            refs.pushCredentialsStatus.textContent = 'Push credential status is unavailable.';
+        }
+    }
+
+    async function fileBase64(file) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+        for (let index = 0; index < bytes.length; index += 1) {
+            binary += String.fromCharCode(bytes[index]);
+        }
+        return btoa(binary);
+    }
+
+    async function saveFcmCredentials() {
+        if (!refs.pushFcmFile || !refs.pushFcmSave) return;
+        const file = refs.pushFcmFile.files && refs.pushFcmFile.files[0];
+        if (!file) {
+            showError('Choose an FCM service-account JSON file first.');
+            return;
+        }
+        setBusy(refs.pushFcmSave, true, 'Saving…');
+        try {
+            const serviceAccount = await file.text();
+            const payload = await api('/api/push-credentials/fcm', {
+                method: 'POST',
+                body: { serviceAccount }
+            });
+            renderPushCredentials(payload && payload.credentials);
+            refs.pushFcmFile.value = '';
+            showStatus('FCM credentials saved. The gateway will reload push providers automatically.');
+        } catch (error) {
+            showError(error.message || 'Could not save FCM credentials.');
+        } finally {
+            setBusy(refs.pushFcmSave, false);
+        }
+    }
+
+    async function saveApnsCredentials() {
+        if (!refs.pushApnsFile || !refs.pushApnsSave) return;
+        const file = refs.pushApnsFile.files && refs.pushApnsFile.files[0];
+        if (!file) {
+            showError('Choose an APNs .p8 key file first.');
+            return;
+        }
+        setBusy(refs.pushApnsSave, true, 'Saving…');
+        try {
+            const payload = await api('/api/push-credentials/apns', {
+                method: 'POST',
+                body: {
+                    keyBase64: await fileBase64(file),
+                    keyId: refs.pushApnsKeyId.value.trim(),
+                    teamId: refs.pushApnsTeamId.value.trim(),
+                    topic: refs.pushApnsTopic.value.trim(),
+                    environment: refs.pushApnsEnvironment.value
+                }
+            });
+            renderPushCredentials(payload && payload.credentials);
+            refs.pushApnsFile.value = '';
+            showStatus('APNs credentials saved. The gateway will reload push providers automatically.');
+        } catch (error) {
+            showError(error.message || 'Could not save APNs credentials.');
+        } finally {
+            setBusy(refs.pushApnsSave, false);
+        }
+    }
+
     async function refreshActiveCalls() {
         if (!refs.activeCallsList) return;
         try {
@@ -1172,6 +1266,7 @@
         refs.dashboard.hidden = false;
         refs.signOut.hidden = false;
         await refresh();
+        void refreshPushCredentials();
         startRealtimePolling();
     }
 
@@ -2303,6 +2398,16 @@
         if (refs.inviteForm) refs.inviteForm.addEventListener('submit', createInvite);
         refs.signOut.addEventListener('click', signOut);
         if (refs.approvedCleanup) refs.approvedCleanup.addEventListener('click', pruneStaleApprovals);
+        if (refs.pushCredentialsToggle && refs.pushCredentialsPanel) {
+            refs.pushCredentialsToggle.addEventListener('click', () => {
+                refs.pushCredentialsPanel.hidden = !refs.pushCredentialsPanel.hidden;
+                refs.pushCredentialsToggle.textContent = refs.pushCredentialsPanel.hidden
+                    ? 'Add credentials'
+                    : 'Hide credentials';
+            });
+        }
+        if (refs.pushFcmSave) refs.pushFcmSave.addEventListener('click', saveFcmCredentials);
+        if (refs.pushApnsSave) refs.pushApnsSave.addEventListener('click', saveApnsCredentials);
         refs.pbxManaged.addEventListener('change', syncManagementFields);
         refs.pbxCancel.addEventListener('click', () => {
             resetPbxForm();

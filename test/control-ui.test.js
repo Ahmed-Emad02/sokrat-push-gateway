@@ -75,6 +75,11 @@ test('dashboard exposes installer-managed host firewall status', async () => {
     assert.match(html, /id="firewall-summary"/);
     assert.match(script, /refreshHostFirewall/);
     assert.match(script, /\/api\/host-firewall/);
+    assert.match(html, /id="push-credentials-toggle"/);
+    assert.match(html, /id="push-fcm-file"/);
+    assert.match(html, /id="push-apns-file"/);
+    assert.match(script, /\/api\/push-credentials\/fcm/);
+    assert.match(script, /\/api\/push-credentials\/apns/);
 });
 test('each table has a search box and multi-select filter mount', async () => {
     const [html, script] = await Promise.all([read('index.html'), read('app.js')]);

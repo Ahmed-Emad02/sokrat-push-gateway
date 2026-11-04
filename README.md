@@ -17,10 +17,14 @@ Prerequisites:
 - Ubuntu 24.04 / Debian 12 (tested baseline)
 - a public IPv4 address
 - TCP **80** free for ACME
-- the FCM service-account JSON in a root-only directory on the VPS
 - an email address for Let's Encrypt
 
-Prepare secrets:
+FCM and APNs credentials are **optional during installation**. The gateway
+installs and starts without them; an administrator can add FCM and APNs
+credentials later from the control dashboard under **Push credentials**.
+
+If you want to preload FCM during installation, place it in a root-only
+directory:
 
 ```bash
 sudo install -d -m 0700 /root/sokrat-gateway-secrets
@@ -54,14 +58,14 @@ The installer:
 
 1. installs Docker and the required host tooling
 2. starts a bundled MariaDB instance with a persistent volume
-3. installs the FCM service account root-only
+3. installs any preloaded FCM/APNs credentials service-private
 4. obtains a short-lived Let's Encrypt certificate for the IP
 5. builds and starts the gateway container
 6. starts frps and the secure PBX enrollment service
-7. verifies database, FCM and gateway readiness
+7. verifies database, firewall and gateway readiness
 8. prints the control-dashboard password once
 
-Do **not** embed FCM, APNs, admin, database or pairing secrets in the repository or an installer file. The installer reads them from the root-only secret directory.
+Do **not** embed FCM, APNs, admin, database or pairing secrets in the repository or an installer file. Preloaded provider credentials are copied into the gateway service's private credential directory; dashboard uploads are written there directly and are never returned by the API.
 
 ## Result
 
@@ -103,13 +107,9 @@ If certificate issuance fails, installation fails. Do not use HTTP-only public o
 
 ## Optional APNs
 
-iOS VoIP push is optional. To enable it, place the following root-only files in the secret directory and set `APNS_ENABLED=true` in `/opt/sokrat-push-gateway/.env`, then recreate the gateway:
-
-```text
-apns-AuthKey.p8
-apns-key-id
-apns-team-id
-```
+iOS VoIP push is optional. Add the APNs `.p8` key, key ID, team ID, topic and
+environment from the control dashboard under **Push credentials → APNs**.
+The key is stored service-private and is never returned by the API.
 
 The old production gateway currently has APNs disabled. Do not invent an APNs credential.
 

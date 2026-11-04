@@ -77,6 +77,49 @@
       <p id="firewall-summary" class="hint">Reading installer-managed firewall status.</p>
     </section>
 
+    <section class="card" aria-labelledby="push-title">
+      <div class="card-head">
+        <h2 id="push-title">Push credentials</h2>
+        <button id="push-credentials-toggle" class="btn btn-ghost btn-sm" type="button">Add credentials</button>
+      </div>
+      <p id="push-credentials-status" class="hint">Checking FCM and APNs configuration.</p>
+      <div id="push-credentials-panel" class="stack" hidden>
+        <div class="field">
+          <label for="push-fcm-file">FCM service account JSON</label>
+          <input id="push-fcm-file" type="file" accept=".json,application/json">
+          <span class="hint">Firebase Admin SDK service account. The file is stored service-private and is never returned by the API.</span>
+          <button id="push-fcm-save" class="btn btn-primary" type="button">Save FCM</button>
+        </div>
+        <div class="field">
+          <label for="push-apns-file">APNs .p8 key</label>
+          <input id="push-apns-file" type="file" accept=".p8,application/octet-stream">
+          <span class="hint">Apple VoIP push key. Key ID and team ID are required.</span>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="push-apns-key-id">Key ID</label>
+            <input id="push-apns-key-id" type="text" maxlength="10" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="push-apns-team-id">Team ID</label>
+            <input id="push-apns-team-id" type="text" maxlength="10" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="push-apns-topic">Topic</label>
+            <input id="push-apns-topic" type="text" maxlength="128" value="com.sokrat.voice.voip">
+          </div>
+          <div class="field">
+            <label for="push-apns-environment">Environment</label>
+            <select id="push-apns-environment">
+              <option value="production">Production</option>
+              <option value="development">Development</option>
+            </select>
+          </div>
+        </div>
+        <div><button id="push-apns-save" class="btn btn-primary" type="button">Save APNs</button></div>
+      </div>
+    </section>
+
     <section class="card" aria-labelledby="active-calls-title">
       <div class="card-head">
         <h2 id="active-calls-title">Active calls by PBX</h2>

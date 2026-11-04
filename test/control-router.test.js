@@ -249,6 +249,21 @@ test('host firewall status is authenticated and sanitized', async (t) => {
     assert.deepEqual(response.body.firewall, firewall);
 });
 
+test('push credential status is authenticated and does not expose secrets', async (t) => {
+    const harness = await createHarness();
+    t.after(() => harness.close());
+
+    const anonymous = await harness.anonymous.request('/control/api/push-credentials');
+    assert.equal(anonymous.status, 401);
+
+    await harness.login();
+    const response = await harness.client.request('/control/api/push-credentials');
+    assert.equal(response.status, 200);
+    assert.equal(typeof response.body.credentials.fcm.configured, 'boolean');
+    assert.equal(typeof response.body.credentials.apns.configured, 'boolean');
+    assert.equal(JSON.stringify(response.body).includes('PRIVATE KEY'), false);
+});
+
 test('login sets a hardened cookie, rotates the session token and returns CSRF', async (t) => {
     const harness = await createHarness();
     t.after(() => harness.close());

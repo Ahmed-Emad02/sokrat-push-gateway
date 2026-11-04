@@ -99,22 +99,49 @@ let fcmApp = null;
 let fcmMessaging = null;
 let fcmReady = false;
 
-async function initApns() {
+const PUSH_DIR = '/var/lib/sokrat-gateway/push';
+const PUSH_FCM_FILE = path.join(PUSH_DIR, 'firebase-service-account.json');
+const PUSH_APNS_KEY = path.join(PUSH_DIR, 'apns', 'AuthKey.p8');
+const PUSH_APNS_META = path.join(PUSH_DIR, 'apns.json');
+const PUSH_REVISION_FILE = path.join(PUSH_DIR, 'revision');
+
+function readPushMetadata() {
     try {
-        if (process.env.APNS_ENABLED !== 'true') return;
+        const value = JSON.parse(fs.readFileSync(PUSH_APNS_META, 'utf8'));
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+async function initApns() {
+    apnsProvider = null;
+    apnsReady = false;
+    try {
+        if (process.env.APNS_ENABLED === 'false') return;
         const { ApnsClient, Notification } = require('apns2');
-        const path = require('path');
-        const keyFile = process.env.APNS_KEY_FILE;
-        if (!keyFile) throw new Error('APNS_KEY_FILE not set');
+        const metadata = readPushMetadata();
+        const keyFile = fs.existsSync(PUSH_APNS_KEY)
+            ? PUSH_APNS_KEY
+            : (process.env.APNS_KEY_FILE || '');
+        const keyId = metadata.keyId || process.env.APNS_KEY_ID;
+        const teamId = metadata.teamId || process.env.APNS_TEAM_ID;
+        if (!keyFile || !fs.existsSync(keyFile)) {
+            if (process.env.APNS_ENABLED === 'true') throw new Error('APNs key file not set');
+            return;
+        }
+        if (!keyId || !teamId) throw new Error('APNs key ID and team ID are required');
+        const topic = metadata.topic || process.env.APNS_TOPIC || 'com.sokrat.voice.voip';
+        const environment = metadata.environment || process.env.APNS_ENV || 'production';
 
         const client = new ApnsClient({
             token: {
                 key: path.resolve(keyFile),
-                keyId: process.env.APNS_KEY_ID,
-                teamId: process.env.APNS_TEAM_ID
+                keyId,
+                teamId
             },
             // 'production' | 'development' — voip push issues are sent to production
-            environment: process.env.APNS_ENV || 'production'
+            environment
         });
 
         apnsProvider = {
@@ -130,7 +157,7 @@ async function initApns() {
                         sipWss: payload.sipWss || ''
                     },
                     apns: {
-                        topic: process.env.APNS_TOPIC || 'com.sokrat.voice.voip',
+                        topic,
                         pushType: 'voip',
                         priority: 10,
                         expiration: Math.floor(Date.now() / 1000) + 60
@@ -147,19 +174,27 @@ async function initApns() {
 }
 
 async function initFcm() {
+    fcmMessaging = null;
+    fcmReady = false;
     try {
+        const { initializeApp, cert, deleteApp } = require('firebase-admin/app');
+        const { getMessaging } = require('firebase-admin/messaging');
+        if (fcmApp) {
+            try { await deleteApp(fcmApp); } catch (_) {}
+            fcmApp = null;
+        }
         if (process.env.FCM_ENABLED === 'false') {
             console.log('[push-gateway] FCM explicitly disabled via FCM_ENABLED=false');
             return;
         }
-        const { initializeApp, cert } = require('firebase-admin/app');
-        const { getMessaging } = require('firebase-admin/messaging');
 
         let credentialSource = null;
         const envPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
         const standardPath = '/etc/sokrat/firebase/service-account.json';
 
-        if (envPath && fs.existsSync(envPath)) {
+        if (fs.existsSync(PUSH_FCM_FILE)) {
+            credentialSource = PUSH_FCM_FILE;
+        } else if (envPath && fs.existsSync(envPath)) {
             credentialSource = envPath;
         } else if (fs.existsSync(standardPath)) {
             credentialSource = standardPath;
@@ -170,20 +205,42 @@ async function initFcm() {
             return;
         }
 
-        if (!fcmApp) {
-            fcmApp = initializeApp({
-                credential: cert(credentialSource)
-            });
-        }
+        fcmApp = initializeApp({
+            credential: cert(credentialSource)
+        });
         fcmMessaging = getMessaging(fcmApp);
         fcmReady = true;
-        const credentialLabel = typeof credentialSource === 'string'
-            ? path.basename(credentialSource)
-            : 'bundled-service-account';
+        const credentialLabel = path.basename(credentialSource);
         console.log(`[push-gateway] FCM provider ready (using ${credentialLabel})`);
     } catch (err) {
         console.error('[push-gateway] FCM init failed (continue without):', err.message);
     }
+}
+
+async function reloadPushProviders() {
+    await Promise.all([initApns(), initFcm()]);
+}
+
+function pushRevisionToken() {
+    try {
+        const info = fs.statSync(PUSH_REVISION_FILE);
+        return `${info.mtimeMs}:${info.size}`;
+    } catch (_) {
+        return null;
+    }
+}
+
+function watchPushCredentials() {
+    let revision = pushRevisionToken();
+    const timer = setInterval(() => {
+        const next = pushRevisionToken();
+        if (!next || next === revision) return;
+        revision = next;
+        reloadPushProviders().catch((error) => {
+            console.error('[push-gateway] push credential reload failed:', error.message);
+        });
+    }, 2000);
+    timer.unref();
 }
 
 async function buildCtx() {
@@ -723,7 +780,8 @@ app.post('/api/call/volume', async (req, res) => {
 // Boot
 // ----------------------------------------------------------------------------
 async function start() {
-    await Promise.all([initApns(), initFcm()]);
+    await reloadPushProviders();
+    watchPushCredentials();
     app.listen(PORT, () => {
         console.log(`[Sokrat Push Gateway] listening on :${PORT}`);
         console.log(`[Sokrat Push Gateway] APNs=${apnsReady ? 'ON' : 'OFF'}  FCM=${fcmReady ? 'ON' : 'OFF'}`);
@@ -731,7 +789,7 @@ async function start() {
 }
 module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume,
     GAIN_MIN_DB, GAIN_MAX_DB,
-    initializePush: () => Promise.all([initApns(), initFcm()]) };
+    initializePush: reloadPushProviders };
 
 if (require.main === module) {
     start().catch((err) => {

@@ -35,6 +35,7 @@ from tunnel_media_material import new_material, for_role
 ROOT = Path('/etc/sokrat/tunnel-enrollment')
 CONFIG = ROOT / 'config.json'
 REGISTRY = ROOT / 'installations.json'
+FIREWALL_CLIENT = ROOT / 'firewall-client.json'
 PAIRING_FILE = Path('/etc/sokrat/gateway-tunnel-enrollment.token')
 BRIDGE_FILE = Path('/etc/sokrat/gateway-tunnel-bridge.token')
 PLAN = Path('/var/lib/sokrat-gateway/tenant-plan.json')
@@ -410,8 +411,13 @@ def initialize(args):
     encoded = 'sk_pair_v2_' + base64.urlsafe_b64encode(json.dumps(token,separators=(',',':')).encode()).decode().rstrip('=')
     installer.write(PAIRING_FILE,encoded+'\n',0o600)
     installer.write(BRIDGE_FILE,secrets.token_urlsafe(32)+'\n',0o600)
-    for file in (PAIRING_FILE,BRIDGE_FILE):
+    installer.write(FIREWALL_CLIENT,json.dumps({'pluginPort':args.plugin_port},separators=(',',':'))+'\n',0o640)
+    for file in (PAIRING_FILE,BRIDGE_FILE,FIREWALL_CLIENT):
         os.chown(file,0,group);os.chmod(file,0o640)
+    # The gateway container runs as this group and must traverse the enrollment
+    # directory to read only the non-secret firewall client descriptor. Config,
+    # certificate and private-key files remain root-only 0600.
+    os.chown(ROOT,0,group);os.chmod(ROOT,0o750)
     # The service's ConditionPathExists uses this file as its activation marker.
     # Commit it last, so an interrupted first install can retry rather than
     # appearing initialized without its pairing/bridge credentials.

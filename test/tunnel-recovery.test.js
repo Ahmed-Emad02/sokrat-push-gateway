@@ -47,6 +47,7 @@ for failure in ('account','server.key','pairing','bridge','metadata','trusted'):
   m.initialize(args)
   assert injected[0] and writes[-1]==m.CONFIG
   assert m.PAIRING_FILE in files and m.BRIDGE_FILE in files
+  assert m.FIREWALL_CLIENT in files
   before=dict(files)
   try:m.initialize(args);raise AssertionError('existing credentials overwritten')
   except ValueError:pass

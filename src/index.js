@@ -789,7 +789,7 @@ async function start() {
 }
 module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume,
     GAIN_MIN_DB, GAIN_MAX_DB,
-    initializePush: reloadPushProviders };
+    initializePush: reloadPushProviders, watchPushCredentials };
 
 if (require.main === module) {
     start().catch((err) => {

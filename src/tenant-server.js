@@ -39,6 +39,10 @@ async function startTenantServer(control, env = process.env) {
     const manifestLoader = createTenantManifestLoader(env.TENANT_RUNTIME_FILE);
     await manifestLoader.load();
     const providers = require('./index');
+    // The control process can start before provisioning has installed the
+    // Firebase service account. Watch revisions here as well as in the push
+    // process so keepalive wakes recover without a control restart.
+    providers.watchPushCredentials();
     await providers.initializePush();
     const getRelay = createRelayResolver(control, manifestLoader);
     const positive = (value, fallback) => {

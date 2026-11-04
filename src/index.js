@@ -499,6 +499,7 @@ app.get('/api/push/missed-calls', async (req, res) => {
         if (!devices.length) {
             return res.status(403).json({ success: false, error: 'device is not registered for this extension' });
         }
+        const snapshotAt = new Date();
         const [rows] = await pool.execute(
             `SELECT c.calldate, c.src, c.dst, c.disposition, c.uniqueid,
                     u.name AS caller_name
@@ -526,7 +527,7 @@ app.get('/api/push/missed-calls', async (req, res) => {
                 duration: Number(row.duration || 0)
             });
         }
-        res.json({ success: true, missedCalls });
+        res.json({ success: true, missedCalls, nextSince: snapshotAt.toISOString() });
     } catch (err) {
         console.error('[push-gateway] missed-calls error:', err);
         res.status(500).json({ success: false, error: err.message });

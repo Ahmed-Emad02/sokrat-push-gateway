@@ -77,13 +77,15 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
             catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
             prunePendingCalls();
+            const receivedAt = Date.now();
             pendingCalls.set(`${pbx.id}:${id}`, {
                 pbxId: pbx.id,
                 extension: callee,
                 callId: id,
                 callerId: String(caller || '').slice(0, 128),
                 callerName: String(callerName || caller || '').slice(0, 256),
-                timestamp: Date.now(),
+                timestamp: receivedAt,
+                startedAt: receivedAt,
             });
             const devices = await store.listPush(pbx.id, callee);
             let count = 0;
@@ -208,8 +210,9 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             if (!route) return res.status(403).json({ error: 'Device approval required' });
             const since = new Date(String(req.query.since || ''));
             if (Number.isNaN(since.getTime())) return res.status(400).json({ error: 'since must be an ISO timestamp' });
+            const snapshotAt = Date.now();
             const missedCalls = await store.listMissed(route.pbxId, route.extension, since.getTime());
-            res.json({ success: true, missedCalls });
+            res.json({ success: true, missedCalls, nextSince: new Date(snapshotAt).toISOString() });
         } catch (_) {
             res.status(503).json({ error: 'Missed-call store unavailable' });
         }

@@ -117,10 +117,12 @@ function createTenantPushStore(file, approvedAssignment) {
         removePush(deviceId) { return update(data => { data.devices = data.devices.filter(d => d.deviceId !== deviceId); }); },
         recordMissed(record) {
             return update(data => {
-                const now = Number(record.timestamp) || Date.now();
-                const cutoff = now - 30 * 86400000;
+                const startedAt = Number(record.startedAt ?? record.timestamp) || Date.now();
+                const recordedAt = Number(record.recordedAt) || Date.now();
+                const cutoff = recordedAt - 30 * 86400000;
                 data.missedCalls = Array.isArray(data.missedCalls) ? data.missedCalls : [];
-                data.missedCalls = data.missedCalls.filter(item => item && item.timestamp >= cutoff);
+                data.missedCalls = data.missedCalls.filter(item =>
+                    item && (Number(item.recordedAt ?? item.timestamp) || 0) >= cutoff);
                 if (data.missedCalls.some(item => item && item.callId === record.callId)) return;
                 data.missedCalls.push({
                     pbxId: record.pbxId,
@@ -128,7 +130,11 @@ function createTenantPushStore(file, approvedAssignment) {
                     callId: record.callId,
                     callerId: String(record.callerId || '').slice(0, 128),
                     callerName: String(record.callerName || record.callerId || '').slice(0, 256),
-                    timestamp: now,
+                    // `timestamp` is retained for older clients and display;
+                    // cursor filtering uses the server-side insertion time.
+                    timestamp: startedAt,
+                    startedAt,
+                    recordedAt,
                 });
                 if (data.missedCalls.length > 500) {
                     data.missedCalls = data.missedCalls.slice(-500);
@@ -139,8 +145,11 @@ function createTenantPushStore(file, approvedAssignment) {
             await tail;
             const data = await load();
             return (Array.isArray(data.missedCalls) ? data.missedCalls : [])
-                .filter(item => item && item.pbxId === pbxId && item.extension === extension && item.timestamp >= since)
-                .sort((a, b) => a.timestamp - b.timestamp);
+                .filter(item => item && item.pbxId === pbxId && item.extension === extension &&
+                    (Number(item.recordedAt ?? item.timestamp) || 0) >= since)
+                .sort((a, b) =>
+                    (Number(a.recordedAt ?? a.timestamp) || 0) -
+                    (Number(b.recordedAt ?? b.timestamp) || 0));
         },
         /**
          * Persist a small, sanitized diagnostic snapshot from the authenticated

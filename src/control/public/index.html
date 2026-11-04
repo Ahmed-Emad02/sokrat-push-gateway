@@ -69,6 +69,8 @@
       <li><span class="stat-value" id="stat-cap">0</span><span class="stat-label">Enabled cap</span></li>
     </ul>
 
+    <div class="dashboard-grid">
+    <aside class="context-rail" aria-label="Gateway status">
     <section class="card" aria-labelledby="firewall-title">
       <div class="card-head">
         <h2 id="firewall-title">Host firewall</h2>
@@ -159,8 +161,18 @@
       <p id="load-host" class="hint">Host comparison unavailable.</p>
       <p id="load-note" class="hint">Sampled in-process every 2 seconds; no external watcher.</p>
     </section>
+    </aside>
 
-    <section class="card" aria-labelledby="pbx-title">
+    <div class="workspace-main">
+      <nav class="workspace-tabs" role="tablist" aria-label="Gateway sections">
+        <button class="workspace-tab is-active" id="workspace-tab-pbx" type="button" role="tab" aria-selected="true" aria-controls="panel-pbx" data-workspace-tab="pbx">PBX connections</button>
+        <button class="workspace-tab" id="workspace-tab-extensions" type="button" role="tab" aria-selected="false" aria-controls="panel-extensions" data-workspace-tab="extensions">Extensions</button>
+        <button class="workspace-tab" id="workspace-tab-pending" type="button" role="tab" aria-selected="false" aria-controls="panel-pending" data-workspace-tab="pending">Pending</button>
+        <button class="workspace-tab" id="workspace-tab-approved" type="button" role="tab" aria-selected="false" aria-controls="panel-approved" data-workspace-tab="approved">Approved</button>
+        <button class="workspace-tab" id="workspace-tab-activity" type="button" role="tab" aria-selected="false" aria-controls="panel-activity" data-workspace-tab="activity">Activity</button>
+      </nav>
+
+    <section id="panel-pbx" class="card workspace-panel" role="tabpanel" aria-labelledby="pbx-title" data-workspace-panel="pbx">
       <div class="card-head">
         <h2 id="pbx-title">PBX connections</h2>
 
@@ -315,7 +327,7 @@
       <p id="pbx-empty" class="empty" hidden>No PBX connections yet. Pair one from Sokrat VOIP using the pairing code above.</p>
     </section>
 
-    <section class="card" aria-labelledby="extensions-title">
+    <section id="panel-extensions" class="card workspace-panel" role="tabpanel" aria-labelledby="extensions-title" data-workspace-panel="extensions" hidden>
       <div class="card-head">
         <h2 id="extensions-title">Extensions</h2>
       </div>
@@ -419,7 +431,7 @@
       <p id="ext-empty" class="empty" hidden>No extensions registered yet. Extensions appear automatically when devices are approved.</p>
     </section>
 
-    <section class="card" aria-labelledby="pending-title">
+    <section id="panel-pending" class="card workspace-panel" role="tabpanel" aria-labelledby="pending-title" data-workspace-panel="pending" hidden>
       <div class="card-head">
         <h2 id="pending-title">Pending devices</h2>
         <p class="hint">Choose the PBX and extension, then approve or reject.</p>
@@ -463,7 +475,7 @@
       <p id="pending-empty" class="empty" hidden>No pending devices. A device appears here after it enrolls with its extension and password, or after it redeems an enrollment token.</p>
     </section>
 
-    <section class="card" aria-labelledby="activity-title">
+    <section id="panel-activity" class="card workspace-panel" role="tabpanel" aria-labelledby="activity-title" data-workspace-panel="activity" hidden>
       <div class="card-head">
         <h2 id="activity-title">Recent activity</h2>
         <p class="hint">Last 50 audited events, newest last.</p>
@@ -472,7 +484,7 @@
       <p id="activity-empty" class="empty" hidden>No activity yet.</p>
     </section>
 
-    <section class="card" aria-labelledby="approved-title">
+    <section id="panel-approved" class="card workspace-panel" role="tabpanel" aria-labelledby="approved-title" data-workspace-panel="approved" hidden>
       <div class="card-head">
         <h2 id="approved-title">Approved devices</h2>
         <p class="hint">Revoking drops the stored secret immediately and blocks future pushes.</p>
@@ -506,6 +518,8 @@
       </div>
       <p id="approved-empty" class="empty" hidden>No approved devices yet.</p>
     </section>
+    </div>
+    </div>
   </div>
 </main>
 

@@ -105,3 +105,13 @@ test('each table has a search box and multi-select filter mount', async () => {
     assert.match(script, /selected\.delete\(option\.value\)/);
     assert.match(script, /filter\.search\.value = '';/);
 });
+
+test('dashboard workspace exposes tabbed panels without dropping sections', async () => {
+    const [html, script] = await Promise.all([read('index.html'), read('app.js')]);
+    for (const name of ['pbx', 'extensions', 'pending', 'approved', 'activity']) {
+        assert.match(html, new RegExp(`data-workspace-tab="${name}"`));
+        assert.match(html, new RegExp(`data-workspace-panel="${name}"`));
+    }
+    assert.match(script, /function activateWorkspaceTab\(name\)/);
+    assert.match(script, /data-workspace-tab/);
+});

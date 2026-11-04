@@ -141,6 +141,20 @@
 
     if (!refs.main || !refs.loginForm || !refs.pbxRows || !refs.extForm || !refs.extRows) return;
 
+    const workspaceTabs = [...document.querySelectorAll('[data-workspace-tab]')];
+    const workspacePanels = [...document.querySelectorAll('[data-workspace-panel]')];
+
+    function activateWorkspaceTab(name) {
+        for (const button of workspaceTabs) {
+            const active = button.dataset.workspaceTab === name;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-selected', String(active));
+        }
+        for (const panel of workspacePanels) {
+            panel.hidden = panel.dataset.workspacePanel !== name;
+        }
+    }
+
     const tableFilters = {
         pbx: {
             search: refs.pbxSearch,
@@ -2397,6 +2411,9 @@
         refs.extForm.addEventListener('submit', submitExtension);
         if (refs.inviteForm) refs.inviteForm.addEventListener('submit', createInvite);
         refs.signOut.addEventListener('click', signOut);
+        for (const button of workspaceTabs) {
+            button.addEventListener('click', () => activateWorkspaceTab(button.dataset.workspaceTab));
+        }
         if (refs.approvedCleanup) refs.approvedCleanup.addEventListener('click', pruneStaleApprovals);
         if (refs.pushCredentialsToggle && refs.pushCredentialsPanel) {
             refs.pushCredentialsToggle.addEventListener('click', () => {

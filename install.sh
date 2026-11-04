@@ -19,6 +19,7 @@ SECRETS_DIR="${GATEWAY_SECRETS_DIR:-/root/sokrat-gateway-secrets}"
 TRANSPORT="${SOKRAT_TRANSPORT:-openvpn-frp}"
 MEDIA_POOL="${SOKRAT_MEDIA_POOL:-10.253.0.0/22}"
 FCM_FILE="${GATEWAY_FCM_FILE:-}"
+ADMIN_PASSWORD_FILE="${GATEWAY_ADMIN_PASSWORD_FILE:-}"
 SHOW_ADMIN_PASSWORD="${SHOW_ADMIN_PASSWORD:-false}"
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 FIREWALL_MODE="${GATEWAY_FIREWALL_MODE:-auto}"
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
         --media-pool) MEDIA_POOL="${2:-}"; shift 2 ;;
         --secrets-dir) SECRETS_DIR="${2:-}"; shift 2 ;;
         --fcm-file) FCM_FILE="${2:-}"; shift 2 ;;
+        --admin-password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
         --show-admin-password) SHOW_ADMIN_PASSWORD=true; shift ;;
         --firewall) FIREWALL_MODE="${2:-}"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;

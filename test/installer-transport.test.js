@@ -35,6 +35,11 @@ test('installer carries TLS options and activates host enrollment for pairing', 
     assert.match(installer, /Employee public onboarding NOT READY/);
     assert.doesNotMatch(installer, /Generated random admin password:.*ADMIN_PASS/);
 });
+test('installer parses the documented admin password file option', () => {
+    assert.match(installer, /ADMIN_PASSWORD_FILE="\$\{GATEWAY_ADMIN_PASSWORD_FILE:-\}"/);
+    assert.match(installer, /--admin-password-file\) ADMIN_PASSWORD_FILE=/);
+});
+
 test('fresh installer treats host firewall setup as non-blocking by default', () => {
     assert.match(installer, /FIREWALL_MODE="\$\{GATEWAY_FIREWALL_MODE:-auto\}"/);
     assert.match(installer, /--firewall off/);

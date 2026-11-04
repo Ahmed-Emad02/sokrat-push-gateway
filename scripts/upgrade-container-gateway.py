@@ -71,7 +71,7 @@ def check_mounts(service, container):
 
 
 def validate(service, container, image):
-    allowed = {'build', 'command', 'entrypoint', 'container_name', 'environment', 'image', 'logging',
+    allowed = {'build', 'command', 'entrypoint', 'container_name', 'depends_on', 'environment', 'healthcheck', 'image', 'logging',
                'network_mode', 'restart', 'volumes'}
     if (set(service) - allowed or service.get('container_name') != SERVICE
             or service.get('command') is not None or service.get('entrypoint') is not None):

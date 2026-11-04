@@ -40,7 +40,7 @@ function setup(t) {
     fs.copyFileSync(source, path.join(root, 'scripts/upgrade-container-gateway.py'));
     fs.writeFileSync(path.join(root, 'bin/docker'), fakeDocker, { mode: 0o755 });
     fs.writeFileSync(path.join(root, 'docker-compose.yml'), 'fixture\n');
-    fs.writeFileSync(path.join(root, '.env'), 'SOKRAT_UID=1234\nSOKRAT_GID=2345\n', { mode: 0o600 });
+    fs.writeFileSync(path.join(root, '.env'), 'SOKRAT_UID=1234\nSOKRAT_GID=2345\nDB_ROOT_PASSWORD=fixture-db-root\nDB_PASS=fixture-db-pass\n', { mode: 0o600 });
     const dirs = ['etc-sokrat', 'state', 'provisioning', 'log'];
     for (const dir of dirs) fs.mkdirSync(path.join(root, dir), { mode: 0o750 });
     const secret = path.join(root, 'etc-sokrat', 'firebase-service-account.json');
@@ -177,7 +177,9 @@ test('accepts the actual Compose JSON shape for the shipped configuration', t =>
         cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: root },
     });
     if (rendered.error && rendered.error.code === 'ENOENT') return t.skip('Docker Compose CLI unavailable');
-    if (rendered.status !== 0) return t.skip('Docker Compose config unavailable');
+    if (rendered.status !== 0) {
+        assert.fail(`Docker Compose config failed: ${rendered.stderr || rendered.stdout}`);
+    }
     const service = JSON.parse(rendered.stdout).services['sokrat-gateway'];
     service.volumes = fixture.service.volumes;
     fixture.service = service;

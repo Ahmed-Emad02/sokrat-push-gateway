@@ -35,6 +35,13 @@ test('installer carries TLS options and activates host enrollment for pairing', 
     assert.match(installer, /Employee public onboarding NOT READY/);
     assert.doesNotMatch(installer, /Generated random admin password:.*ADMIN_PASS/);
 });
+test('fresh installer enables an installer-managed host firewall', () => {
+    assert.match(installer, /UFW was installed but could not be enabled/);
+    assert.match(installer, /ufw default deny incoming/);
+    assert.match(installer, /ufw --force enable/);
+    assert.match(installer, /host-firewall\.json/);
+    assert.match(installer, /GATEWAY_SSH_PORT/);
+});
 test('renewal hook is shipped and private build credentials stay out of Docker context', () => {
     const hook = path.resolve(__dirname, '../scripts/deploy-public-certificate.sh');
     assert.equal(spawnSync('bash', ['-n', hook]).status, 0);

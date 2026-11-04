@@ -2,6 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const { createControl } = require('./control');
+const { readHostFirewall } = require('./control/host-firewall');
 const { createSystemMetrics } = require('./system-metrics');
 
 
@@ -53,6 +54,7 @@ async function start() {
         allowPublic: isPublic,
         getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
         getMetrics: () => metrics?.snapshot?.() || null,
+        getHostFirewall: () => readHostFirewall(),
         getLegacyPushRows: createLegacyPushLookup(),
         onDeviceApproved: async (device) => {
             const pushStore = tenant?.runtime?.pushStore;

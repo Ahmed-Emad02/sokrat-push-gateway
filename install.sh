@@ -478,27 +478,111 @@ SOKRAT_HEARTBEAT_PBX_IDS=${SOKRAT_HEARTBEAT_PBX_IDS:-}
 EOF
 chmod 0600 .env
 
-echo -e "${GREEN}[6/8] Opening Host Firewall Ports...${NC}"
+echo -e "${GREEN}[6/8] Configuring Host Firewall...${NC}"
 
 # The container uses host networking, so the host firewall is authoritative.
-# Tenant relay ports (3500-3654) are opened per-PBX by the local adapter.
-if command -v ufw > /dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow "${HTTP_PORT}/tcp" > /dev/null
-    ufw allow "${WS_PORT}/tcp" > /dev/null
-    ufw allow 7000/tcp > /dev/null
-    ufw allow 7443/tcp > /dev/null
-    if [ "$TLS_READY" = true ]; then
-        ufw allow "${HTTPS_PORT}/tcp" > /dev/null
-        ufw allow "${WSS_PORT}/tcp" > /dev/null
-    fi
-    ufw allow 3478/tcp > /dev/null
-    ufw allow 3478/udp > /dev/null
-    ufw allow 3500:3654/tcp > /dev/null
-    ufw allow 3500:3654/udp > /dev/null
-    echo -e "${GREEN}✓ UFW rules added for ${HTTP_PORT}, ${WS_PORT}, 443, 7000, 3478 and 3500-3654.${NC}"
-else
-    echo -e "${YELLOW}⚠ UFW is not active; ensure your provider firewall allows ${HTTP_PORT}, ${WS_PORT}, 443, 7000, 3478 and 3500-3654.${NC}"
+# Empty VPS images commonly have no firewall manager installed. Install one,
+# keep the management SSH port reachable, and default to deny-incoming.
+FIREWALL_MANAGER=""
+FIREWALL_PORTS=()
+FIREWALL_STATUS_FILE=/etc/sokrat/host-firewall.json
+
+SSH_PORT="${GATEWAY_SSH_PORT:-}"
+if [ -z "$SSH_PORT" ] && [ -n "${SSH_CONNECTION:-}" ]; then
+    read -r _ _ _ SSH_PORT <<< "$SSH_CONNECTION"
 fi
+if [ -z "$SSH_PORT" ] && command -v sshd > /dev/null; then
+    SSH_PORT=$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }')
+fi
+SSH_PORT="${SSH_PORT:-22}"
+if [[ ! "$SSH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( SSH_PORT > 65535 )); then
+    echo -e "${RED}Could not determine a safe SSH port; set GATEWAY_SSH_PORT.${NC}" >&2
+    exit 1
+fi
+
+add_firewall_port() {
+    FIREWALL_PORTS+=("$1")
+}
+
+add_firewall_port "${SSH_PORT}/tcp"
+add_firewall_port "${HTTP_PORT}/tcp"
+add_firewall_port "${WS_PORT}/tcp"
+add_firewall_port "7000/tcp"
+add_firewall_port "7443/tcp"
+add_firewall_port "3478/tcp"
+add_firewall_port "3478/udp"
+add_firewall_port "3500:3654/tcp"
+add_firewall_port "3500:3654/udp"
+if [ "$TLS_READY" = true ]; then
+    add_firewall_port "${HTTPS_PORT}/tcp"
+    add_firewall_port "${WSS_PORT}/tcp"
+fi
+
+if command -v ufw > /dev/null; then
+    if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw default deny incoming > /dev/null
+        ufw default allow outgoing > /dev/null
+    fi
+    for port in "${FIREWALL_PORTS[@]}"; do
+        ufw allow "$port" > /dev/null
+    done
+    ufw --force enable > /dev/null
+    ufw status 2>/dev/null | grep -q "Status: active" || {
+        echo -e "${RED}UFW is installed but could not be enabled.${NC}" >&2
+        exit 1
+    }
+    FIREWALL_MANAGER=ufw
+elif command -v firewall-cmd > /dev/null; then
+    systemctl enable --now firewalld > /dev/null 2>&1 || true
+    firewall-cmd --permanent --add-service=ssh > /dev/null
+    for port in "${FIREWALL_PORTS[@]}"; do
+        firewall-cmd --permanent --add-port="${port/:/-}" > /dev/null
+    done
+    firewall-cmd --reload > /dev/null
+    firewall-cmd --state 2>/dev/null | grep -q "running" || {
+        echo -e "${RED}firewalld is present but could not be started.${NC}" >&2
+        exit 1
+    }
+    FIREWALL_MANAGER=firewalld
+elif command -v apt-get > /dev/null; then
+    apt-get update > /dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ufw > /dev/null
+    ufw default deny incoming > /dev/null
+    ufw default allow outgoing > /dev/null
+    for port in "${FIREWALL_PORTS[@]}"; do
+        ufw allow "$port" > /dev/null
+    done
+    ufw --force enable > /dev/null
+    ufw status 2>/dev/null | grep -q "Status: active" || {
+        echo -e "${RED}UFW was installed but could not be enabled.${NC}" >&2
+        exit 1
+    }
+    FIREWALL_MANAGER=ufw
+else
+    echo -e "${RED}No supported firewall manager found; install UFW or firewalld and rerun.${NC}" >&2
+    exit 1
+fi
+
+python3 - "$FIREWALL_STATUS_FILE" "$FIREWALL_MANAGER" "$SSH_PORT" "$TLS_READY" "${FIREWALL_PORTS[@]}" <<'PY'
+import datetime
+import json
+import sys
+
+path, manager, ssh_port, tls, *ports = sys.argv[1:]
+record = {
+    "configured": True,
+    "manager": manager,
+    "sshPort": int(ssh_port),
+    "tls": tls == "true",
+    "ports": ports,
+    "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(record, handle, separators=(",", ":"))
+    handle.write("\n")
+PY
+chmod 0644 "$FIREWALL_STATUS_FILE"
+echo -e "${GREEN}✓ ${FIREWALL_MANAGER} active; SSH ${SSH_PORT}/tcp and gateway ports allowed.${NC}"
 
 echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
 

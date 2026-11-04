@@ -33,6 +33,8 @@
         statPending: document.getElementById('stat-pending'),
         statApproved: document.getElementById('stat-approved'),
         statCap: document.getElementById('stat-cap'),
+        firewallState: document.getElementById('firewall-state'),
+        firewallSummary: document.getElementById('firewall-summary'),
         activeCallsList: document.getElementById('active-calls-list'),
         activeCallsTotal: document.getElementById('active-calls-total'),
         activeCallsEmpty: document.getElementById('active-calls-empty'),
@@ -952,6 +954,7 @@
     let pollInterval = null;
     let activeCallsInterval = null;
     let metricsInterval = null;
+    let firewallInterval = null;
 
     function formatMetric(value, digits = 1, suffix = '') {
         const number = Number(value);
@@ -1050,6 +1053,36 @@
         } catch (_) {}
     }
 
+    function renderHostFirewall(firewall) {
+        if (!refs.firewallState || !refs.firewallSummary) return;
+        const configured = firewall && firewall.configured === true;
+        if (!configured) {
+            refs.firewallState.textContent = 'Not configured';
+            refs.firewallState.style.color = 'var(--warn)';
+            refs.firewallSummary.textContent =
+                'No installer-managed host firewall record was found. Do not expose this gateway until the host firewall is configured.';
+            return;
+        }
+        const manager = String(firewall.manager || 'firewall').toUpperCase();
+        const ports = Array.isArray(firewall.ports) ? firewall.ports : [];
+        refs.firewallState.textContent = `${manager} active`;
+        refs.firewallState.style.color = 'var(--ok)';
+        refs.firewallSummary.textContent =
+            `SSH ${firewall.sshPort || '?'} / tcp · allowed: ${ports.join(', ') || 'none recorded'}`;
+    }
+
+    async function refreshHostFirewall() {
+        if (!refs.firewallState) return;
+        try {
+            const payload = await api('/api/host-firewall');
+            renderHostFirewall(payload && payload.firewall);
+        } catch (_) {
+            refs.firewallState.textContent = 'Unavailable';
+            refs.firewallState.style.color = 'var(--warn)';
+            refs.firewallSummary.textContent = 'The gateway could not read the host firewall status.';
+        }
+    }
+
     async function refreshActiveCalls() {
         if (!refs.activeCallsList) return;
         try {
@@ -1105,6 +1138,14 @@
                 }
             }, 2000);
         }
+        if (!firewallInterval) {
+            void refreshHostFirewall();
+            firewallInterval = setInterval(() => {
+                if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                    void refreshHostFirewall();
+                }
+            }, 30_000);
+        }
     }
 
     function stopRealtimePolling() {
@@ -1119,6 +1160,10 @@
         if (metricsInterval) {
             clearInterval(metricsInterval);
             metricsInterval = null;
+        }
+        if (firewallInterval) {
+            clearInterval(firewallInterval);
+            firewallInterval = null;
         }
     }
 

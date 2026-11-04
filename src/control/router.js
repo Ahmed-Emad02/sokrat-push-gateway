@@ -473,6 +473,14 @@ function createControlRouter(options = {}) {
         res.json({ success: true, metrics });
     });
 
+    router.get('/api/host-firewall', requireSession, (req, res) => {
+        let firewall = null;
+        try { firewall = typeof options.getHostFirewall === 'function' ? options.getHostFirewall() : null; }
+        catch (_) { firewall = null; }
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, firewall });
+    });
+
     router.get('/api/tunnel-token', requireSession, (req, res) => {
         const fs = require('node:fs');
         const tokenPath = '/etc/sokrat/gateway-tunnel.token';

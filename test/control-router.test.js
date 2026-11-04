@@ -226,6 +226,29 @@ test('unauthenticated callers cannot read state or mutate records', async (t) =>
     assert.equal(session.body.csrfToken, undefined);
 });
 
+test('host firewall status is authenticated and sanitized', async (t) => {
+    const firewall = {
+        configured: true,
+        manager: 'ufw',
+        sshPort: 22,
+        tls: true,
+        ports: ['22/tcp', '443/tcp'],
+        updatedAt: '2026-11-04T12:00:00.000Z'
+    };
+    const harness = await createHarness({
+        routerOptions: { getHostFirewall: () => firewall }
+    });
+    t.after(() => harness.close());
+
+    const anonymous = await harness.anonymous.request('/control/api/host-firewall');
+    assert.equal(anonymous.status, 401);
+
+    await harness.login();
+    const response = await harness.client.request('/control/api/host-firewall');
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.firewall, firewall);
+});
+
 test('login sets a hardened cookie, rotates the session token and returns CSRF', async (t) => {
     const harness = await createHarness();
     t.after(() => harness.close());

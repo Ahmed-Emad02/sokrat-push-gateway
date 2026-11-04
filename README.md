@@ -89,6 +89,14 @@ The control dashboard is reachable only through **HTTPS**:
 https://169.58.109.172/control/
 ```
 
+On a blank VPS the installer installs and enables **UFW** with a default-deny
+incoming policy, preserving the SSH management port and opening only the gateway,
+TURN, enrollment and TLS ports it needs. If firewalld is present instead, the
+installer uses it. Installation stops rather than continuing without a host
+firewall. The dashboard’s **Host firewall** card shows the configured manager and
+allowed ports. Provider firewalls/security groups must still permit the same
+ingress ports; the host firewall is not a substitute for them.
+
 Port `8002` remains bound to loopback inside the container and must not be exposed by the host firewall.
 
 If certificate issuance fails, installation fails. Do not use HTTP-only public onboarding.

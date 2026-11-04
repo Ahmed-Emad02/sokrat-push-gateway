@@ -68,6 +68,14 @@ test('the script only talks to same-origin control endpoints', async () => {
         assert.equal(/^https?:\/\//.test(value), false);
     }
 });
+
+test('dashboard exposes installer-managed host firewall status', async () => {
+    const [html, script] = await Promise.all([read('index.html'), read('app.js')]);
+    assert.match(html, /id="firewall-state"/);
+    assert.match(html, /id="firewall-summary"/);
+    assert.match(script, /refreshHostFirewall/);
+    assert.match(script, /\/api\/host-firewall/);
+});
 test('each table has a search box and multi-select filter mount', async () => {
     const [html, script] = await Promise.all([read('index.html'), read('app.js')]);
 

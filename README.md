@@ -93,13 +93,18 @@ The control dashboard is reachable only through **HTTPS**:
 https://169.58.109.172/control/
 ```
 
-On a blank VPS the installer installs and enables **UFW** with a default-deny
-incoming policy, preserving the SSH management port and opening only the gateway,
-TURN, enrollment and TLS ports it needs. If firewalld is present instead, the
-installer uses it. Installation stops rather than continuing without a host
-firewall. The dashboard’s **Host firewall** card shows the configured manager and
-allowed ports. Provider firewalls/security groups must still permit the same
-ingress ports; the host firewall is not a substitute for them.
+On a blank VPS the installer attempts to install and enable **UFW** with a
+default-deny incoming policy, preserving the SSH management port and opening only
+the gateway, TURN, enrollment and TLS ports it needs. If firewalld is present
+instead, the installer uses it.
+
+Firewall setup is non-blocking by default. If no firewall manager is available or
+the manager cannot be configured, the installer warns and continues; the gateway
+still starts. Use `--firewall required` to fail closed instead, or
+`--firewall off` to skip host firewall setup entirely. The dashboard’s
+**Host firewall** card reports whether a manager is configured. Provider
+firewalls/security groups must still permit the gateway ingress ports when
+applicable.
 
 Port `8002` remains bound to loopback inside the container and must not be exposed by the host firewall.
 

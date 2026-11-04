@@ -1071,7 +1071,7 @@
             refs.firewallState.textContent = 'Not configured';
             refs.firewallState.style.color = 'var(--warn)';
             refs.firewallSummary.textContent =
-                'No installer-managed host firewall record was found. Do not expose this gateway until the host firewall is configured.';
+                'The gateway is running without a host-level firewall record. Secure it with the provider firewall, or use --firewall auto/required on the next install.';
             return;
         }
         const manager = String(firewall.manager || 'firewall').toUpperCase();

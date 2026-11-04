@@ -35,10 +35,13 @@ test('installer carries TLS options and activates host enrollment for pairing', 
     assert.match(installer, /Employee public onboarding NOT READY/);
     assert.doesNotMatch(installer, /Generated random admin password:.*ADMIN_PASS/);
 });
-test('fresh installer enables an installer-managed host firewall', () => {
-    assert.match(installer, /UFW was installed but could not be enabled/);
+test('fresh installer treats host firewall setup as non-blocking by default', () => {
+    assert.match(installer, /FIREWALL_MODE="\$\{GATEWAY_FIREWALL_MODE:-auto\}"/);
+    assert.match(installer, /--firewall off/);
     assert.match(installer, /ufw default deny incoming/);
     assert.match(installer, /ufw --force enable/);
+    assert.match(installer, /continuing without host-level filtering/);
+    assert.match(installer, /Gateway will run without a host firewall/);
     assert.match(installer, /host-firewall\.json/);
     assert.match(installer, /GATEWAY_SSH_PORT/);
     assert.match(installer, /PUSH_DIR=\/var\/lib\/sokrat-gateway\/push/);

@@ -21,6 +21,7 @@ MEDIA_POOL="${SOKRAT_MEDIA_POOL:-10.253.0.0/22}"
 FCM_FILE="${GATEWAY_FCM_FILE:-}"
 SHOW_ADMIN_PASSWORD="${SHOW_ADMIN_PASSWORD:-false}"
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
+FIREWALL_MODE="${GATEWAY_FIREWALL_MODE:-auto}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,9 +35,10 @@ while [ $# -gt 0 ]; do
         --secrets-dir) SECRETS_DIR="${2:-}"; shift 2 ;;
         --fcm-file) FCM_FILE="${2:-}"; shift 2 ;;
         --show-admin-password) SHOW_ADMIN_PASSWORD=true; shift ;;
+        --firewall) FIREWALL_MODE="${2:-}"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         -h|--help)
-            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--db bundled] [--control public|private] [--transport openvpn-frp|legacy] [--media-pool CIDR] [--secrets-dir DIR] [--fcm-file PATH] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
+            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--firewall auto|required|off] [--db bundled] [--control public|private] [--transport openvpn-frp|legacy] [--media-pool CIDR] [--secrets-dir DIR] [--fcm-file PATH] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
@@ -53,6 +55,10 @@ case "$CONTROL_PUBLIC" in public) : ;; *) echo "Only --control public is support
 case "$TRANSPORT" in
     openvpn-frp|legacy) ;;
     *) echo "Invalid --transport mode: $TRANSPORT (use openvpn-frp or legacy)" >&2; exit 2 ;;
+esac
+case "$FIREWALL_MODE" in
+    auto|required|off) ;;
+    *) echo "Invalid --firewall mode: $FIREWALL_MODE (use auto, required, or off)" >&2; exit 2 ;;
 esac
 if [ -n "$PUBLIC_HOST_ARG" ]; then export GATEWAY_PUBLIC_HOST="$PUBLIC_HOST_ARG"; fi
 if [ "$TLS_MODE" = "ip" ] && [ -z "$ACME_EMAIL" ]; then
@@ -496,90 +502,100 @@ chmod 0600 .env
 
 echo -e "${GREEN}[6/8] Configuring Host Firewall...${NC}"
 
-# The container uses host networking, so the host firewall is authoritative.
-# Empty VPS images commonly have no firewall manager installed. Install one,
-# keep the management SSH port reachable, and default to deny-incoming.
+# The container uses host networking, so a host firewall is authoritative when
+# present. A blank VPS may have none; auto mode must not block the gateway from
+# installing. Use --firewall required for fail-closed deployments.
 FIREWALL_MANAGER=""
 FIREWALL_PORTS=()
 FIREWALL_STATUS_FILE=/etc/sokrat/host-firewall.json
 
-SSH_PORT="${GATEWAY_SSH_PORT:-}"
-if [ -z "$SSH_PORT" ] && [ -n "${SSH_CONNECTION:-}" ]; then
-    read -r _ _ _ SSH_PORT <<< "$SSH_CONNECTION"
-fi
-if [ -z "$SSH_PORT" ] && command -v sshd > /dev/null; then
-    SSH_PORT=$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }')
-fi
-SSH_PORT="${SSH_PORT:-22}"
-if [[ ! "$SSH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( SSH_PORT > 65535 )); then
-    echo -e "${RED}Could not determine a safe SSH port; set GATEWAY_SSH_PORT.${NC}" >&2
-    exit 1
-fi
-
-add_firewall_port() {
-    FIREWALL_PORTS+=("$1")
-}
-
-add_firewall_port "${SSH_PORT}/tcp"
-add_firewall_port "${HTTP_PORT}/tcp"
-add_firewall_port "${WS_PORT}/tcp"
-add_firewall_port "7000/tcp"
-add_firewall_port "7443/tcp"
-add_firewall_port "3478/tcp"
-add_firewall_port "3478/udp"
-add_firewall_port "3500:3654/tcp"
-add_firewall_port "3500:3654/udp"
-if [ "$TLS_READY" = true ]; then
-    add_firewall_port "${HTTPS_PORT}/tcp"
-    add_firewall_port "${WSS_PORT}/tcp"
-fi
-
-if command -v ufw > /dev/null; then
-    if ! ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw default deny incoming > /dev/null
-        ufw default allow outgoing > /dev/null
-    fi
-    for port in "${FIREWALL_PORTS[@]}"; do
-        ufw allow "$port" > /dev/null
-    done
-    ufw --force enable > /dev/null
-    ufw status 2>/dev/null | grep -q "Status: active" || {
-        echo -e "${RED}UFW is installed but could not be enabled.${NC}" >&2
-        exit 1
-    }
-    FIREWALL_MANAGER=ufw
-elif command -v firewall-cmd > /dev/null; then
-    systemctl enable --now firewalld > /dev/null 2>&1 || true
-    firewall-cmd --permanent --add-service=ssh > /dev/null
-    for port in "${FIREWALL_PORTS[@]}"; do
-        firewall-cmd --permanent --add-port="${port/:/-}" > /dev/null
-    done
-    firewall-cmd --reload > /dev/null
-    firewall-cmd --state 2>/dev/null | grep -q "running" || {
-        echo -e "${RED}firewalld is present but could not be started.${NC}" >&2
-        exit 1
-    }
-    FIREWALL_MANAGER=firewalld
-elif command -v apt-get > /dev/null; then
-    apt-get update > /dev/null
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ufw > /dev/null
-    ufw default deny incoming > /dev/null
-    ufw default allow outgoing > /dev/null
-    for port in "${FIREWALL_PORTS[@]}"; do
-        ufw allow "$port" > /dev/null
-    done
-    ufw --force enable > /dev/null
-    ufw status 2>/dev/null | grep -q "Status: active" || {
-        echo -e "${RED}UFW was installed but could not be enabled.${NC}" >&2
-        exit 1
-    }
-    FIREWALL_MANAGER=ufw
+if [ "$FIREWALL_MODE" = "off" ]; then
+    rm -f "$FIREWALL_STATUS_FILE"
+    echo -e "${YELLOW}⚠ Host firewall setup skipped (--firewall off); gateway will run without host-level filtering.${NC}"
 else
-    echo -e "${RED}No supported firewall manager found; install UFW or firewalld and rerun.${NC}" >&2
-    exit 1
-fi
+    SSH_PORT="${GATEWAY_SSH_PORT:-}"
+    if [ -z "$SSH_PORT" ] && [ -n "${SSH_CONNECTION:-}" ]; then
+        read -r _ _ _ SSH_PORT <<< "$SSH_CONNECTION"
+    fi
+    if [ -z "$SSH_PORT" ] && command -v sshd > /dev/null; then
+        SSH_PORT=$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }')
+    fi
+    SSH_PORT="${SSH_PORT:-22}"
+    if [[ ! "$SSH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( SSH_PORT > 65535 )); then
+        if [ "$FIREWALL_MODE" = "required" ]; then
+            echo -e "${RED}Could not determine a safe SSH port; set GATEWAY_SSH_PORT.${NC}" >&2
+            exit 1
+        fi
+        echo -e "${YELLOW}⚠ Could not determine a safe SSH port; continuing without host firewall setup.${NC}"
+        SSH_PORT=22
+    fi
 
-python3 - "$FIREWALL_STATUS_FILE" "$FIREWALL_MANAGER" "$SSH_PORT" "$TLS_READY" "${FIREWALL_PORTS[@]}" <<'PY'
+    add_firewall_port() {
+        FIREWALL_PORTS+=("$1")
+    }
+
+    add_firewall_port "${SSH_PORT}/tcp"
+    add_firewall_port "${HTTP_PORT}/tcp"
+    add_firewall_port "${WS_PORT}/tcp"
+    add_firewall_port "7000/tcp"
+    add_firewall_port "7443/tcp"
+    add_firewall_port "3478/tcp"
+    add_firewall_port "3478/udp"
+    add_firewall_port "3500:3654/tcp"
+    add_firewall_port "3500:3654/udp"
+    if [ "$TLS_READY" = true ]; then
+        add_firewall_port "${HTTPS_PORT}/tcp"
+        add_firewall_port "${WSS_PORT}/tcp"
+    fi
+
+    configure_ufw() {
+        if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+            ufw default deny incoming > /dev/null || return 1
+            ufw default allow outgoing > /dev/null || return 1
+        fi
+        for port in "${FIREWALL_PORTS[@]}"; do
+            ufw allow "$port" > /dev/null || return 1
+        done
+        ufw --force enable > /dev/null || return 1
+        ufw status 2>/dev/null | grep -q "Status: active" || return 1
+    }
+
+    configure_firewalld() {
+        systemctl enable --now firewalld > /dev/null 2>&1 || true
+        firewall-cmd --permanent --add-service=ssh > /dev/null || return 1
+        for port in "${FIREWALL_PORTS[@]}"; do
+            firewall-cmd --permanent --add-port="${port/:/-}" > /dev/null || return 1
+        done
+        firewall-cmd --reload > /dev/null || return 1
+        firewall-cmd --state 2>/dev/null | grep -q "running" || return 1
+    }
+
+    if command -v ufw > /dev/null; then
+        if configure_ufw; then
+            FIREWALL_MANAGER=ufw
+        else
+            echo -e "${YELLOW}⚠ UFW could not be configured; continuing without host-level filtering.${NC}"
+        fi
+    elif command -v firewall-cmd > /dev/null; then
+        if configure_firewalld; then
+            FIREWALL_MANAGER=firewalld
+        else
+            echo -e "${YELLOW}⚠ firewalld could not be configured; continuing without host-level filtering.${NC}"
+        fi
+    elif command -v apt-get > /dev/null; then
+        if apt-get update > /dev/null 2>&1 &&
+           DEBIAN_FRONTEND=noninteractive apt-get install -y ufw > /dev/null 2>&1 &&
+           configure_ufw; then
+            FIREWALL_MANAGER=ufw
+        else
+            echo -e "${YELLOW}⚠ UFW could not be installed or enabled; continuing without host-level filtering.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ No supported firewall manager found; continuing without host-level filtering.${NC}"
+    fi
+
+    if [ -n "$FIREWALL_MANAGER" ]; then
+        python3 - "$FIREWALL_STATUS_FILE" "$FIREWALL_MANAGER" "$SSH_PORT" "$TLS_READY" "${FIREWALL_PORTS[@]}" <<'PY'
 import datetime
 import json
 import sys
@@ -597,8 +613,15 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(record, handle, separators=(",", ":"))
     handle.write("\n")
 PY
-chmod 0644 "$FIREWALL_STATUS_FILE"
-echo -e "${GREEN}✓ ${FIREWALL_MANAGER} active; SSH ${SSH_PORT}/tcp and gateway ports allowed.${NC}"
+        chmod 0644 "$FIREWALL_STATUS_FILE"
+        echo -e "${GREEN}✓ ${FIREWALL_MANAGER} active; SSH ${SSH_PORT}/tcp and gateway ports allowed.${NC}"
+    elif [ "$FIREWALL_MODE" = "required" ]; then
+        echo -e "${RED}No host firewall could be configured (required mode).${NC}" >&2
+        exit 1
+    else
+        echo -e "${YELLOW}⚠ Gateway will run without a host firewall. Secure the provider firewall or use --firewall required.${NC}"
+    fi
+fi
 
 echo -e "${GREEN}[7/8] Building and Starting Container...${NC}"
 

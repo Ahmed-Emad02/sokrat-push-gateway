@@ -500,6 +500,14 @@ app.get('/api/push/missed-calls', async (req, res) => {
             return res.status(403).json({ success: false, error: 'device is not registered for this extension' });
         }
         const snapshotAt = new Date();
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 100));
+        const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+        // CDR rows are written at hangup, but calldate is the call start time.
+        // Keep a short overlap so a row inserted after a sync snapshot is still
+        // visible. This is a legacy-path fallback; the tenant store uses an
+        // exact insertion cursor.
+        const cdrOverlapMs = 15 * 60 * 1000;
+        const querySince = new Date(since.getTime() - cdrOverlapMs);
         const [rows] = await pool.execute(
             `SELECT c.calldate, c.src, c.dst, c.disposition, c.uniqueid,
                     u.name AS caller_name
@@ -507,13 +515,15 @@ app.get('/api/push/missed-calls', async (req, res) => {
                LEFT JOIN users u ON u.extension = c.src
               WHERE c.dst = ? AND c.calldate >= ?
                 AND c.disposition IN ('NO ANSWER', 'BUSY', 'FAILED')
-              ORDER BY c.calldate ASC
-              LIMIT 100`,
-            [extension, since]
+              ORDER BY c.calldate ASC, c.uniqueid ASC
+              LIMIT ? OFFSET ?`,
+            [extension, querySince, limit + 1, offset]
         );
+        const hasMore = rows.length > limit;
+        const pageRows = hasMore ? rows.slice(0, limit) : rows;
         const seen = new Set();
         const missedCalls = [];
-        for (const row of rows) {
+        for (const row of pageRows) {
             const rawId = String(row.uniqueid || '');
             if (!rawId || seen.has(rawId)) continue;
             seen.add(rawId);
@@ -527,7 +537,15 @@ app.get('/api/push/missed-calls', async (req, res) => {
                 duration: Number(row.duration || 0)
             });
         }
-        res.json({ success: true, missedCalls, nextSince: snapshotAt.toISOString() });
+        res.json({
+            success: true,
+            missedCalls,
+            hasMore,
+            offset,
+            nextSince: hasMore
+                ? since.toISOString()
+                : new Date(snapshotAt.getTime() - cdrOverlapMs).toISOString()
+        });
     } catch (err) {
         console.error('[push-gateway] missed-calls error:', err);
         res.status(500).json({ success: false, error: err.message });

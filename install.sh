@@ -67,6 +67,13 @@ if [ "$TLS_MODE" = "ip" ] && [ -z "$ACME_EMAIL" ]; then
     echo "TLS mode ip requires --email (ACME account email)" >&2
     exit 2
 fi
+if [ "$TLS_MODE" = "ip" ]; then
+    if [[ ! "$ACME_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] ||
+       [[ "${ACME_EMAIL,,}" =~ @(example\.(com|org|net)|localhost)$ ]]; then
+        echo "TLS mode ip requires a real ACME account email (example.com/localhost placeholders are rejected)" >&2
+        exit 2
+    fi
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

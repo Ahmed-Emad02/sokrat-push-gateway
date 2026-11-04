@@ -35,6 +35,11 @@ test('installer carries TLS options and activates host enrollment for pairing', 
     assert.match(installer, /Employee public onboarding NOT READY/);
     assert.doesNotMatch(installer, /Generated random admin password:.*ADMIN_PASS/);
 });
+test('installer rejects placeholder ACME account emails', () => {
+    assert.match(installer, /real ACME account email/);
+    assert.match(installer, /example\.com\/localhost placeholders/);
+});
+
 test('installer parses the documented admin password file option', () => {
     assert.match(installer, /ADMIN_PASSWORD_FILE="\$\{GATEWAY_ADMIN_PASSWORD_FILE:-\}"/);
     assert.match(installer, /--admin-password-file\) ADMIN_PASSWORD_FILE=/);

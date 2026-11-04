@@ -36,7 +36,7 @@ Install:
 
 ```bash
 PUBLIC_HOST=169.58.109.172
-ACME_EMAIL=ops@example.com
+ACME_EMAIL="ops@yourcompany.com"   # must be a real, deliverable address
 
 curl -fsSL https://raw.githubusercontent.com/Ahmed-Emad02/sokrat-push-gateway/main/install.sh \
   | sudo -E bash -s -- \

@@ -4,7 +4,7 @@ const { fingerprintToken, isPermanentTokenError } = require('./push-errors');
 
 // Tenant registries are local to the gateway; never combine PBX-local rows by
 // extension alone. The approved assignment supplies pbxId and extension.
-function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId }) {
+function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId, hasLiveSession = () => false }) {
     // A cancel-call is emitted when the caller gives up before the mobile
     // answers. Remember the matching incoming-call so its caller identity can
     // become a missed-call record even when the device was offline.
@@ -65,7 +65,7 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             res.json({ success: true });
         } catch (_) { res.status(503).json({ error: 'Device registry unavailable' }); }
     });
-    router.post('/incoming-call', async (req, res) => {
+    async function handleIncomingCall(req, res, { liveGated = false } = {}) {
         res.set('Cache-Control', 'no-store');
         try {
             const pbx = await authorizePbx(req);
@@ -76,6 +76,17 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             let id;
             try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
             catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
+            // The PBX can only see a contact, not whether the app socket is
+            // alive. The dedicated live-gated endpoint makes the decision from
+            // the gateway's authenticated SIP session state.
+            if (liveGated) {
+                let live = false;
+                try { live = await hasLiveSession(pbx.id, callee) === true; }
+                catch (_) { live = false; }
+                if (live) {
+                    return res.json({ status: 'already_connected', callId: id, count: 0, failed: 0, skipped: 0, results: [] });
+                }
+            }
             prunePendingCalls();
             const receivedAt = Date.now();
             pendingCalls.set(`${pbx.id}:${id}`, {
@@ -126,7 +137,9 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             console.log(`[tenant-push] incoming-call extension=${callee} callId=${id} devices=${devices.length} dispatched=${count} failed=${failed} skipped=${skipped}`);
             res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed, results });
         } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
-    });
+    }
+    router.post('/incoming-call', (req, res) => handleIncomingCall(req, res));
+    router.post('/incoming-call-live', (req, res) => handleIncomingCall(req, res, { liveGated: true }));
     router.post('/chat-message', async (req, res) => {
         res.set('Cache-Control', 'no-store');
         try {

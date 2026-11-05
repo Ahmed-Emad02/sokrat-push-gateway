@@ -35,6 +35,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     const pushStore = createTenantPushStore(pushFile, assignment);
     const chatTickets = createChatTickets();
     const chatProxy = createChatProxy({ authorizeDevice });
+    const hasLiveSession = (pbxId, extension) => attachedProxy?.hasLiveSession?.(pbxId, extension) === true;
     const heartbeat = createHeartbeatScheduler({
         listDevices: () => pushStore.listAllPush(),
         sendToDevice,
@@ -57,7 +58,8 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     router.get('/capabilities', (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.json({ version: 1, deviceApproval: true, sipPort: 8088,
-            enrollmentPath: '/api/gateway/enrollment', ticketPath: '/api/gateway/sip-ticket' });
+            enrollmentPath: '/api/gateway/enrollment', ticketPath: '/api/gateway/sip-ticket',
+            liveSessionGate: true });
     });
     const tickets = createDeviceTickets({ authorize });
     router.post('/sip-ticket', async (req, res) => {
@@ -120,7 +122,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     });
     installTenantIce(router, { authorizeDevice, getRelay });
     require('./contacts-proxy').installContactsProxy(router, { authorizeDevice });
-    installTenantPush(router, { store: pushStore, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId });
+    installTenantPush(router, { store: pushStore, authorizeDevice, authorizePbx, sendToDevice, normalizeCallId, hasLiveSession });
     return {
         router, assignment, authorize, pushStore, heartbeat, chatProxy,
         getActiveCalls: () => attachedProxy?.getActiveCalls?.() || [],

@@ -149,6 +149,15 @@ must omit query strings even for temporary tickets. Plain HTTP/WS still permits
 on-path interception; short-lived tickets reduce accidental log exposure but
 do not replace transport encryption.
 
+The authenticated PBX hook also exposes `POST /api/gateway/incoming-call-live`.
+It behaves like `/incoming-call`, except an approved device with a live SIP
+WebSocket session and recent pong/message activity is skipped and the response
+is `already_connected` with `count: 0`; no FCM push and no pending missed-call
+record are created. A stale Asterisk contact cannot suppress the wake because
+the gateway's SIP proxy, not the PBX contact table, decides liveness. Older PBX
+dispatchers continue using `/incoming-call`; older gateways return 404 to the
+new endpoint and the new PBX falls back to the previous no-push path.
+
 For example, use a dedicated nginx log format containing `$uri` rather than
 `$request`/`$request_uri` on the authenticated WS location, or disable that
 location's access log. Never log Authorization headers or request bodies.

@@ -116,3 +116,48 @@ test('cancel-call requires PBX authentication', async () => {
     await routes['/cancel-call']({ body: { callee: '100', callId: 'c1' } }, res);
     assert.equal(res.code, 403);
 });
+
+test('a live gateway session suppresses push and does not create a missed-call record', async () => {
+    const routes = {};
+    const sent = [];
+    const missed = [];
+    installTenantPush({ post: (path, handler) => { routes[path] = handler; } }, {
+        store: {
+            listPush: async () => [{ deviceId: 'live', token: 'token' }],
+            approvedAssignment: async () => ({ pbxId: 'A', extension: '100', deviceUuid: 'uuid-live' }),
+            recordMissed: async (...args) => missed.push(args),
+        },
+        authorizePbx: async () => ({ id: 'A' }), authorizeDevice: async () => null,
+        normalizeCallId: value => value,
+        hasLiveSession: async (pbxId, extension) => pbxId === 'A' && extension === '100',
+        sendToDevice: async device => sent.push(device.device_uuid),
+    });
+    const res = { set() {}, status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+    await routes['/incoming-call-live']({ body: { callee: '100', callId: 'live-call' } }, res);
+    assert.equal(res.body.status, 'already_connected');
+    assert.equal(res.body.count, 0);
+    assert.deepEqual(sent, []);
+    const cancel = { set() {}, status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+    await routes['/cancel-call']({ body: { callee: '100', callId: 'live-call' } }, cancel);
+    assert.deepEqual(missed, []);
+});
+
+test('a stale or absent gateway session still dispatches the incoming-call push', async () => {
+    const routes = {};
+    const sent = [];
+    installTenantPush({ post: (path, handler) => { routes[path] = handler; } }, {
+        store: {
+            listPush: async () => [{ deviceId: 'offline', token: 'token' }],
+            approvedAssignment: async () => ({ pbxId: 'A', extension: '100', deviceUuid: 'uuid-offline' }),
+        },
+        authorizePbx: async () => ({ id: 'A' }), authorizeDevice: async () => null,
+        normalizeCallId: value => value,
+        hasLiveSession: async () => false,
+        sendToDevice: async device => sent.push(device.device_uuid),
+    });
+    const res = { set() {}, status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+    await routes['/incoming-call-live']({ body: { callee: '100', callId: 'offline-call' } }, res);
+    assert.equal(res.body.status, 'dispatched');
+    assert.equal(res.body.count, 1);
+    assert.deepEqual(sent, ['uuid-offline']);
+});

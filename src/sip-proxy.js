@@ -1,11 +1,13 @@
 'use strict';
 const { WebSocket, WebSocketServer } = require('ws');
 const SIP_HANDOVER_GRACE_MS = 20000;
+const SIP_LIVE_CLIENT_MS = 30000;
 const { createCallTracker } = require('./sip-call-tracker');
 
 // Device authorization belongs to the control store. SIP passwords continue to
 // be checked upstream by the selected PBX; no password is parsed/stored here.
-function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeIncomingCallId, handoverGraceMs = SIP_HANDOVER_GRACE_MS }) {
+function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeIncomingCallId, handoverGraceMs = SIP_HANDOVER_GRACE_MS,
+    liveClientMs = SIP_LIVE_CLIENT_MS }) {
     if (typeof authorize !== 'function' || typeof isAuthorized !== 'function') throw new Error('Authorization and revocation checks are required');
     const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024,
         perMessageDeflate: false, handleProtocols: protocols => protocols.has('sip') ? 'sip' : false });
@@ -78,7 +80,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                 let client = initialClient;
                 const upstream = new WebSocket(route.wsUrl, 'sip', { maxPayload: 256 * 1024,
                     perMessageDeflate: false, handshakeTimeout: 8000, followRedirects: false });
-                const session = { client, upstream, device, route, token, flow };
+                const session = { client, upstream, device, route, token, flow, lastClientSeenAt: Date.now() };
                 sessions.add(session);
                 let alive = true;
                 session.heartbeat = () => {
@@ -168,9 +170,18 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                     clearTimeout(handoverTimer);
                     client = session.client = next;
                     alive = true;
+                    session.lastClientSeenAt = Date.now();
                     if (old && old !== next) old.terminate();
-                    next.on('pong', () => { if (client === next) alive = true; });
-                    next.on('message', (data, binary) => { if (client === next) onClientMessage(data, binary); });
+                    next.on('pong', () => {
+                        if (client !== next) return;
+                        alive = true;
+                        session.lastClientSeenAt = Date.now();
+                    });
+                    next.on('message', (data, binary) => {
+                        if (client !== next) return;
+                        session.lastClientSeenAt = Date.now();
+                        onClientMessage(data, binary);
+                    });
                     next.on('close', () => detach(next));
                     next.on('error', () => detach(next));
                     for (const [data, binary] of downstreamQueue) send(next, data, binary);
@@ -239,8 +250,19 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
         }
     }, 10000);
     timer.unref();
+    function hasLiveSession(pbxId, extension, at = Date.now()) {
+        if (!pbxId || !extension || !Number.isFinite(at) || !Number.isFinite(liveClientMs) || liveClientMs < 0) return false;
+        for (const session of sessions) {
+            if (session.route?.pbxId !== pbxId || session.route?.extension !== extension) continue;
+            if (!session.client || session.client.readyState !== WebSocket.OPEN) continue;
+            if (at - session.lastClientSeenAt > liveClientMs) continue;
+            return true;
+        }
+        return false;
+    }
     return {
         getActiveCalls: () => callTracker.snapshot(),
+        hasLiveSession,
         getNetworkStats: () => ({
             inBytes: network.inBytes,
             outBytes: network.outBytes,
@@ -249,4 +271,4 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
         close() { clearInterval(timer); clearInterval(pruneTimer); for (const s of sessions) s.close('shutdown'); wss.close(); },
     };
 }
-module.exports = { attachSipProxy, SIP_HANDOVER_GRACE_MS };
+module.exports = { attachSipProxy, SIP_HANDOVER_GRACE_MS, SIP_LIVE_CLIENT_MS };

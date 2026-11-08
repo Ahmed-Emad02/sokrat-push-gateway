@@ -103,11 +103,63 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             res.status(503).json({ error: 'Heartbeat unavailable' });
         }
     });
+    router.post('/call/state', async (req, res) => {
+        const route = await authorizeDevice(req);
+        if (!route) return res.status(403).json({ success: false, error: 'Device approval required' });
+        const headers = { Accept: 'application/json' };
+        for (const name of ['X-Sokrat-Extension', 'X-Sokrat-Timestamp', 'X-Sokrat-Signature']) {
+            const value = req.get(name);
+            if (!value || value.length > 256) return res.status(401).json({ success: false, error: 'Extension authentication required' });
+            headers[name] = value;
+        }
+        if (headers['X-Sokrat-Extension'] !== route.extension) {
+            return res.status(403).json({ success: false, error: 'Extension does not belong to device' });
+        }
+        if (!route.apiUrl) return res.status(503).json({ success: false, error: 'Call state unavailable' });
+        try {
+            const upstream = await fetch(`${route.apiUrl.replace(/\/+$/, '')}/api/extension/v1/call-state`, {
+                method: 'GET',
+                headers,
+                signal: AbortSignal.timeout(5000),
+                redirect: 'error',
+            });
+            const result = await upstream.json().catch(() => ({ success: false, error: 'Invalid call-state response' }));
+            return res.status(upstream.status).json(result);
+        } catch (_) {
+            return res.status(503).json({ success: false, error: 'Call state unavailable' });
+        }
+    });
     router.post('/call/volume', async (req, res) => {
         const route = await authorizeDevice(req);
         if (!route) return res.status(403).json({ success: false, error: 'Device approval required' });
         const raw = req.body?.micGainDb !== undefined ? req.body.micGainDb : req.body?.gainDb;
-        const gain = Math.max(-12, Math.min(31.2, parseFloat(raw) || 0));
+        const gain = Math.max(-24, Math.min(42, parseFloat(raw) || 0));
+        const signed = {};
+        for (const name of ['X-Sokrat-Extension', 'X-Sokrat-Timestamp', 'X-Sokrat-Signature']) {
+            const value = req.get(name);
+            if (value) signed[name] = value;
+        }
+        const hasExtensionProof = signed['X-Sokrat-Extension'] && signed['X-Sokrat-Timestamp'] && signed['X-Sokrat-Signature'];
+        if (hasExtensionProof) {
+            if (signed['X-Sokrat-Extension'] !== route.extension) {
+                return res.status(403).json({ success: false, error: 'Extension does not belong to device' });
+            }
+            if (!route.apiUrl) return res.status(503).json({ success: false, error: 'Volume control unavailable' });
+            try {
+                const upstream = await fetch(`${route.apiUrl.replace(/\/+$/, '')}/api/extension/v1/call-volume`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...signed },
+                    body: JSON.stringify({ micGainDb: gain }),
+                    signal: AbortSignal.timeout(5000),
+                    redirect: 'error',
+                });
+                const result = await upstream.json().catch(() => ({ success: false, error: 'Invalid volume response' }));
+                return res.status(upstream.status).json(result);
+            } catch (_) {
+                return res.status(503).json({ success: false, error: 'Volume control unavailable' });
+            }
+        }
+        // Legacy clients without extension proof keep the old local-AMI path.
         try {
             const upstream = await fetch('http://127.0.0.1:8095/api/call/volume', {
                 method: 'POST',

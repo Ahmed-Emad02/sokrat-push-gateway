@@ -17,9 +17,12 @@ assert.strictEqual(dbToAsteriskVolume(10), 3.1623, '+10 dB should be factor ~3.1
 assert.strictEqual(dbToAsteriskVolume(24), 15.8489, '+24 dB should be factor ~15.8489');
 assert.strictEqual(dbToAsteriskVolume(30), 31.6228, '+30 dB should be factor ~31.6228');
 assert.strictEqual(dbToAsteriskVolume(31.2), 36.3078, '+31.2 dB should be factor ~36.3078');
-assert.strictEqual(dbToAsteriskVolume(40), 36.3078, 'Capped at +31.2 dB max -> factor 36.3078');
-assert.strictEqual(dbToAsteriskVolume(-20), -3.9811, 'Capped at -12 dB min -> factor -3.9811');
-console.log('✓ dbToAsteriskVolume float conversion passed (+3dB=1.4125, -3dB=-1.4125, +6dB=1.9953, +24dB=15.8489, +31.2dB=36.3078, -12dB=-3.9811)');
+assert.strictEqual(dbToAsteriskVolume(40), 100, '+40 dB should be factor 100 (10^(40/20))');
+assert.strictEqual(dbToAsteriskVolume(42), 125.8925, '+42 dB should be factor ~125.8925');
+assert.strictEqual(dbToAsteriskVolume(99), 125.8925, 'Capped at +42 dB max -> factor 125.8925');
+assert.strictEqual(dbToAsteriskVolume(-20), -10, '-20 dB should be factor -10 (-10^(20/20))');
+assert.strictEqual(dbToAsteriskVolume(-99), -15.8489, 'Capped at -24 dB min -> factor -15.8489');
+console.log('✓ dbToAsteriskVolume float conversion passed (+3dB=1.4125, -3dB=-1.4125, +6dB=1.9953, +24dB=15.8489, +42dB=125.8925, -24dB=-15.8489)');
 
 // Test 2: Dongle row with CallerID 150 appears BEFORE PJSIP row
 const rowsWithDongleFirst = [

@@ -76,16 +76,15 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
             let id;
             try { id = tenantCallId(normalizeCallId, pbx.id, callId); }
             catch (_) { return res.status(400).json({ error: 'Invalid callId' }); }
-            // The PBX can only see a contact, not whether the app socket is
-            // alive. The dedicated live-gated endpoint makes the decision from
-            // the gateway's authenticated SIP session state.
+            // An open SIP socket does not prove that the app delivered the
+            // INVITE or can present a ringing UI. Keep the live state for
+            // diagnostics, but never let it suppress the push. The app
+            // deduplicates repeated callIds and ignores a push after a terminal
+            // state, so parallel SIP + push is the safe delivery policy.
+            let live = false;
             if (liveGated) {
-                let live = false;
                 try { live = await hasLiveSession(pbx.id, callee) === true; }
                 catch (_) { live = false; }
-                if (live) {
-                    return res.json({ status: 'already_connected', callId: id, count: 0, failed: 0, skipped: 0, results: [] });
-                }
             }
             prunePendingCalls();
             const receivedAt = Date.now();
@@ -135,7 +134,8 @@ function installTenantPush(router, { store, authorizeDevice, authorizePbx, sendT
                 }
             }
             console.log(`[tenant-push] incoming-call extension=${callee} callId=${id} devices=${devices.length} dispatched=${count} failed=${failed} skipped=${skipped}`);
-            res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed, results });
+            res.json({ status: failed ? 'partial' : 'dispatched', callId: id, count, failed, results,
+                ...(liveGated ? { live } : {}) });
         } catch (_) { res.status(503).json({ error: 'Push dispatch unavailable' }); }
     }
     router.post('/incoming-call', (req, res) => handleIncomingCall(req, res));

@@ -667,9 +667,9 @@ function amiCommand(actions) {
         });
     });
 }
-const GAIN_MIN_DB = -12;
-// Extended by 30% from the previous +24 dB ceiling.
-const GAIN_MAX_DB = 31.2;
+const GAIN_MIN_DB = -24;
+// Extended mic boost range; matches the app's 150% slider ceiling.
+const GAIN_MAX_DB = 42;
 
 function dbToAsteriskVolume(db) {
     const num = Math.max(GAIN_MIN_DB, Math.min(GAIN_MAX_DB, parseFloat(db) || 0));

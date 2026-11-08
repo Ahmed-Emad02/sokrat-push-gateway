@@ -117,15 +117,13 @@ test('cancel-call requires PBX authentication', async () => {
     assert.equal(res.code, 403);
 });
 
-test('a live gateway session suppresses push and does not create a missed-call record', async () => {
+test('a live gateway session still dispatches so a stale SIP contact cannot silence ringing', async () => {
     const routes = {};
     const sent = [];
-    const missed = [];
     installTenantPush({ post: (path, handler) => { routes[path] = handler; } }, {
         store: {
             listPush: async () => [{ deviceId: 'live', token: 'token' }],
             approvedAssignment: async () => ({ pbxId: 'A', extension: '100', deviceUuid: 'uuid-live' }),
-            recordMissed: async (...args) => missed.push(args),
         },
         authorizePbx: async () => ({ id: 'A' }), authorizeDevice: async () => null,
         normalizeCallId: value => value,
@@ -134,12 +132,10 @@ test('a live gateway session suppresses push and does not create a missed-call r
     });
     const res = { set() {}, status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
     await routes['/incoming-call-live']({ body: { callee: '100', callId: 'live-call' } }, res);
-    assert.equal(res.body.status, 'already_connected');
-    assert.equal(res.body.count, 0);
-    assert.deepEqual(sent, []);
-    const cancel = { set() {}, status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
-    await routes['/cancel-call']({ body: { callee: '100', callId: 'live-call' } }, cancel);
-    assert.deepEqual(missed, []);
+    assert.equal(res.body.status, 'dispatched');
+    assert.equal(res.body.count, 1);
+    assert.equal(res.body.live, true);
+    assert.deepEqual(sent, ['uuid-live']);
 });
 
 test('a stale or absent gateway session still dispatches the incoming-call push', async () => {

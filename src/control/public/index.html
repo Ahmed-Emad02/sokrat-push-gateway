@@ -223,6 +223,23 @@
                  aria-describedby="pbx-ips-hint">
           <span id="pbx-ips-hint" class="hint">Comma-separated IPv4/IPv6 addresses or CIDR blocks. Optional.</span>
         </div>
+        <div class="field">
+          <label for="pbx-direct-ws">Direct fallback SIP WebSocket URL</label>
+          <input id="pbx-direct-ws" name="directWsURL" type="text" maxlength="512"
+                 placeholder="wss://pbx.example.com:8089/ws" autocomplete="off" spellcheck="false">
+          <span class="hint">Used only when the gateway is unavailable and direct fallback is enabled.</span>
+        </div>
+        <div class="field">
+          <label for="pbx-direct-api">Direct fallback API URL</label>
+          <input id="pbx-direct-api" name="directApiURL" type="text" maxlength="512"
+                 placeholder="https://pbx.example.com:8080" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field field-inline">
+          <label class="check" for="pbx-direct-fallback">
+            <input id="pbx-direct-fallback" name="allowDirectFallback" type="checkbox">
+            <span>Allow direct fallback for this PBX</span>
+          </label>
+        </div>
         <div class="field field-inline">
           <label class="check" for="pbx-enabled">
             <input id="pbx-enabled" name="enabled" type="checkbox" checked>

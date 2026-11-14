@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Upgrade the existing standard Compose gateway, without rewriting host state."""
+"""Upgrade the standard Compose gateway and promote the reviewed host bundle.
+
+Enrollment state, credentials, certificates, media keys and tenant units are
+never rewritten by this tool; the host installer owns only its reviewed files.
+"""
 import argparse
 import json
 import os
@@ -7,9 +11,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE = 'sokrat-gateway'
+BUNDLE = Path('/usr/local/lib/sokrat-tenant-provisioning')
 NEW_TLS_DEFAULTS = {'GATEWAY_TLS_ENABLED': 'auto', 'GATEWAY_HTTPS_PORT': '443',
                     'GATEWAY_WSS_PORT': '8089'}
 
@@ -26,6 +32,53 @@ def run(argv, env, capture=True):
     except (OSError, subprocess.CalledProcessError) as exc:
         # Docker output can contain configuration secrets; never repeat it.
         raise Refusal('Docker command failed: ' + ' '.join(argv[:3])) from exc
+
+
+def promote_host_bundle(env):
+    """Promote the reviewed host bundle without rebuilding media state or PKI.
+
+    The existing provisioning installer backs up prior bundle files, keeps
+    /etc/sokrat and credentials untouched, stops only its own units, and
+    restarts only previously active ones. Media and Asterisk are not touched.
+    """
+    if not (BUNDLE / 'tunnel-enrollment.py').is_file():
+        raise Refusal('host provisioning bundle is incomplete; promote it explicitly')
+    command = [sys.executable, str(ROOT / 'scripts/install-provisioning-worker.py'), '--apply']
+    for attempt in range(3):
+        try:
+            result = subprocess.run(command, cwd=ROOT, env=env, check=True,
+                                    timeout=900, capture_output=True, text=True)
+            if result.stdout:
+                sys.stdout.write(result.stdout)
+            return
+        except subprocess.CalledProcessError as error:
+            # The provisioning timer/reconcile may briefly own the shared lock.
+            if error.returncode == 2 and attempt < 2:
+                time.sleep(5)
+                continue
+            raise Refusal('host provisioning bundle promotion failed') from None
+        except (OSError, subprocess.SubprocessError):
+            raise Refusal('host provisioning bundle promotion failed') from None
+
+
+def reassert_media_firewall(env):
+    """Reassert persisted UDP media endpoints from the promoted host bundle.
+
+    The container has no host firewall authority, so this runs on the host with
+    the bundle just promoted. The helper is additive and idempotent: it opens
+    only ports of registry rows that already carry an explicit mediaTransport,
+    preserves operator/manual rules and never deletes a rule.
+    """
+    helper = BUNDLE / 'media-udp-firewall.py'
+    if not helper.is_file():
+        raise Refusal('host media firewall helper is missing from the promoted bundle')
+    try:
+        result = subprocess.run([sys.executable, str(helper), '--apply'], env=env,
+                                timeout=60, capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        raise Refusal('host UDP media firewall reconcile failed') from None
+    if result.returncode != 0:
+        raise Refusal('host UDP media firewall reconcile failed')
 
 
 def docker_json(argv, env):
@@ -153,6 +206,12 @@ def main():
         raise Refusal('existing image ID is invalid')
     image = docker_json(['image', 'inspect', image_id], env)[0]
     validate(service, container, image)
+    # Reverse media and enrollment run on the host. Their reviewed bundle is
+    # part of the installed deployment and must be promotable before recreation.
+    etc_source = next((Path(m['source']) for m in service['volumes'] if m['target'] == '/etc/sokrat'), None)
+    host_enrollment = bool(etc_source and (etc_source / 'tunnel-enrollment' / 'config.json').exists())
+    if host_enrollment and not (BUNDLE / 'tunnel-enrollment.py').is_file():
+        raise Refusal('host provisioning bundle is incomplete; promote it explicitly before upgrading')
     build_args = (service.get('build') or {}).get('args') or {}
     for flag, key in (('-u', 'SOKRAT_UID'), ('-g', 'SOKRAT_GID')):
         current = run(['docker', 'exec', SERVICE, 'id', flag, 'sokrat-push'], env).strip()
@@ -164,8 +223,7 @@ def main():
         return
     # Reverse media runs on the host, not in a NET_ADMIN-enabled container.
     # Only opted-in reverse-TLS installations need these host packages.
-    etc_source = next(Path(m['source']) for m in service['volumes'] if m['target'] == '/etc/sokrat')
-    if (etc_source / 'tunnel-enrollment' / 'config.json').exists():
+    if host_enrollment:
         run(['bash', str(ROOT / 'scripts/install-reverse-tls-deps.sh')], env, capture=False)
     run(compose + ['build', SERVICE], env, capture=False)
     # Do not recreate a replacement container or apply a changed .env/Compose
@@ -179,6 +237,12 @@ def main():
             or current.get('Image') != image_id or not current.get('State', {}).get('Running')):
         raise Refusal('gateway or Compose configuration changed during build; no recreation performed')
     run(compose + ['up', '-d', '--no-deps', '--no-build', SERVICE], env, capture=False)
+    # Host media/enrollment code is outside the image. Promote the reviewed
+    # bundle after the new container is running so a failed build changes no
+    # host files; the installer preserves credentials, certificates and units.
+    if host_enrollment:
+        promote_host_bundle(env)
+        reassert_media_firewall(env)
     # Tenant coturn processes are not managed by supervisor. A recreated
     # container must re-evaluate current authority and restart eligible relays,
     # not merely reuse a persisted pre-recreation "ready" status.

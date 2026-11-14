@@ -28,7 +28,7 @@ module.exports = function installMobileIce(app) {
             const username = `${Math.floor(Date.now() / 1000) + 3600}:${identity.extension}`;
             const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
             return res.json({ iceServers: [{
-                urls: [`turn:${publicHost}:3478?transport=udp`, `turn:${publicHost}:3478?transport=tcp`],
+                urls: [`turn:${publicHost}:3478?transport=udp`],
                 username, credential
             }] });
         } catch (error) {

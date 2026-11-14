@@ -11,7 +11,8 @@ test('tenant media bootstrap uses only the approved PBX relay', async () => {
     });
     const res = { set() {}, status(code) { this.code = code; return this; }, json(data) { this.body = data; } };
     await handler({}, res);
-    assert.deepEqual(res.body.iceServers[0].urls, ['turn:gateway.example:3500?transport=udp', 'turn:gateway.example:3500?transport=tcp']);
+    assert.deepEqual(res.body.iceServers[0].urls, ['turn:gateway.example:3500?transport=udp']);
+    assert.equal(res.body.iceTransportPolicy, 'relay');
     assert.equal(JSON.stringify(res.body).includes(secrets.A.secret), false);
     approved = false;
     await handler({}, res);

@@ -11,6 +11,7 @@ const { createHeartbeatScheduler } = require('./heartbeat-scheduler');
 const { createChatProxy } = require('./tenant-chat-proxy');
 const { createChatTickets } = require('./chat-tickets');
 const { attachChatSocketProxy } = require('./tenant-chat-socket');
+const { syncVpnPeers } = require('./wg-admission');
 
 // Explicit integration factory: opt in only after enrollment clients have been
 // deployed. No fallback to the legacy/single-PBX route is permitted here.
@@ -19,8 +20,18 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         const device = control.store.getApprovedDevice(deviceId);
         const pbx = device && control.store.getPbx(device.pbxId);
         if (!device || !pbx?.enabled) return null;
+        const directFallback = pbx.allowDirectFallback === true && pbx.directWsURL && pbx.directApiURL
+            ? { wsURL: pbx.directWsURL, apiURL: pbx.directApiURL }
+            : undefined;
+        const vpn = pbx.vpn?.enabled === true
+            ? (device.vpnPublicKey && device.vpnAddress
+                ? { ...pbx.vpn, address: device.vpnAddress }
+                : pbx.vpn)
+            : undefined;
         return { deviceId: device.id, deviceUuid: device.deviceUuid,
             pbxId: pbx.id, extension: device.extension, wsUrl: pbx.wsURL, apiUrl: pbx.apiURL,
+            ...(directFallback ? { directFallback } : {}),
+            ...(vpn ? { vpn } : {}),
             authorizationRevision: device.authorizationRevision || 0 };
     }
     async function authorize(deviceId, token) {
@@ -71,6 +82,39 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
             const ticket = tickets.issue(route.deviceId, token, route);
             return res.json({ ticket, expiresIn: 30 });
         } catch (_) { return res.status(503).json({ error: 'Ticket unavailable' }); }
+    });
+    router.get('/vpn/profile', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            const route = await authorizeDevice(req);
+            if (!route) return res.status(403).json({ error: 'Device approval required' });
+            if (!route.vpn) return res.status(404).json({ error: 'VPN profile unavailable' });
+            return res.json({ vpn: route.vpn });
+        } catch (_) {
+            return res.status(503).json({ error: 'VPN profile unavailable' });
+        }
+    });
+    router.post('/vpn/profile', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            const route = await authorizeDevice(req);
+            if (!route) return res.status(403).json({ error: 'Device approval required' });
+            const pbx = control.store.getPbx(route.pbxId);
+            if (!pbx?.enabled || !pbx.vpn?.enabled) {
+                return res.status(404).json({ error: 'VPN profile unavailable' });
+            }
+            const publicKey = req.body && req.body.publicKey;
+            const registered = await control.store.registerDeviceVpn(route.deviceId, publicKey);
+            try {
+                await syncVpnPeers(pbx, control.store.listVpnPeers(pbx.id));
+            } catch (_) {
+                return res.status(503).json({ error: 'VPN admission pending' });
+            }
+            return res.json({ vpn: { ...pbx.vpn, address: registered.device.vpnAddress } });
+        } catch (error) {
+            const status = error && Number.isInteger(error.statusCode) ? error.statusCode : 503;
+            return res.status(status).json({ error: status === 409 ? 'VPN admission rejected' : 'VPN profile unavailable' });
+        }
     });
     router.post('/chat-ticket', async (req, res) => {
         res.set('Cache-Control', 'no-store');
@@ -133,7 +177,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
         const route = await authorizeDevice(req);
         if (!route) return res.status(403).json({ success: false, error: 'Device approval required' });
         const raw = req.body?.micGainDb !== undefined ? req.body.micGainDb : req.body?.gainDb;
-        const gain = Math.max(-24, Math.min(42, parseFloat(raw) || 0));
+        const gain = Math.max(-30, Math.min(42, parseFloat(raw) || 0));
         const signed = {};
         for (const name of ['X-Sokrat-Extension', 'X-Sokrat-Timestamp', 'X-Sokrat-Signature']) {
             const value = req.get(name);

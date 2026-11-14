@@ -278,6 +278,123 @@ function sanitizeActor(value) {
     return CONTROL_CHARS.test(text) ? 'admin' : text || 'admin';
 }
 
+function normalizeOptionalUrl(value, field, protocols) {
+    if (value === undefined || value === null || value === '') return '';
+    return normalizeUrl(value, field, protocols);
+}
+
+function normalizeVpn(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw fail('invalid_pbx', 'vpn must be an object');
+    }
+    const enabled = toBoolean(value.enabled, 'vpn.enabled', false);
+    const endpoint = String(value.endpoint || '').trim();
+    const serverPublicKey = String(value.serverPublicKey || '').trim();
+    const address = String(value.address || '').trim();
+    const privateSipUrl = String(value.privateSipUrl || '').trim();
+    const sipDomain = String(value.sipDomain || '').trim();
+    const allowedIPs = Array.isArray(value.allowedIPs)
+        ? value.allowedIPs.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+    if (enabled && (!endpoint || !serverPublicKey || !address || !privateSipUrl || !sipDomain || !allowedIPs.length)) {
+        throw fail('invalid_pbx', 'Enabled VPN profile requires endpoint, serverPublicKey, address, allowedIPs, privateSipUrl and sipDomain');
+    }
+    return {
+        enabled,
+        endpoint: endpoint.slice(0, 255),
+        serverPublicKey: serverPublicKey.slice(0, 64),
+        address: address.slice(0, 64),
+        allowedIPs: allowedIPs.slice(0, 16),
+        privateSipUrl: privateSipUrl.slice(0, 512),
+        sipDomain: sipDomain.slice(0, 255),
+        mtu: positiveInt(value.mtu, 1380, { min: 1280, max: 1420 }),
+        keepaliveSeconds: positiveInt(value.keepaliveSeconds, 25, { min: 0, max: 120 })
+    };
+}
+
+function normalizeWireGuardPublicKey(value) {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(value)) {
+        throw fail('invalid_vpnPublicKey', 'vpnPublicKey must be a WireGuard public key');
+    }
+    const bytes = Buffer.from(value, 'base64');
+    if (bytes.length !== 32 || bytes.toString('base64') !== value) {
+        throw fail('invalid_vpnPublicKey', 'vpnPublicKey must be a WireGuard public key');
+    }
+    return value;
+}
+
+function normalizeStoredWireGuardKey(value) {
+    try {
+        return normalizeWireGuardPublicKey(value);
+    } catch {
+        return null;
+    }
+}
+
+function parseIpv4(value) {
+    const parts = String(value || '').trim().split('.');
+    if (parts.length !== 4) return null;
+    let result = 0;
+    for (const part of parts) {
+        if (!/^\d{1,3}$/.test(part)) return null;
+        const octet = Number(part);
+        if (octet > 255) return null;
+        result = (result * 256) + octet;
+    }
+    return result >>> 0;
+}
+
+function formatIpv4(value) {
+    return [24, 16, 8, 0].map(shift => (value >>> shift) & 0xff).join('.');
+}
+
+function normalizeStoredVpnAddress(value) {
+    const match = /^(\d{1,3}(?:\.\d{1,3}){3})\/32$/.exec(String(value || ''));
+    return match && parseIpv4(match[1]) !== null ? match[0] : null;
+}
+
+function vpnPeerPool(vpn) {
+    const baseMatch = /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/32)?$/.exec(String(vpn?.address || '').trim());
+    const base = baseMatch ? parseIpv4(baseMatch[1]) : null;
+    if (base === null) return null;
+    const candidates = [];
+    for (const raw of Array.isArray(vpn.allowedIPs) ? vpn.allowedIPs : []) {
+        const match = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(String(raw).trim());
+        if (!match) continue;
+        const ip = parseIpv4(match[1]);
+        const prefix = Number(match[2]);
+        if (ip === null || prefix < 8 || prefix > 30) continue;
+        const mask = (0xffffffff << (32 - prefix)) >>> 0;
+        const network = (ip & mask) >>> 0;
+        const broadcast = (network | (~mask >>> 0)) >>> 0;
+        if (base > network && base < broadcast) candidates.push({ network, broadcast, prefix });
+    }
+    candidates.sort((a, b) => a.prefix - b.prefix);
+    return candidates.length ? candidates[0] : null;
+}
+
+function allocateVpnAddress(pbx, devices, ignoreDeviceId = null) {
+    const pool = vpnPeerPool(pbx.vpn);
+    const baseMatch = /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/32)?$/.exec(String(pbx.vpn?.address || '').trim());
+    const base = baseMatch ? parseIpv4(baseMatch[1]) : null;
+    if (!pool || base === null) throw fail('vpn_pool_invalid', 'WireGuard peer pool is not configured');
+    const used = new Set(devices
+        .filter(device => device.id !== ignoreDeviceId && device.vpnAddress)
+        .map(device => parseIpv4(String(device.vpnAddress).replace(/\/32$/, '')))
+        .filter(value => value !== null));
+    for (let candidate = base; candidate < pool.broadcast; candidate++) {
+        if (candidate <= pool.network || used.has(candidate)) continue;
+        return `${formatIpv4(candidate)}/32`;
+    }
+    throw fail('vpn_pool_exhausted', 'WireGuard peer pool is exhausted', 409);
+}
+
+function vpnProfileForDevice(pbx, device) {
+    if (!pbx?.vpn?.enabled || !device?.vpnPublicKey || !device?.vpnAddress) return null;
+    return { ...clone(pbx.vpn), address: device.vpnAddress };
+}
+
 function normalizePbxInput(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
         throw fail('invalid_pbx', 'PBX payload must be an object');
@@ -287,6 +404,10 @@ function normalizePbxInput(input) {
         wsURL: normalizeUrl(input.wsURL, 'wsURL', WS_PROTOCOLS),
         apiURL: normalizeUrl(input.apiURL, 'apiURL', API_PROTOCOLS),
         mediaIps: normalizeMediaIps(input.mediaIps),
+        directWsURL: normalizeOptionalUrl(input.directWsURL, 'directWsURL', WS_PROTOCOLS),
+        directApiURL: normalizeOptionalUrl(input.directApiURL, 'directApiURL', API_PROTOCOLS),
+        allowDirectFallback: toBoolean(input.allowDirectFallback, 'allowDirectFallback', false),
+        vpn: normalizeVpn(input.vpn),
         enabled: toBoolean(input.enabled, 'enabled', true)
     };
 }
@@ -375,6 +496,8 @@ function publicDevice(device) {
         authorizationRevision: device.authorizationRevision || 0,
         secretIssuedAt: device.secretIssuedAt,
         hasSecret: Boolean(device.secretHash),
+        vpnPublicKey: device.vpnPublicKey || null,
+        vpnAddress: device.vpnAddress || null,
         lastSeenAt: device.lastSeenAt
     };
 }
@@ -403,6 +526,10 @@ function publicPbx(pbx) {
         wsURL: pbx.wsURL,
         apiURL: pbx.apiURL,
         mediaIps: [...pbx.mediaIps],
+        directWsURL: pbx.directWsURL || '',
+        directApiURL: pbx.directApiURL || '',
+        allowDirectFallback: pbx.allowDirectFallback === true,
+        vpn: pbx.vpn ? clone(pbx.vpn) : null,
         enabled: pbx.enabled,
         createdAt: pbx.createdAt,
         updatedAt: pbx.updatedAt,
@@ -575,6 +702,10 @@ class ControlStore {
                 wsURL: String(record.wsURL || ''),
                 apiURL: String(record.apiURL || ''),
                 mediaIps: Array.isArray(record.mediaIps) ? record.mediaIps.map(String) : [],
+                directWsURL: String(record.directWsURL || ''),
+                directApiURL: String(record.directApiURL || ''),
+                allowDirectFallback: record.allowDirectFallback === true,
+                vpn: normalizeVpn(record.vpn),
                 enabled: record.enabled === true,
                 ...(Object.hasOwn(record, 'management') ? { management: this._normalizeManagement(record.management) } : {}),
                 createdAt: isoOrNull(record.createdAt) || now,
@@ -670,6 +801,8 @@ class ControlStore {
                     ? record.authorizationRevision : 0,
                 secretHash: typeof record.secretHash === 'string' ? record.secretHash : null,
                 secretIssuedAt: isoOrNull(record.secretIssuedAt),
+                vpnPublicKey: normalizeStoredWireGuardKey(record.vpnPublicKey),
+                vpnAddress: normalizeStoredVpnAddress(record.vpnAddress),
                 lastSeenAt: isoOrNull(record.lastSeenAt)
             });
         }
@@ -796,6 +929,11 @@ class ControlStore {
             throw fail('pbx_disabled', 'The assigned PBX is disabled; contact the administrator', 409);
         }
         this._assertManagedAccess(state, device, pbx);
+        const directFallback = pbx.allowDirectFallback === true && pbx.directWsURL && pbx.directApiURL
+            ? { wsURL: pbx.directWsURL, apiURL: pbx.directApiURL }
+            : undefined;
+        const vpn = vpnProfileForDevice(pbx, device)
+            || (pbx.vpn?.enabled === true ? clone(pbx.vpn) : undefined);
         return {
             deviceId: device.id,
             deviceUuid: device.deviceUuid,
@@ -805,7 +943,9 @@ class ControlStore {
             extension: device.extension,
             wsURL: pbx.wsURL,
             apiURL: pbx.apiURL,
-            mediaIps: [...pbx.mediaIps]
+            mediaIps: [...pbx.mediaIps],
+            ...(directFallback ? { directFallback } : {}),
+            ...(vpn ? { vpn } : {})
         };
     }
 
@@ -1148,7 +1288,7 @@ class ControlStore {
             if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
                 throw fail('invalid_pbx', 'PBX payload must be an object');
             }
-            const allowed = ['name', 'wsURL', 'apiURL', 'mediaIps', 'enabled', 'management'];
+            const allowed = ['name', 'wsURL', 'apiURL', 'mediaIps', 'directWsURL', 'directApiURL', 'allowDirectFallback', 'vpn', 'enabled', 'management'];
             const unknown = Object.keys(patch).filter((key) => !allowed.includes(key));
             if (unknown.length) {
                 throw fail('invalid_pbx', `Unsupported PBX field(s): ${unknown.join(', ')}`);
@@ -1170,6 +1310,18 @@ class ControlStore {
             }
             if (patch.mediaIps !== undefined) {
                 next.mediaIps = normalizeMediaIps(patch.mediaIps);
+            }
+            if (patch.directWsURL !== undefined) {
+                next.directWsURL = normalizeOptionalUrl(patch.directWsURL, 'directWsURL', WS_PROTOCOLS);
+            }
+            if (patch.directApiURL !== undefined) {
+                next.directApiURL = normalizeOptionalUrl(patch.directApiURL, 'directApiURL', API_PROTOCOLS);
+            }
+            if (patch.allowDirectFallback !== undefined) {
+                next.allowDirectFallback = toBoolean(patch.allowDirectFallback, 'allowDirectFallback', record.allowDirectFallback === true);
+            }
+            if (patch.vpn !== undefined) {
+                next.vpn = normalizeVpn(patch.vpn);
             }
             if (patch.enabled !== undefined) {
                 next.enabled = toBoolean(patch.enabled, 'enabled', record.enabled);
@@ -1921,6 +2073,8 @@ class ControlStore {
             const at = isoAt(this._now());
             device.status = 'revoked';
             device.secretHash = null;
+            device.vpnPublicKey = null;
+            device.vpnAddress = null;
             device.reviewedAt = at;
             device.reviewedBy = sanitizeActor(meta.actor);
             device.reviewReason = reason;
@@ -1961,6 +2115,54 @@ class ControlStore {
         try { this._assertManagedAccess(this.state, device, pbx); }
         catch { return { ok: false }; }
         return { ok: true, device: publicDevice(device) };
+    }
+
+    /**
+     * Register the device-generated WireGuard public key and allocate its
+     * unique /32 from the PBX peer pool. Idempotent for a repeated key.
+     */
+    registerDeviceVpn(deviceId, publicKey) {
+        const key = normalizeWireGuardPublicKey(publicKey);
+        return this._mutate((draft) => {
+            const device = draft.devices.find((d) => d.id === deviceId);
+            if (!device || device.status !== 'approved') {
+                throw fail('device_not_found', 'Approved device not found', 404);
+            }
+            const pbx = draft.pbx.find((p) => p.id === device.pbxId);
+            if (!pbx?.enabled || !pbx.vpn?.enabled) {
+                throw fail('vpn_disabled', 'WireGuard is not enabled for this PBX', 409);
+            }
+            const duplicate = draft.devices.find((d) =>
+                d.id !== device.id && d.pbxId === device.pbxId && d.vpnPublicKey === key);
+            if (duplicate) throw fail('vpn_key_in_use', 'WireGuard key is already assigned', 409);
+            if (device.vpnPublicKey === key && device.vpnAddress) {
+                return { device: publicDevice(device), pbx };
+            }
+            const address = allocateVpnAddress(pbx, draft.devices, device.id);
+            const previous = device.vpnAddress;
+            device.vpnPublicKey = key;
+            device.vpnAddress = address;
+            pushAudit(draft, {
+                at: isoAt(this._now()),
+                actor: `device:${device.platform}`,
+                action: 'device.vpn_registered',
+                target: device.id,
+                detail: `${pbx.name} / ${address}${previous ? ` (was ${previous})` : ''}`
+            }, this.limits.auditEntries);
+            return { device: publicDevice(device), pbx };
+        });
+    }
+
+    listVpnPeers(pbxId) {
+        this._assertReady();
+        return this.state.devices
+            .filter((device) => device.status === 'approved' && device.pbxId === pbxId &&
+                device.vpnPublicKey && device.vpnAddress)
+            .map((device) => ({
+                deviceId: device.id,
+                publicKey: device.vpnPublicKey,
+                address: device.vpnAddress
+            }));
     }
 
     getApprovedDevice(deviceId) {

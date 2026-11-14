@@ -6,6 +6,7 @@ const { createTenantRuntime } = require('./tenant-runtime');
 const { createTenantManifestLoader } = require('./tenant-manifest-loader');
 const { createPbxAuthorizer } = require('./tenant-hook-auth');
 const { createEnrollmentRouter } = require('./control');
+const { syncVpnPeers } = require('./wg-admission');
 
 // Relay lookups are intentionally per request: the provisioner may atomically
 // replace the runtime manifest, and serving a stale relay would issue TURN
@@ -65,6 +66,27 @@ async function startTenantServer(control, env = process.env) {
     if (heartbeatOptions.enabled) {
         console.log(`[tenant] heartbeat watchdog enabled staleMs=${heartbeatOptions.staleMs} pbxIds=${heartbeatOptions.pbxIds.join(',') || '*'}`);
     }
+    const vpnSyncMs = positive(env.SOKRAT_VPN_SYNC_MS, 30000);
+    let vpnSyncBusy = false;
+    const vpnSyncTimer = setInterval(async () => {
+        if (vpnSyncBusy) return;
+        vpnSyncBusy = true;
+        try {
+            const pbxes = control.store.snapshot().pbx.filter(pbx => pbx.enabled && pbx.vpn?.enabled === true);
+            for (const pbx of pbxes) {
+                try {
+                    await syncVpnPeers(pbx, control.store.listVpnPeers(pbx.id));
+                } catch (error) {
+                    console.warn(`[vpn] peer sync failed pbx=${pbx.id}: ${String(error && error.message || error).slice(0, 160)}`);
+                }
+            }
+        } catch (error) {
+            console.warn(`[vpn] peer reconciliation failed: ${String(error && error.message || error).slice(0, 160)}`);
+        } finally {
+            vpnSyncBusy = false;
+        }
+    }, vpnSyncMs);
+    vpnSyncTimer.unref();
     const app = express();
     app.disable('x-powered-by');
     app.use((req, res, next) => {
@@ -92,6 +114,6 @@ async function startTenantServer(control, env = process.env) {
     });
     console.log('[tenant] gateway runtime listening on loopback');
     runtime.start();
-    return { server, runtime, close() { runtime.stop(); proxy.close(); server.close(); } };
+    return { server, runtime, close() { clearInterval(vpnSyncTimer); runtime.stop(); proxy.close(); server.close(); } };
 }
 module.exports = { startTenantServer, createRelayResolver };

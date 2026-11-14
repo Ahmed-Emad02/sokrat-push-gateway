@@ -66,7 +66,17 @@ The installer (owned by the deployment agent) copies:
   provisioning-hook-ssh.py         # PBX hook adapter (operator-specific)
   install-tenant-push-hook.py
   pbx-tenant-push-hook.py
+  tunnel_media.py                  # validated media plan/config helpers
+  tunnel_media_material.py         # per-tenant media PKI / plain key material
+  install-media-link.py            # root-only per-PBX media unit installer
+  media-transport-transaction.py   # explicit direct/plain UDP cutover and rollback
+  udp-media-link.py                # host media daemon for plain-udp
+  media-udp-firewall.py            # registry-selected UDP media firewall reconcile
+  media-udp-ports.py               # bounded operator port/range validation
+  tunnel-enrollment.py             # root enrollment and scoped FRP authorization
+  check-tunnel-readiness.py        # installed-hook plus real UDP readiness adapter
 /etc/systemd/system/sokrat-tenant-provisioning.{service,timer}
+/etc/systemd/system/sokrat-tunnel-enrollment.service
 ```
 
 It stops only these units (timer first), backs up prior files under

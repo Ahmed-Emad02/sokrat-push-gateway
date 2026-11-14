@@ -71,6 +71,9 @@
         pbxWs: document.getElementById('pbx-ws'),
         pbxApi: document.getElementById('pbx-api'),
         pbxIps: document.getElementById('pbx-ips'),
+        pbxDirectWs: document.getElementById('pbx-direct-ws'),
+        pbxDirectApi: document.getElementById('pbx-direct-api'),
+        pbxDirectFallback: document.getElementById('pbx-direct-fallback'),
         pbxEnabled: document.getElementById('pbx-enabled'),
         pbxSubmit: document.getElementById('pbx-submit'),
         sshEnable: document.getElementById('pbx-ssh-enable'),
@@ -1898,6 +1901,9 @@
             wsURL: refs.pbxWs.value.trim(),
             apiURL: refs.pbxApi.value.trim(),
             mediaIps: refs.pbxIps.value.trim(),
+            directWsURL: refs.pbxDirectWs.value.trim(),
+            directApiURL: refs.pbxDirectApi.value.trim(),
+            allowDirectFallback: refs.pbxDirectFallback.checked,
             enabled: refs.pbxEnabled.checked
         };
         // Every server uses managed provisioning; no legacy setup mode.
@@ -1942,6 +1948,9 @@
         refs.pbxWs.value = record.wsURL;
         refs.pbxApi.value = record.apiURL;
         refs.pbxIps.value = (record.mediaIps || []).join(', ');
+        refs.pbxDirectWs.value = record.directWsURL || '';
+        refs.pbxDirectApi.value = record.directApiURL || '';
+        refs.pbxDirectFallback.checked = record.allowDirectFallback === true;
         // Never rewrite existing/custom endpoints merely by opening Edit.
         refs.pbxAutoAddress.checked = false;
         refs.pbxAddress.value = (record.mediaIps || []).length === 1 ? record.mediaIps[0] : '';

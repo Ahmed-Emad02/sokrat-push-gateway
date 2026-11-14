@@ -18,6 +18,7 @@ CONTROL_PUBLIC="${GATEWAY_CONTROL_PUBLIC:-true}"
 SECRETS_DIR="${GATEWAY_SECRETS_DIR:-/root/sokrat-gateway-secrets}"
 TRANSPORT="${SOKRAT_TRANSPORT:-openvpn-frp}"
 MEDIA_POOL="${SOKRAT_MEDIA_POOL:-10.253.0.0/22}"
+MEDIA_UDP_PORTS="${SOKRAT_MEDIA_UDP_PORTS:-}"
 FCM_FILE="${GATEWAY_FCM_FILE:-}"
 ADMIN_PASSWORD_FILE="${GATEWAY_ADMIN_PASSWORD_FILE:-}"
 SHOW_ADMIN_PASSWORD="${SHOW_ADMIN_PASSWORD:-false}"
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
         --control) CONTROL_PUBLIC="${2:-}"; shift 2 ;;
         --transport) TRANSPORT="${2:-}"; shift 2 ;;
         --media-pool) MEDIA_POOL="${2:-}"; shift 2 ;;
+        --media-udp-ports) MEDIA_UDP_PORTS="${2:-}"; shift 2 ;;
         --secrets-dir) SECRETS_DIR="${2:-}"; shift 2 ;;
         --fcm-file) FCM_FILE="${2:-}"; shift 2 ;;
         --admin-password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
@@ -40,7 +42,7 @@ while [ $# -gt 0 ]; do
         --firewall) FIREWALL_MODE="${2:-}"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         -h|--help)
-            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--firewall auto|required|off] [--db bundled] [--control public|private] [--transport openvpn-frp|legacy] [--media-pool CIDR] [--secrets-dir DIR] [--fcm-file PATH] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
+            echo "Usage: install.sh [--host IP] [--email EMAIL] [--tls ip|existing] [--firewall auto|required|off] [--db bundled] [--control public|private] [--transport openvpn-frp|legacy] [--media-pool CIDR] [--media-udp-ports PORT[,PORT|START:END...]] [--secrets-dir DIR] [--fcm-file PATH] [--admin-password-file FILE] [--show-admin-password] [--non-interactive]"
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
@@ -236,6 +238,11 @@ if (pool.version != 4 or pool.prefixlen > 22
                    for net in private)):
     raise SystemExit('SOKRAT_MEDIA_POOL must be a private IPv4 /22 or larger')
 PY
+
+# Operator-approved gateway UDP media endpoints. Validate the full list before
+# any gateway service or firewall change; the host firewall manifest is
+# reconciled from the enrolled transport registry after the base firewall exists.
+MEDIA_UDP_OPERATOR_PORTS=$(python3 scripts/media-udp-ports.py "$MEDIA_UDP_PORTS") || exit 2
 
 # HTTP/WS ports. Port 80 is frequently already taken on a general-purpose VPS,
 # so detect a conflict and fall back to 8080 instead of failing to bind later.
@@ -443,6 +450,30 @@ cat << 'EOF' > /etc/sokrat/gateway-onboarding.json
 EOF
 chmod 0600 /etc/sokrat/gateway-onboarding.json
 
+# WireGuard admission token shared with each PBX installer. Set
+# SOKRAT_WG_ADMISSION_TOKEN to the PBX value, or copy the PBX's
+# /etc/sokrat/wg-admission.json into the gateway host after installation.
+if [ ! -s /etc/sokrat/wg-admission.json ]; then
+    WG_ADMISSION_TOKEN="${SOKRAT_WG_ADMISSION_TOKEN:-}"
+    if [ -z "$WG_ADMISSION_TOKEN" ]; then
+        WG_ADMISSION_TOKEN="$(openssl rand -hex 32)"
+    fi
+    if [[ ! "$WG_ADMISSION_TOKEN" =~ ^[a-f0-9]{64}$ ]]; then
+        echo "SOKRAT_WG_ADMISSION_TOKEN must be 64 lowercase hex characters" >&2
+        exit 1
+    fi
+    (umask 077; printf '{"token":"%s","interface":"wg0","allowedCidr":"%s"}\n' \
+        "$WG_ADMISSION_TOKEN" "${SOKRAT_WG_ALLOWED_CIDR:-10.66.0.0/24}" \
+        > /etc/sokrat/wg-admission.json)
+    chown "${SOKRAT_UID}:${SOKRAT_GID}" /etc/sokrat/wg-admission.json
+    chmod 0600 /etc/sokrat/wg-admission.json
+    echo "WireGuard admission token configured (share this exact file with the PBX)"
+else
+    chown "${SOKRAT_UID}:${SOKRAT_GID}" /etc/sokrat/wg-admission.json
+    chmod 0600 /etc/sokrat/wg-admission.json
+    echo "Existing WireGuard admission config preserved"
+fi
+
 if [ ! -f /etc/sokrat/gateway-provisioning.json ]; then
     cat << EOF > /etc/sokrat/gateway-provisioning.json
 {
@@ -623,6 +654,13 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
         chmod 0644 "$FIREWALL_STATUS_FILE"
+        if [ -n "$MEDIA_UDP_OPERATOR_PORTS" ]; then
+            python3 scripts/media-udp-firewall.py --apply \
+                --operator-ports "$MEDIA_UDP_OPERATOR_PORTS" > /dev/null || {
+                echo -e "${RED}Approved gateway UDP media ports could not be opened.${NC}" >&2
+                exit 1
+            }
+        fi
         echo -e "${GREEN}✓ ${FIREWALL_MANAGER} active; SSH ${SSH_PORT}/tcp and gateway ports allowed.${NC}"
     elif [ "$FIREWALL_MODE" = "required" ]; then
         echo -e "${RED}No host firewall could be configured (required mode).${NC}" >&2
@@ -745,6 +783,13 @@ fi
 echo 'Secure PBX pairing is READY: open the Control Dashboard and use "Show Pairing Code", then paste it in Sokrat VOIP → Settings → Sokrat Gateway.'
 echo -e "Reverse Tunnel Ingress:  ${GREEN}${PUBLIC_HOST}:7000 (TLS)${NC}"
 echo -e "CoTURN STUN/TURN:        ${GREEN}${PUBLIC_HOST}:3478 (UDP/TCP)${NC}"
+if [ -n "$MEDIA_UDP_OPERATOR_PORTS" ]; then
+    if [ -n "$FIREWALL_MANAGER" ]; then
+        echo -e "Gateway media UDP:       ${GREEN}${PUBLIC_HOST} ${MEDIA_UDP_OPERATOR_PORTS}${NC}"
+    else
+        echo -e "${YELLOW}Gateway media UDP was not opened by the host firewall: ${MEDIA_UDP_OPERATOR_PORTS}${NC}"
+    fi
+fi
 echo
 echo -e "Access the Control Dashboard directly in your browser:"
 echo -e "   ${GREEN}https://${PUBLIC_HOST}/control/${NC}"

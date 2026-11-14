@@ -244,8 +244,9 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
                     session.close('authorization_revoked');
                 } else session.heartbeat();
             } catch (err) {
-                console.warn(`[sip-proxy][${session.route?.extension}] terminated: heartbeat_exception:`, err?.message);
-                session.close('heartbeat_exception');
+                // A transient control-store/API failure must not tear down a
+                // live SIP dialog. Explicit revoke/reject returns null above.
+                console.warn(`[sip-proxy][${session.route?.extension}] authorization check deferred:`, err?.message);
             }
         }
     }, 10000);

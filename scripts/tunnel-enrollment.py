@@ -29,7 +29,7 @@ import sys
 import threading
 import urllib.parse
 
-from tunnel_media import allocation, validate_plan
+from tunnel_media import allocation, validate_plan, validate_transport
 from tunnel_media_material import new_material, for_role
 
 ROOT = Path('/etc/sokrat/tunnel-enrollment')
@@ -51,6 +51,19 @@ def load_installer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def reconcile_media_firewall():
+    """Open and persist the gateway UDP endpoint before any media unit starts."""
+    helper = Path(__file__).with_name('media-udp-firewall.py')
+    if not helper.is_file():
+        raise ValueError('Gateway media UDP firewall helper is missing')
+    result = subprocess.run(
+        [sys.executable, str(helper), '--apply'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+    )
+    if result.returncode != 0:
+        raise ValueError('Gateway media UDP firewall reconcile failed')
 
 
 def read_json(path, default=None):
@@ -139,10 +152,33 @@ def authorize_plugin(operation, content, installations):
             or not hmac.compare_digest(hash_secret(supplied), record['secretHash'])):
         return False
     if operation == 'NewProxy':
-        if content.get('proxy_type') != 'tcp' or content.get('group') or content.get('group_key'):
+        proxy_type = content.get('proxy_type')
+        proxy_name = content.get('proxy_name')
+        if (proxy_type not in ('tcp', 'udp') or content.get('group')
+                or content.get('group_key')):
             return False
-        allowed = {user + '.' + kind: port for kind, port in record['ports'].items()}
-        return content.get('proxy_name') in allowed and type(content.get('remote_port')) is int and allowed[content['proxy_name']] == content['remote_port']
+        # A registry value for wireguard must never choose an arbitrary port.
+        allowed = {user + '.' + kind: port for kind, port in record['ports'].items()
+                   if kind != 'wireguard'}
+        plan = record.get('plan')
+        slot = plan.get('slot') if isinstance(plan, dict) else None
+        if type(slot) is int and 0 <= slot < 155:
+            # Compatibility with the deployed WireGuard relay: only the
+            # PBX's canonical, slot-derived endpoint, never a global port.
+            allowed[user + '.wireguard'] = 24000 + slot
+        if (not isinstance(proxy_name, str) or proxy_name not in allowed
+                or type(content.get('remote_port')) is not int
+                or allowed[proxy_name] != content['remote_port']):
+            return False
+        # Control/WS/API stay TCP. Only the exact media proxy may use UDP,
+        # which avoids TCP head-of-line blocking for RTP. WireGuard is also
+        # UDP-only and must never be selected over TCP.
+        if proxy_type == 'udp':
+            if not (proxy_name.endswith('.media') or proxy_name.endswith('.wireguard')):
+                return False
+        elif proxy_name.endswith('.wireguard'):
+            return False
+        return True
     return True
 
 
@@ -236,10 +272,22 @@ def reserve(config, installations, body):
         raise ValueError('Tenant capacity reached')
     pbx_id = 'pbx_' + secrets.token_hex(8)
     media = allocation(pbx_id, slot, config['mediaPool'])
+    # New enrollments use the authenticated plain-UDP wire v2 by default. The
+    # canonical port is slot-derived and never a fixed lab port; an existing
+    # direct/plain tenant already holding it fails closed before any write.
+    transport = validate_transport({'mode': 'plain-udp', 'host': config['publicHost'],
+                                    'port': 26000 + slot}, media)
+    for other in installations.values():
+        assigned = other.get('mediaTransport')
+        if assigned is None:
+            continue
+        other_port = validate_transport(assigned, other.get('plan'))['port']
+        if other_port == transport['port']:
+            raise ValueError('Media UDP port is already assigned to another tenant')
     entry = {'pbxId': pbx_id, 'installationId': identifier,
              'secretHash': hash_secret(body['installationSecret']),
-             'plan': media, 'ports': proxy_ports(slot)}
-    material = new_material(media)
+             'plan': media, 'ports': proxy_ports(slot), 'mediaTransport': transport}
+    material = new_material(media, transport=transport)
     material['readinessKey'] = secrets.token_urlsafe(32)
     directory = ROOT / pbx_id
     installer = load_installer()
@@ -278,6 +326,11 @@ def register(config, body):
             fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
             installations = read_json(REGISTRY, {})
             entry = reserve(config, installations, body)
+            # The persisted registry is the only authority for the media
+            # transport. A request body cannot select or override it, and an
+            # invalid stored value must fail before any service, identity or
+            # control-route change. Legacy installations have no value.
+            transport = validate_transport(entry.get('mediaTransport'), entry['plan'])
             _,hooks_path = trusted_state(config)
             hooks = read_json(hooks_path, {})
             if entry['pbxId'] not in hooks:
@@ -296,14 +349,22 @@ def register(config, body):
             material = read_json(ROOT / entry['pbxId'] / 'material.json')
             # Approval is checked before any service start. A disabled tenant's
             # saved credential must not restart its media service on retry.
-            load_installer().install({'plan':entry['plan'], 'material':for_role(material,'gateway')},'gateway',True)
-        return {'success':True, 'pbxId':entry['pbxId'], 'installationId':entry['installationId'],
+            if transport is not None:
+                reconcile_media_firewall()
+            load_installer().install({'plan':entry['plan'], 'material':for_role(material,'gateway'),
+                                      'transport':transport},'gateway',True)
+        response = {'success':True, 'pbxId':entry['pbxId'], 'installationId':entry['installationId'],
                 'plan':entry['plan'], 'material':for_role(material, 'pbx'), 'ports':entry['ports'],
                 'tunnelPort':config['tunnelPort'], 'serverHost':config['publicHost'],
                 'serverCa':(ROOT / 'server.crt').read_text(), 'serverName':config['publicHost'],
                 'frpToken':frp_token,
                 'hookToken':hooks[entry['pbxId']], 'readinessKey':material['readinessKey'],
                 'gatewayUrl':config['gatewayUrl']}
+        # Only an explicit direct mode is advertised; a legacy response stays
+        # byte-identical so an unconfigured tenant keeps its FRP media proxy.
+        if transport is not None:
+            response['mediaTransport'] = transport
+        return response
 
 
 def stage_migration(body):

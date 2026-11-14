@@ -25,6 +25,8 @@ p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
 print(json.dumps({r:m.media_config(p,r,'/etc/sokrat/media/pbx_0123456789abcdef') for r in ('gateway','pbx')}))`));
     assert.match(configs.gateway, /remote 127\.0\.0\.1 22003/);
     assert.match(configs.pbx, /local 127\.0\.0\.1/);
+    assert.match(configs.gateway, /^proto tcp-client$/m);
+    assert.match(configs.pbx, /^proto tcp-server$/m);
     assert.match(configs.gateway, /remote-cert-tls server/);
     assert.match(configs.pbx, /remote-cert-tls client/);
     assert.match(configs.pbx, /^server-poll-timeout 0$/m);
@@ -162,3 +164,233 @@ unit=m.build_unit({'turn_root':Path('/etc/sokrat/turn'),'transport':'legacy'})
 assert 'After=network-online.target tailscaled.service' in unit
 print('ok')`).trim(), 'ok');
 });
+
+test('direct UDP media swaps TLS roles and endpoints between gateway and PBX', () => {
+    const configs = JSON.parse(python(`import json,tunnel_media as m
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+t={'mode':'direct-udp','host':'media.example.net','port':26003}
+print(json.dumps({r:m.media_config(p,r,'/etc/sokrat/media/pbx_0123456789abcdef',(2,6),t) for r in ('gateway','pbx')}))`));
+    assert.match(configs.gateway, /^tls-server$/m);
+    assert.match(configs.gateway, /^local 0\.0\.0\.0$/m);
+    assert.match(configs.gateway, /^port 26003$/m);
+    assert.match(configs.gateway, /^remote-cert-tls client$/m);
+    assert.match(configs.gateway, /verify-x509-name pbx_0123456789abcdef-pbx name/);
+    assert.match(configs.gateway, /^server-poll-timeout 0$/m);
+    assert.match(configs.pbx, /^tls-client$/m);
+    assert.match(configs.pbx, /^nobind$/m);
+    assert.match(configs.pbx, /^remote media\.example\.net 26003$/m);
+    assert.match(configs.pbx, /^remote-cert-tls server$/m);
+    assert.match(configs.pbx, /verify-x509-name pbx_0123456789abcdef-gateway name/);
+    assert.doesNotMatch(configs.pbx, /server-poll-timeout/);
+    assert.doesNotMatch(configs.gateway, /127\.0\.0\.1|17001|22003/);
+    assert.doesNotMatch(configs.pbx, /127\.0\.0\.1|17001|22003/);
+    assert.match(configs.gateway, /^ifconfig 10\.253\.0\.13 10\.253\.0\.14$/m);
+    assert.match(configs.pbx, /^ifconfig 10\.253\.0\.14 10\.253\.0\.13$/m);
+    for (const config of Object.values(configs)) {
+        assert.match(config, /^dev skm3$/m);
+        assert.match(config, /^ca \/etc\/sokrat\/media\/pbx_0123456789abcdef\/ca\.crt$/m);
+        assert.match(config, /tls-crypt \/etc\/sokrat\/media\/pbx_0123456789abcdef\/tls-crypt\.key/);
+        assert.match(config, /cipher AES-256-GCM/);
+        assert.doesNotMatch(config, /redirect-gateway|^push |^route /m);
+    }
+});
+
+test('direct UDP media keeps vendor OpenVPN 2.4 without 2.5-only options', () => {
+    const config = python(`import tunnel_media as m
+p=m.allocation('pbx_0123456789abcdef',0,'10.253.0.0/22')
+t={'mode':'direct-udp','host':'203.0.113.7','port':26000}
+print(m.media_config(p,'gateway','/etc/sokrat/media/pbx_0123456789abcdef',(2,4),t))`);
+    assert.match(config, /^port 26000$/m);
+    assert.match(config, /^tls-server$/m);
+    assert.match(config, /ncp-ciphers AES-256-GCM:AES-128-GCM/);
+    assert.doesNotMatch(config, /data-ciphers|disable-dco|^remote /m);
+});
+
+test('media transport accepts a bounded explicit UDP endpoint', () => {
+    assert.equal(python(`import tunnel_media as m
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+ok=[{'mode':'direct-udp','host':'203.0.113.7','port':26003},
+    {'mode':'direct-udp','host':'media.example.net','port':26154},
+    {'mode':'direct-udp','host':'a','port':65535}]
+bad=[{'mode':'direct-udp','host':'media.example.net','port':1023},
+     {'mode':'direct-udp','host':'media.example.net','port':65536},
+     {'mode':'direct-udp','host':'media.example.net','port':True},
+     {'mode':'direct-udp','host':'media.example.net','port':'26003'},
+     {'mode':'direct-udp','host':'media.example.net','port':26003.0},
+     {'mode':'direct-upd','host':'media.example.net','port':26003},
+     {'mode':True,'host':'media.example.net','port':26003},
+     {'mode':'direct-udp','host':'media.example.net','port':26003,'extra':1},
+     {'mode':'direct-udp','host':'media.example.net'},
+     {'host':'media.example.net','port':26003},
+     {'mode':'direct-udp','host':'media.example.net\\nremote evil 1','port':26003},
+     {'mode':'direct-udp','host':'media example.net','port':26003},
+     {'mode':'direct-udp','host':'media.example.net\\n','port':26003},
+     {'mode':'direct-udp','host':'media.example.net;id','port':26003},
+     {'mode':'direct-udp','host':'media.example.net#x','port':26003},
+     {'mode':'direct-udp','host':'media.example.net,udp4','port':26003},
+     {'mode':'direct-udp','host':'-bad.example.net','port':26003},
+     {'mode':'direct-udp','host':'bad-.example.net','port':26003},
+     {'mode':'direct-udp','host':'media..example.net','port':26003},
+     {'mode':'direct-udp','host':'999.1.1.1','port':26003},
+     {'mode':'direct-udp','host':'','port':26003},
+     {'mode':'direct-udp','host':26003,'port':26003}]
+for t in ok:
+ assert m.validate_transport(t,p)==t
+for t in bad:
+ try: m.validate_transport(t,p); raise AssertionError('accepted bad transport: %r' % (t,))
+ except ValueError: pass
+for t in ([], 'direct-udp', 1):
+ try: m.validate_transport(t,p); raise AssertionError('accepted non-dict transport')
+ except ValueError: pass
+assert m.validate_transport(None,p) is None
+q=m.allocation('pbx_0123456789abcdef',0,'10.253.0.0/22')
+assert m.validate_transport({'mode':'direct-udp','host':'h.example','port':26000},q)['port']==26000
+r=m.allocation('pbx_0123456789abcdef',154,'10.253.0.0/22')
+assert m.validate_transport({'mode':'direct-udp','host':'h.example','port':26154},r)['port']==26154
+print('ok')`).trim(), 'ok');
+});
+
+test('installer refuses an injected transport before querying openvpn or writing files', () => {
+    assert.equal(python(`import importlib.util
+from unittest.mock import patch
+import tunnel_media as m
+s=importlib.util.spec_from_file_location('installer','install-media-link.py')
+i=importlib.util.module_from_spec(s);s.loader.exec_module(i)
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+calls=[]
+def fail(*args,**kwargs):
+ calls.append(args)
+ raise AssertionError('side effect before transport validation')
+for bad in [{'mode':'direct-udp','host':'media.example.net\\nremote 1.2.3.4 1','port':26003},
+            {'mode':'direct-udp','host':'media.example.net','port':26004},
+            {'mode':'frp','host':'media.example.net','port':26003}]:
+ with patch.object(i.os,'geteuid',lambda:0),patch.object(i,'version',fail),patch.object(i,'private_directory',fail),patch.object(i,'write',fail):
+  try: i.install({'plan':p,'transport':bad,'material':{}},'gateway')
+  except ValueError: pass
+  else: raise AssertionError('accepted invalid transport')
+assert calls==[]
+print('ok')`).trim(), 'ok');
+});
+
+test('direct and legacy media certificates are not interchangeable', () => {
+    assert.equal(python(`import importlib.util
+import tunnel_media as m,tunnel_media_material as k
+from cryptography import x509
+from cryptography.x509.oid import ExtendedKeyUsageOID
+s=importlib.util.spec_from_file_location('installer','install-media-link.py')
+i=importlib.util.module_from_spec(s);s.loader.exec_module(i)
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+t={'mode':'direct-udp','host':'media.example.net','port':26003}
+direct=k.new_material(p,t); legacy=k.new_material(p)
+for role,usage in [('gateway',ExtendedKeyUsageOID.SERVER_AUTH),('pbx',ExtendedKeyUsageOID.CLIENT_AUTH)]:
+ c=x509.load_pem_x509_certificate(direct[role+'.crt'].encode())
+ assert list(c.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value)==[usage]
+i.validate_material(k.for_role(direct,'gateway'),p,'gateway',t)
+i.validate_material(k.for_role(direct,'pbx'),p,'pbx',t)
+i.validate_material(k.for_role(legacy,'gateway'),p,'gateway')
+i.validate_material(k.for_role(legacy,'pbx'),p,'pbx')
+def refused(material,role,transport=None):
+ try: i.validate_material(material,p,role,transport)
+ except ValueError: return
+ raise AssertionError('accepted mismatched media material')
+refused(k.for_role(legacy,'gateway'),'gateway',t)
+refused(k.for_role(direct,'gateway'),'gateway')
+refused(k.for_role(direct,'pbx'),'pbx')
+refused(k.for_role(legacy,'pbx'),'pbx',t)
+refused(k.for_role(direct,'pbx'),'gateway',t)
+refused(k.for_role(direct,'gateway'),'pbx',t)
+foreign=m.allocation('pbx_fedcba9876543210',3,'10.253.0.0/22')
+refused(k.for_role(k.new_material(foreign,t),'gateway'),'gateway',t)
+print('ok')`).trim(), 'ok');
+});
+
+test('plain UDP transport keeps host validation and unprivileged port boundaries', () => {
+    assert.equal(python(`import tunnel_media as m
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+ok=[{'mode':'plain-udp','host':'203.0.113.7','port':26003},
+    {'mode':'plain-udp','host':'media.example.net','port':26154}]
+bad=[{'mode':'plain-upd','host':'media.example.net','port':26003},
+     {'mode':{},'host':'media.example.net','port':26003},
+     {'mode':[],'host':'media.example.net','port':26003},
+     {'mode':'plain-udp','host':'media.example.net','port':1023},
+     {'mode':'plain-udp','host':'media.example.net','port':True},
+     {'mode':'plain-udp','host':'media.example.net\\nremote 1.2.3.4 1','port':26003},
+     {'mode':'plain-udp','host':'media.example.net','port':26003,'extra':1},
+     {'mode':'plain-udp','host':'media.example.net'}]
+for t in ok:
+ assert m.validate_transport(t,p)==t
+for t in bad:
+ try: m.validate_transport(t,p); raise AssertionError('accepted bad plain transport: %r' % (t,))
+ except ValueError: pass
+print('ok')`).trim(), 'ok');
+});
+
+test('plain material is one role-independent key and its config is JSON with derived paths', () => {
+    const out = JSON.parse(python(`import json,tunnel_media as m,tunnel_media_material as k
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+t={'mode':'plain-udp','host':'media.example.net','port':26003}
+a=k.new_material(p,t)
+assert set(a)=={'udp.key'}
+assert len(a['udp.key'])==65 and a['udp.key'].endswith('\\n')
+assert all(c in '0123456789abcdef' for c in a['udp.key'][:-1])
+full=dict(a,readinessKey='r'*43)
+assert k.for_role(full,'gateway')==a and k.for_role(full,'pbx')==a
+legacy=k.new_material(p)
+legacy['readinessKey']='r'*43
+assert set(k.for_role(legacy,'gateway'))=={'ca.crt','gateway.crt','gateway.key','tls-crypt.key'}
+assert set(k.for_role(legacy,'pbx'))=={'ca.crt','pbx.crt','pbx.key','tls-crypt.key'}
+d='/etc/sokrat/media/'+p['pbxId']
+c={r:json.loads(m.media_config(p,r,d,transport=t)) for r in ('gateway','pbx')}
+for r in c:
+ assert set(c[r])=={'role','plan','transport','keyFile','up','down'},c[r]
+ assert c[r]['role']==r and c[r]['plan']==p and c[r]['transport']==t
+ assert c[r]['keyFile']==d+'/udp.key'
+ assert c[r]['up']==d+'/link-up' and c[r]['down']==d+'/link-down'
+try: m.media_config(p,'root',d,transport=t); raise AssertionError('accepted unknown plain role')
+except ValueError: pass
+assert __import__('re').fullmatch(r'[a-f0-9]{64}\\n',a['udp.key'])
+print(json.dumps({'config':c}))`));
+    assert.doesNotMatch(JSON.stringify(out.config), /BEGIN|tls-crypt|openvpn|remote /i);
+    for (const role of ['gateway', 'pbx']) {
+        assert.deepEqual(Object.keys(out.config[role]).sort(),
+            ['down', 'keyFile', 'plan', 'role', 'transport', 'up']);
+        assert.equal(out.config[role].role, role);
+        assert.equal(out.config[role].plan.pbxId, 'pbx_0123456789abcdef');
+        assert.equal(out.config[role].keyFile, '/etc/sokrat/media/pbx_0123456789abcdef/udp.key');
+        assert.equal(out.config[role].up, '/etc/sokrat/media/pbx_0123456789abcdef/link-up');
+    }
+});
+
+test('plain installer rejects malformed or mixed material before privileged writes', () => {
+    assert.equal(python(`import importlib.util
+from unittest.mock import patch
+import tunnel_media as m,tunnel_media_material as k
+s=importlib.util.spec_from_file_location('installer','install-media-link.py')
+i=importlib.util.module_from_spec(s);s.loader.exec_module(i)
+p=m.allocation('pbx_0123456789abcdef',3,'10.253.0.0/22')
+t={'mode':'plain-udp','host':'media.example.net','port':26003}
+good=k.new_material(p,t)
+i.validate_material(good,p,'gateway',t);i.validate_material(good,p,'pbx',t)
+def refused(material):
+ try:i.validate_material(material,p,'gateway',t)
+ except ValueError:return
+ raise AssertionError('accepted malformed plain material')
+for bad in [{},{'udp.key':'a'*64},
+            {'udp.key':'A'*64+'\\n'},{'udp.key':'g'*64+'\\n'},
+            {'udp.key':good['udp.key']+'\\n'},
+            {'udp.key':good['udp.key'],'readinessKey':'r'*43},
+            {'udp.key':good['udp.key'],'ca.crt':'x'}]:
+ refused(bad)
+refused(k.new_material(p))
+refused(k.for_role(k.new_material(p),'gateway'))
+calls=[]
+def fail(*args,**kwargs):
+ calls.append(args);raise AssertionError('side effect before material validation')
+with patch.object(i.os,'geteuid',lambda:0),patch.object(i,'version',fail),patch.object(i,'private_directory',fail),patch.object(i,'write',fail):
+ try:i.install({'plan':p,'transport':t,'material':{'udp.key':'a'*63+'\\n'}},'gateway')
+ except ValueError:pass
+ else:raise AssertionError('accepted malformed plain key')
+assert calls==[]
+print('ok')`).trim(), 'ok');
+});
+

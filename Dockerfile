@@ -67,6 +67,10 @@ WORKDIR /opt/sokrat-push-gateway
 COPY --from=node-deps --chown=sokrat-push:sokrat-push /opt/sokrat-push-gateway/node_modules ./node_modules
 COPY --chown=sokrat-push:sokrat-push . .
 
+# Only the containerized worker is staged here. Host firewall helpers
+# (media-udp-firewall.py, media-udp-ports.py) belong to the root host bundle
+# promoted by scripts/install-{provisioning-worker,tunnel-enrollment}.py: this
+# container has no firewall authority, so it must never apply host UDP rules.
 RUN cp scripts/reconcile-tenant-provisioning.py /usr/local/lib/sokrat-tenant-provisioning/ && \
     cp scripts/sync-tenant-runtime.py /usr/local/lib/sokrat-tenant-provisioning/ && \
     cp scripts/provisioning-onboarding.py /usr/local/lib/sokrat-tenant-provisioning/ && \

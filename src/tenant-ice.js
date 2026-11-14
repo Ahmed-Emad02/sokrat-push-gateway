@@ -14,10 +14,15 @@ function installTenantIce(router, { authorizeDevice, getRelay }) {
                 return res.status(503).json({ error: 'PBX media relay is not provisioned' });
             }
             const username = `${Math.floor(Date.now() / 60000) * 60 + 900}:${assignment.pbxId}:${assignment.deviceId}`;
-            res.json({ iceServers: [{
-                urls: [`turn:${relay.host}:${relay.port}?transport=udp`, `turn:${relay.host}:${relay.port}?transport=tcp`],
-                username, credential: crypto.createHmac('sha1', relay.secret).update(username).digest('base64')
-            }] });
+            res.json({
+                iceServers: [{
+                    // Mobile media policy is UDP-only, with no TCP fallback.
+                    // no-tcp-relay alone does not disable TURN-over-TCP.
+                    urls: [`turn:${relay.host}:${relay.port}?transport=udp`],
+                    username, credential: crypto.createHmac('sha1', relay.secret).update(username).digest('base64')
+                }],
+                iceTransportPolicy: 'relay'
+            });
         } catch (_) { res.status(503).json({ error: 'Relay unavailable' }); }
     });
 }

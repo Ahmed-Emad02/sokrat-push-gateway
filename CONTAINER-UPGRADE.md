@@ -25,12 +25,47 @@ before build or recreation; do not bypass that refusal with the first installer.
 
 Apply rebuilds the gateway image and runs Compose `up` for that service only,
 with `--no-deps --no-build`. It does not run the first installer, rewrite `.env`,
-rotate credentials, reset state, open firewall ports, or manage unrelated
+rotate credentials, reset state, open unrecorded firewall ports, or manage unrelated
 containers. The image entrypoint no longer recursively changes ownership or mode
 of host bind mounts. Existing mounted FCM credentials, control configuration,
 registry and other data remain in place; the application and provisioning worker
 may still make their normal runtime writes. The image build can need network
 access, and its source and dependency updates must be reviewed before use.
+
+## Host bundle, media units and firewall
+
+Host enrollment/media code is outside the image. When the mounted `/etc/sokrat`
+contains `tunnel-enrollment/config.json`, a successful `--apply` promotes the
+reviewed host bundle after the new container is running, using the existing
+`scripts/install-provisioning-worker.py --apply`. Preflight refuses before build
+if the host bundle is incomplete. Promotion keeps `/etc/sokrat`, credentials,
+certificates, keys, media PKI and service account IDs untouched. It backs up
+prior bundle files, stops only the provisioning timer/worker, onboarding and
+enrollment units, and restores only units that were already active. It does not
+stop Asterisk, call signalling, coturn or `sokrat-media-*`, and it adds no
+container privileges.
+
+Media UDP firewall state is reconciled separately from container recreation.
+`media-udp-firewall.py` reads only persisted `mediaTransport` records, updates
+the existing `/etc/sokrat/host-firewall.json` manifest, and adds missing exact
+`<port>/udp` rules. It is additive and idempotent: legacy tenants stay legacy,
+operator/manual rules are preserved, and no rule is deleted or flushed. Only a
+host process applies it: a successful `--apply` reasserts the recorded endpoints
+from the promoted host bundle right after promotion, and each PBX enrollment
+applies the endpoint before its media unit starts. The container image ships no
+host firewall helper, so the in-container tenant reconcile leaves host rules
+alone. New PBX enrollments after the upgrade default to authenticated plain UDP
+on their canonical slot endpoint; existing legacy registry rows stay legacy and
+are not migrated implicitly. On a fresh host use
+`install.sh --media-udp-ports`; on an existing host after review run
+`sudo /usr/local/lib/sokrat-tenant-provisioning/media-udp-firewall.py --apply`.
+A gateway cutover to a new/different UDP port reconciles this additive manifest
+on apply and rollback; an opened rule must still be closed explicitly. A
+plain/direct UDP mode-only switch retaining the same port does not invoke the
+firewall manager.
+With firewalld, permanent and runtime port rules are checked and repaired
+independently. Reconciliation adds only missing exact rules and does not
+reload firewalld, preserving unrelated runtime-only rules.
 
 ## Operational limits
 

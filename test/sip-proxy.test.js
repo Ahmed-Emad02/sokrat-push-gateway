@@ -47,3 +47,4 @@ test('SIP proxy fails closed, forwards approved sessions and blocks extension su
         client?.terminate(); proxy.close(); upstream.close(); server.close();
     }
 });
+

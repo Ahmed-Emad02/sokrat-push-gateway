@@ -29,7 +29,7 @@ test('relay credentials require PBX authentication and expire in one hour', asyn
         res.code = 200;
         await handler(req, res);
         const server = res.body.iceServers[0];
-        assert.equal(server.urls[0], 'turn:gateway.example:3478?transport=udp');
+        assert.deepEqual(server.urls, ['turn:gateway.example:3478?transport=udp']);
         assert.equal(server.credential, crypto.createHmac('sha1', process.env.TURN_SHARED_SECRET).update(server.username).digest('base64'));
         assert.ok(Math.abs(Number(server.username.split(':')[0]) - Date.now() / 1000 - 3600) < 2);
         global.fetch = async () => ({ ok: false, status: 403 });

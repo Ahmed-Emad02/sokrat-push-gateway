@@ -243,6 +243,30 @@ function watchPushCredentials() {
     timer.unref();
 }
 
+const CALL_PUSH_TTL_MS = 15_000;
+const CANCEL_PUSH_TTL_MS = 120_000;
+
+function androidCallMessage(dev, call) {
+    const cancel = call.msg === 'cancel-call' || call.type === 'cancel-call';
+    const keepalive = call.msg === 'wake' || call.msg === 'keepalive' || call.type === 'keepalive';
+    const incoming = !cancel && !keepalive;
+    const ttl = cancel ? CANCEL_PUSH_TTL_MS : (incoming ? CALL_PUSH_TTL_MS : undefined);
+    return {
+        token: dev.token,
+        android: ttl === undefined ? { priority: 'high' } : { priority: 'high', ttl },
+        data: {
+            msg: cancel ? 'cancel-call' : (call.msg || 'incoming-call'),
+            type: cancel ? 'cancel-call' : (call.type || 'incoming-call'),
+            callerId: call.callerId || '',
+            callerName: call.callerName || 'Incoming Call',
+            extension: call.extension || '',
+            timestamp: String(call.timestamp || Date.now()),
+            callId: call.callId || '',
+            sipWss: call.sipWss || ''
+        }
+    };
+}
+
 async function buildCtx() {
     const ctx = { apnsReady, fcmReady, apnsProvider, fcmApp };
     ctx.sendToDevice = async function (dev, call) {
@@ -272,20 +296,7 @@ async function buildCtx() {
                     },
                 });
             }
-            return await fcmMessaging.send({
-                token: dev.token,
-                android: { priority: 'high' },
-                data: {
-                    msg: call.msg || 'incoming-call',
-                    type: call.type || 'incoming-call',
-                    callerId: call.callerId || '',
-                    callerName: call.callerName || 'Incoming Call',
-                    extension: call.extension || '',
-                    timestamp: String(call.timestamp || Date.now()),
-                    callId: call.callId || '',
-                    sipWss: call.sipWss || ''
-                }
-            });
+            return await fcmMessaging.send(androidCallMessage(dev, call));
         }
         throw new Error(`Unsupported platform: ${dev.platform}`);
     };
@@ -667,7 +678,7 @@ function amiCommand(actions) {
         });
     });
 }
-const GAIN_MIN_DB = -24;
+const GAIN_MIN_DB = -30;
 // Extended mic boost range; matches the app's 150% slider ceiling.
 const GAIN_MAX_DB = 42;
 
@@ -787,7 +798,7 @@ async function start() {
         console.log(`[Sokrat Push Gateway] APNs=${apnsReady ? 'ON' : 'OFF'}  FCM=${fcmReady ? 'ON' : 'OFF'}`);
     });
 }
-module.exports = { app, buildCtx, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume,
+module.exports = { app, buildCtx, androidCallMessage, CALL_PUSH_TTL_MS, CANCEL_PUSH_TTL_MS, dbConfig, normalizeCallId, tokenFingerprint, matchPjsipChannel, dbToAsteriskVolume,
     GAIN_MIN_DB, GAIN_MAX_DB,
     initializePush: reloadPushProviders, watchPushCredentials };
 

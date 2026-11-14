@@ -77,6 +77,22 @@ PBX tunnel:         169.58.109.172:7000 (TLS)
 STUN/TURN:          169.58.109.172:3478 (UDP/TCP)
 ```
 
+Mobile media is UDP-only: both ICE endpoints advertise TURN over UDP, and the
+mobile client rejects TCP/TLS TURN URLs and disables native ICE-TCP candidates.
+UDP-blocked networks fail media establishment rather than falling back to TCP.
+Direct UDP remains available for direct-PBX calls; tenant calls retain their
+relay-only isolation. SIP WebSocket and HTTPS signaling still use TCP.
+Coturn's `no-tcp-relay` disables RFC6062 peer relays, not client TCP listeners;
+the general listener/firewall capabilities above are separate from this policy.
+
+New PBX enrollments select the authenticated plain-UDP wire-v2 media transport
+by default on the tenant's canonical `26000 + slot` gateway endpoint, using the
+public host from the enrollment config and a per-tenant `udp.key`. Existing
+registry rows without a `mediaTransport` stay on their legacy reverse-TLS link;
+explicit direct/plain rows keep their persisted endpoint and key. Enrollment
+never migrates another tenant implicitly. HTTPS/WSS/control and SIP remain TCP.
+
+
 The admin password is printed in the final installer output and, when generated, saved root-only at:
 
 ```text
@@ -108,7 +124,26 @@ applicable.
 
 Port `8002` remains bound to loopback inside the container and must not be exposed by the host firewall.
 
+Each direct/plain gateway↔PBX media link uses one public **UDP** endpoint per
+tenant on the gateway host. Enrollment opens its selected endpoint; existing
+tenants retain their persisted transport. Before enrollment, the optional
+`--media-udp-ports "26154"` can preauthorize explicit operator ports (comma-separated
+unprivileged ports or `start:end` ranges, at most eight entries). The installer
+records them in `/etc/sokrat/host-firewall.json`. On an
+existing host, after reviewing the enrolled transport, run
+`sudo /usr/local/lib/sokrat-tenant-provisioning/media-udp-firewall.py --apply`.
+Reconcile is additive and idempotent: it uses only persisted `mediaTransport`
+entries, preserves unrelated/manual rules, and never deletes a rule or flushes a
+firewall. Host rules persist across reboot; each enrollment reasserts its
+recorded endpoint and the container upgrade reasserts all recorded endpoints
+from the promoted host bundle. Approve only the exact endpoint(s) in use and also
+permit them in any provider firewall.
+
 If certificate issuance fails, installation fails. Do not use HTTP-only public onboarding.
+
+WireGuard peer admission requires HTTPS for non-loopback PBX API URLs. HTTP is
+accepted only for literal `127.0.0.1` or `[::1]`, preserving the local hop into
+the pinned-TLS FRP tunnel. Public HTTP must never carry the admission token.
 
 ## Optional APNs
 

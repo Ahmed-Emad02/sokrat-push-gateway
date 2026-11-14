@@ -19,7 +19,9 @@ def main():
     promotion = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(promotion)
     names = ('tunnel-enrollment.py','tunnel_media.py','tunnel_media_material.py',
-             'install-media-link.py','check-tunnel-readiness.py','sync-tenant-runtime.py')
+             'install-media-link.py','media-transport-transaction.py','udp-media-link.py',
+             'media-udp-firewall.py','media-udp-ports.py',
+             'check-tunnel-readiness.py','sync-tenant-runtime.py')
     installs = [(promotion.BUNDLE/name,promotion.reviewed_source(root/'scripts'/name),0o755)
                 for name in names]
     installs.append((promotion.BUNDLE/'provisioning-firewall-local.py',

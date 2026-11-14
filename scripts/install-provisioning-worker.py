@@ -25,6 +25,8 @@ FILES = (
     'install-tenant-push-hook.py', 'pbx-tenant-push-hook.py',
     'provisioning-onboarding.py',
     'tunnel_media.py', 'tunnel_media_material.py', 'install-media-link.py',
+    'media-transport-transaction.py', 'udp-media-link.py',
+    'media-udp-firewall.py', 'media-udp-ports.py',
     'tunnel-enrollment.py',
     'check-tunnel-readiness.py',
 )

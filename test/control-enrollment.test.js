@@ -162,7 +162,11 @@ test('claim enrollment validates its anonymous body', async () => {
 test('approval preserves the claim and redemption activates the client credential once', async () => {
     const { store, close } = await makeStore();
     try {
-        const pbx = await store.addPbx(pbxInput('HQ'));
+        const pbx = await store.addPbx(pbxInput('HQ', {
+            directWsURL: 'wss://public-pbx.example.com:8089/ws',
+            directApiURL: 'https://public-pbx.example.com:8080',
+            allowDirectFallback: true,
+        }));
         const claimSecret = newClaimSecret();
         const enrolled = await store.enrollClaim(claimBody(claimSecret));
 
@@ -194,6 +198,10 @@ test('approval preserves the claim and redemption activates the client credentia
         assert.equal(redeemed.assignment.extension, '162');
         assert.equal(redeemed.assignment.wsURL, 'wss://pbx.example.com:8089/ws');
         assert.equal(redeemed.assignment.apiURL, 'https://pbx.example.com:8080/');
+        assert.deepEqual(redeemed.assignment.directFallback, {
+            wsURL: 'wss://public-pbx.example.com:8089/ws',
+            apiURL: 'https://public-pbx.example.com:8080/',
+        });
         assert.equal(redeemed.device.hasSecret, true);
         assert.ok(redeemed.device.claimRedeemedAt);
         assert.equal(JSON.stringify(redeemed).includes(claimSecret), false, 'never echo the secret');

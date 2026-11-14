@@ -469,6 +469,42 @@ test('caps pending devices and refuses enrollment beyond the queue', async () =>
     }
 });
 
+test('persists per-PBX direct fallback settings disabled by default', async () => {
+    const { filePath, store, close } = await makeStore();
+    try {
+        const defaultPbx = await store.addPbx(pbxInput('Default'));
+        assert.equal(defaultPbx.allowDirectFallback, false);
+        assert.equal(defaultPbx.directWsURL, '');
+        assert.equal(defaultPbx.directApiURL, '');
+
+        const enabled = await store.addPbx(pbxInput('Fallback', {
+            directWsURL: 'wss://pbx.example.com:8089/ws',
+            directApiURL: 'https://pbx.example.com:8080',
+            allowDirectFallback: true,
+        }));
+        assert.equal(enabled.allowDirectFallback, true);
+        assert.equal(enabled.directWsURL, 'wss://pbx.example.com:8089/ws');
+
+        const reloaded = new ControlStore({ filePath });
+        await reloaded.init();
+        const list = reloaded.listPbx();
+        const persisted = list.find(item => item.id === enabled.id);
+        assert.equal(persisted.directWsURL, 'wss://pbx.example.com:8089/ws');
+        assert.equal(persisted.directApiURL, 'https://pbx.example.com:8080/');
+        assert.equal(persisted.allowDirectFallback, true);
+
+        const disabled = await store.updatePbx(enabled.id, {
+            allowDirectFallback: false,
+            directWsURL: '',
+            directApiURL: '',
+        });
+        assert.equal(disabled.allowDirectFallback, false);
+        assert.equal(disabled.directWsURL, '');
+    } finally {
+        await close();
+    }
+});
+
 test('audit entries never contain secrets or token material', async () => {
     const { store, close } = await makeStore();
     try {
@@ -494,3 +530,4 @@ test('audit entries never contain secrets or token material', async () => {
         await close();
     }
 });
+

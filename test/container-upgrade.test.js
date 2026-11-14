@@ -195,3 +195,55 @@ test('first-install guard precedes writes and container startup does not recursi
     assert.doesNotMatch(install, /chown -R root:root \/etc\/sokrat/);
     assert.doesNotMatch(entrypoint, /chown -R .*\/(?:etc\/sokrat|var\/lib\/sokrat-gateway|var\/log\/sokrat)/);
 });
+
+test('host bundle promotion reuses the reviewed installer and refuses an incomplete bundle', () => {
+    const upgrade = path.resolve(__dirname, '../scripts/upgrade-container-gateway.py');
+    const result = spawnSync('python3', ['-B', '-c', `
+import importlib.util, subprocess, sys, tempfile
+from pathlib import Path
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('upgrade', ${JSON.stringify(upgrade)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as root:
+    bundle = Path(root) / 'bundle'; bundle.mkdir()
+    (bundle / 'tunnel-enrollment.py').write_text('fixture')
+    with patch.object(m, 'BUNDLE', bundle), patch.object(m.subprocess, 'run') as run:
+        run.return_value.stdout = ''
+        m.promote_host_bundle({'PATH': '/fixture'})
+        args, kwargs = run.call_args
+        assert args[0] == [sys.executable, str(m.ROOT / 'scripts/install-provisioning-worker.py'), '--apply']
+        assert kwargs['cwd'] == m.ROOT and kwargs['env'] == {'PATH': '/fixture'} and kwargs['check'] is True
+    with patch.object(m, 'BUNDLE', Path(root) / 'missing'):
+        try:
+            m.promote_host_bundle({})
+        except m.Refusal:
+            pass
+        else:
+            raise AssertionError('incomplete bundle promoted')
+    with patch.object(m, 'BUNDLE', bundle), \\
+         patch.object(m.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'installer')):
+        try:
+            m.promote_host_bundle({})
+        except m.Refusal:
+            pass
+        else:
+            raise AssertionError('failed promotion hidden')
+print('ok')
+`], { encoding: 'utf8', timeout: 15000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'ok');
+});
+
+test('host enrollment without a promotable bundle refuses before build', t => {
+    if (fs.existsSync('/usr/local/lib/sokrat-tenant-provisioning/tunnel-enrollment.py')) {
+        t.skip('host bundle present on this test machine');
+        return;
+    }
+    const { root, fixture } = setup(t);
+    fs.mkdirSync(path.join(root, 'etc-sokrat', 'tunnel-enrollment'));
+    fs.writeFileSync(path.join(root, 'etc-sokrat', 'tunnel-enrollment', 'config.json'), '{}');
+    const result = upgrade(root, fixture, true);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /host provisioning bundle is incomplete/);
+    assert.ok(result.log.every(row => !row.args.includes('build') && !row.args.includes('up')));
+});

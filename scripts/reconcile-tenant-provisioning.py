@@ -190,6 +190,27 @@ def refuse(reason, message):
     raise Refusal(reason, message)
 
 
+def reconcile_media_firewall():
+    """Reassert registry-selected gateway UDP media ports after reboot/upgrade.
+
+    The helper is additive and never deletes firewall rules; it reads the
+    root-owned enrollment registry. Only a worker running from the host bundle
+    has firewall authority: the container image deliberately ships no helper, so
+    a containerized worker returns here and the host enrollment service, the
+    host installer and the container upgrade own the host rules. An older bundle
+    without the helper is not a reconcile failure either.
+    """
+    helper = Path(__file__).with_name("media-udp-firewall.py")
+    if not helper.is_file():
+        return
+    result = subprocess.run(
+        [sys.executable, str(helper), "--apply"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+    )
+    if result.returncode != 0:
+        refuse("media_firewall_failed", "gateway media UDP firewall reconcile failed")
+
+
 # ---------------------------------------------------------------------------
 # Small filesystem primitives
 # ---------------------------------------------------------------------------
@@ -1626,6 +1647,13 @@ def main(argv=None):
         lock_handle = None
         if lock_is_held(config):
             sys.stderr.write("refused [worker_failed]: another provisioning run holds the lock\n")
+            return 2
+
+    if args.apply and not test_mode:
+        try:
+            reconcile_media_firewall()
+        except Refusal as error:
+            sys.stderr.write(f"refused [{error.reason}]: {error}\n")
             return 2
 
     state = None

@@ -135,15 +135,183 @@ Gateway host bundle:
 python3 scripts/install-tunnel-enrollment.py
 ```
 
+### Direct-UDP media transport
+
+New enrollments default to the authenticated plain-UDP wire-v2 transport on the
+tenant's canonical `26000 + slot` gateway endpoint, using the configured public
+host and a per-tenant `udp.key`; the endpoint and key persist in the registry and
+material file so retries reuse the exact identity. Existing registry rows with
+no `mediaTransport` remain on the legacy reverse-TLS path and are never migrated
+implicitly. An explicit direct/plain row keeps its persisted endpoint and key.
+The enrollment broker reconciles the exact gateway UDP firewall endpoint after
+registry persistence and before starting the media unit. Port collision with an
+already-assigned tenant fails closed before any write. HTTPS/WSS/control remain
+TCP, and there is no TCP media fallback.
+
+### Opt-in direct-UDP media cutover
+
+**Encrypted OpenVPN acceptance failed (2026-11-12).** The OpenVPN 2.6.19 gateway /
+2.4.12 PBX direct-UDP trial did not establish a tunnel and was rolled back on
+both hosts; the original reverse-media link reinitialized successfully.
+Captures showed server handshake replies leaving the gateway but not appearing
+at the PBX. Independent 54-byte UDP requests / 66-byte replies passed 5/5 on
+the same port. The exact filtering element is unidentified; do not label this
+a TLS-certificate failure or claim encrypted OpenVPN is live. The isolated two-host
+OpenVPN lab passed, including interrupted-write rollback, but does not establish
+acceptance on this deployment's actual network path.
+
+**Plain-UDP live acceptance passed (2026-11-13).** The test installation uses
+wire version 2 on gateway UDP26154, transaction
+`plain-v2-trace-20261113-093645`. Its real installed-hook identity and
+bidirectional media nonce passed. A subsequent actual-tenant 20ms stream sent
+500 voice-sized packets: the PBX received all 500 and all 500 echoes returned.
+The largest echo-arrival gap was 97.68ms, so this is not a claim that audible
+choppiness is fixed. FRP files, installation authority and existing app,
+Asterisk and TURN process identities remained unchanged. Preserve the private
+transaction snapshot for rollback and compare a real phone call next.
+
+**Encrypted retrial failed (2026-11-14).** Transaction
+`direct-udp-20261114123131` switched the existing endpoint on UDP26154 from
+plain UDP to OpenVPN, but did not pass bidirectional readiness. Both hosts
+rolled back. The restored plain-UDP link subsequently passed the installed
+bidirectional readiness check, including a second check after 50 seconds idle
+with the gateway media process unchanged. This is not encrypted-transport
+acceptance or proof that the reported muted 150-to-102 call is fixed. A mixed
+call recording does not establish delivery to either endpoint independently.
+In a subsequent live 150-to-102 call, the user confirmed audio in both
+directions. The matching PBX observation showed `ulaw` (PCMU), bidirectional
+UDP media on the restored interface and zero reported RTP loss in the sampled
+channel statistics. This short call does not establish prolonged-call quality
+or cold-wake acceptance.
+The installed Android 1.2.24/code 84 was then tested process-cold: its PID
+was absent and the active Android user had `stopped=false` before the call.
+The user confirmed wake, Answer, two-way audio and hangup; a separate cold
+unanswered call cleared ringing/UI after caller cancellation. A new app PID
+and the matching PCMU call were observed. These results apply only to that
+installed APK/device/tenant, not the uninstalled 1.2.25/code 85 source changes.
+
+The legacy media link carries RTP/UDP inside OpenVPN over FRP's **TCP** connection;
+an FRP proxy labelled `udp` is not an end-to-end datagram transport. Direct
+mode bypasses FRP only for media. Gateway TLS-server/PBX TLS-client roles use
+fresh tenant-specific certificates, `tls-crypt`, pinned peer names and the
+existing isolated addresses/interface. The PBX connects outbound: it needs no
+public listener or office port forwarding. SIP/API FRP, TURN relay bindings,
+readiness keys and installation/device authority remain unchanged.
+
+Only an explicitly selected registered tenant is changed. Its default gateway
+UDP port is `26000 + slot`; gateway `prepare --udp-port PORT` selects a different
+unprivileged port when needed. Prepare and apply reject endpoints assigned to
+another tenant. A different target port must be free before stopping media;
+the selected tenant's validated current UDP port may remain occupied during
+prepare. Apply stops only its media unit, then rechecks that the target port is
+free before committing registry or key changes. Approve the exact host/provider
+firewall rule only when opening a new port. On a fresh host pass the same endpoint to
+`install.sh --media-udp-ports PORT` (comma-separated ports or `start:end`
+ranges). On an existing host run
+`/usr/local/lib/sokrat-tenant-provisioning/media-udp-firewall.py --apply` after
+review; it records only persisted `mediaTransport` ports, is additive and
+idempotent, and never deletes or flushes a firewall rule. Container upgrades and
+bundle promotion do not open an unrecorded port; closing one is explicit.
+Do not open a whole range for one test. No TCP fallback. Leave the old FRP media mapping in
+place during acceptance so the reviewed snapshot can restore it without
+restarting FRP.
+
+Promote the updated shared media scripts, `media-transport-transaction.py` and
+`udp-media-link.py` to both reviewed root-owned bundles. Promote enrollment
+without overwriting unrelated deployed authorization changes; restart only the
+enrollment broker so it preserves the selected transport on future enrollment.
+The PBX enrollment module must pass/persist `mediaTransport`; it rejects a
+response that would silently downgrade an already-direct installation.
+
+Run with no active calls. Set `PBX_ID` to the reviewed enrolled identity and
+`TX` to a new bounded transaction name. On the gateway:
+
+```sh
+python3 /usr/local/lib/sokrat-tenant-provisioning/media-transport-transaction.py prepare \
+  --role gateway --pbx-id "$PBX_ID" --transaction-id "$TX"
+```
+
+An existing `plain-udp` or `direct-udp` installation can also switch modes with
+this transaction. Specify its **current** port explicitly, for example
+`--transport direct-udp --udp-port 26154`; omitting the port selects
+`26000 + slot`, not a noncanonical persisted endpoint. The switch retains the
+private media plan, readiness key and old credentials for rollback, while
+creating new mode-specific media material. Selecting the exact already-active
+mode/host/port is refused before generating keys. A same-port UDP mode switch
+does not invoke the firewall manager on apply or rollback. Ensure there are no
+active calls before applying either role.
+
+For the explicitly authorized **unencrypted** test fallback, instead prepare
+with `--transport plain-udp --udp-port 26154`. The private peer bundle carries
+that exact endpoint to the PBX; do not specify a separate PBX port or expose its
+listener publicly. This mode authenticates packets but provides no media
+confidentiality. SIP/API HTTPS and phone-to-TURN SRTP are not downgraded.
+
+The plaintext daemon uses a tenant-specific root-only `udp.key`, directional
+HMAC-SHA256 keys, a nonce challenge bound to the peer endpoint, session IDs,
+and a 128-packet replay window. It never retransmits voice data or falls back to
+TCP. Wire version 2 carries the IPv4 packet with address bytes 12–19 omitted:
+both addresses are implicit in the authenticated tenant plan. The receiver
+restores the original packet exactly, including IP/UDP checksums and options,
+before applying the existing media-only firewall. The 1400-byte TUN MTU remains
+unchanged. Both hosts must load the same wire version; version 1 is not accepted.
+
+Actual-network isolation found content-dependent loss: a slot154 stream passed
+150/150 roundtrips, but changing only its embedded addresses to the slot0 pair
+lost every reply. Omitting those redundant addresses restored 150/150.
+WireGuard did not handshake even on the alternate port with the PBX initiating.
+The intervening filtering device is unidentified; these results do not establish
+encryption CPU overhead as the cause. An unused-interface success alone is not
+live acceptance: the actual tenant must pass the full readiness check below.
+
+Transfer `/var/backups/sokrat-media/$PBX_ID/$TX/peer-bundle.json` privately over
+SSH to the PBX (root-owned `0600`); never print it or put it in the repository.
+Feed it to the PBX's reviewed `scripts/media-transport-transaction.py prepare
+--role pbx --pbx-id "$PBX_ID" --transaction-id "$TX"` through stdin. Prepare
+validates the installed identity, host/version/material and snapshots old
+media/unit/authority state without stopping the live link.
+
+After both hosts prepare, run the same tool's `apply` action first on the
+gateway, then on the PBX, retaining their respective role and transaction flags.
+Only `sokrat-media-$PBX_ID.service` is stopped/restarted. Gateway registry and
+material, plus PBX saved transport, are updated under their coordination locks.
+Run `verify --role gateway` after both apply: it requires the installed hook
+identity and a real authenticated UDP nonce roundtrip, not merely active units.
+
+`BlockingIOError` means an enrollment/reconciliation operation owns the shared
+lock, not that media readiness failed. Wait for that operation to finish and
+retry the same action/transaction; do not roll back only one host because of
+lock contention. Rollback also needs that coordination lock.
+
+If either apply or readiness fails, run `rollback` on **both** hosts with that
+transaction identity. Rollback restores the old media files/certificates/unit
+and the selected registry entry/material or PBX settings; unrelated tenants
+remain unchanged. It also recovers private installer staging files left by an
+interrupted write. Repeating completed rollback is safe. Rollback removes only
+new material files generated for that role; unknown files still stop recovery.
+For a new/different-port cutover the gateway reconciles the additive firewall
+manifest; close a previously opened UDP rule explicitly. A same-port mode switch
+does not modify firewall state.
+
+Do not re-enroll, retire the old FRP media mapping, or make unrelated changes to
+the selected installation during the acceptance window. Authority/configuration
+changes are refused rather than overwritten during cutover or rollback. After
+successful readiness, repeat a phone call with synchronized packet/PCM capture;
+a working tunnel or source test is not evidence that audible choppiness is fixed.
+
+
 ### Installer and upgrader coverage
 
 - Fresh `install.sh` refuses existing control/root enrollment state; it carries
-  TLS mode/ports, prepares a root-only shared lock/trusted-state directory,
-  verifies host OpenVPN/Python dependencies, stages the enrollment broker,
-  generates the FRP token, writes and enables `frps.service`, initializes the
-  enrollment CA/pairing identity, and starts both host services. The dashboard
-  pairing code is therefore available immediately after install. Public employee
-  onboarding is still explicitly reported not-ready without TLS.
+  TLS mode/ports, validates and opens operator-approved gateway UDP media ports,
+  prepares a root-only shared lock/trusted-state directory, verifies host
+  OpenVPN/Python dependencies, stages the enrollment broker, generates the FRP
+  token, writes and enables `frps.service`, initializes the enrollment
+  CA/pairing identity, and starts both host services. New enrollments default to
+  authenticated plain UDP on their canonical slot endpoint; legacy rows remain
+  unchanged. The dashboard pairing code is therefore available immediately after
+  install. Public employee onboarding is still explicitly reported not-ready
+  without TLS.
 - Re-running `scripts/install-tunnel-enrollment.py --apply` alone remains a
   non-activating promotion: it does not initialize secrets, open ports, migrate
   tenants or enable the broker. The fresh-install path performs those steps
@@ -151,8 +319,12 @@ python3 scripts/install-tunnel-enrollment.py
 - `scripts/upgrade-container-gateway.py` defaults to a read-only preflight. It
   preserves mounted authority/credentials, permits only the newly introduced
   default TLS environment options on older containers, and runs authority-aware
-  tenant reconciliation after an explicit recreation. A successful command is
-  not proof of delivered push or employee-call acceptance.
+  tenant reconciliation after an explicit recreation. When root enrollment is
+  mounted, it also promotes the reviewed host bundle with the existing
+  provisioning installer after the new container is running; preflight refuses
+  an incomplete bundle before build. Media PKI, credentials and
+  `sokrat-media-*` units are not regenerated or restarted. A successful command
+  is not proof of delivered push or employee-call acceptance.
 - `scripts/deploy-public-certificate.sh` is installed as
   `/usr/local/bin/sokrat-public-certificate-deploy`. Set that path as the Certbot
   deploy hook. Certbot supplies `RENEWED_LINEAGE`; the hook checks expiry and

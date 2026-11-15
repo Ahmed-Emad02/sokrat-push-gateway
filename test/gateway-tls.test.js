@@ -49,6 +49,9 @@ test('TLS rendering retains nginx variables and exposes control only through 443
     assert.match(rendered, /location = \/ws/);
     assert.match(rendered, /\$sokrat_ws_upstream\$request_uri/);
     assert.match(rendered, /X-Forwarded-For \$remote_addr/);
+    assert.match(rendered, /location = \/api\/gateway\/capabilities \{/);
+    assert.match(rendered, /limit_req zone=sokrat_probe burst=120 nodelay;/);
+    assert.match(rendered, /limit_req_status 429;/);
     assert.match(rendered, /location \/control\//);
     assert.match(rendered, /proxy_pass http:\/\/127\.0\.0\.1:8002/);
     assert.doesNotMatch(rendered, /\/api\/push/);

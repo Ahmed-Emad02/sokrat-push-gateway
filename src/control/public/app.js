@@ -1933,25 +1933,36 @@
                     el('dt', { text: labels[key] || key }),
                     el('dd', { text: text || '—' }));
             }) : [];
-        const details = el('details', { class: 'device-telemetry' },
-            el('summary', {
+        return el('div', { class: 'device-telemetry-panel' },
+            el('p', {
+                class: 'cell-sub',
                 text: telemetry
                     ? `Device diagnostics · ${formatDiagnosticTime(device.telemetryAt)}`
-                    : 'Device diagnostics · none received',
+                    : 'Device diagnostics · none received'
             }),
             telemetry
                 ? el('dl', { class: 'telemetry-grid' }, ...rows)
                 : el('p', { class: 'hint', text: 'This device has not sent a diagnostic heartbeat yet.' }));
-        details.open = openDiagnostics.has(device.id);
-        details.addEventListener('toggle', () => {
-            if (details.open) openDiagnostics.add(device.id);
-            else openDiagnostics.delete(device.id);
-        });
-        return details;
     }
     function renderApproved() {
-        const allApproved = (snapshot.devices || []).filter((device) => device.status === 'approved')
+        // Newest first, then one row per installation: a second approval for the
+        // same hardware (legacy duplicates, re-approvals) would otherwise show
+        // stale PBX/extension data as if it were a second device.
+        const newestFirst = (snapshot.devices || [])
+            .filter((device) => device.status === 'approved')
             .sort((a, b) => (Date.parse(b.reviewedAt || '') || 0) - (Date.parse(a.reviewedAt || '') || 0));
+        const seenInstallations = new Set();
+        const allApproved = [];
+        let superseded = 0;
+        for (const device of newestFirst) {
+            const identity = device.deviceUuid || device.id;
+            if (seenInstallations.has(identity)) {
+                superseded += 1;
+                continue;
+            }
+            seenInstallations.add(identity);
+            allApproved.push(device);
+        }
         const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
         const approved = filterRecords(
             'approved',
@@ -1963,15 +1974,21 @@
         const noToken = allApproved.filter(device => !device.pushRegistered && !device.legacyPushRegistered);
         const noTokenExtensions = [...new Set(noToken.map(device => String(device.extension || 'unknown')))];
         if (refs.approvedTokenWarning) {
-            refs.approvedTokenWarning.hidden = noToken.length === 0;
-            refs.approvedTokenWarning.textContent = noToken.length
-                ? `${noToken.length} approved device${noToken.length === 1 ? '' : 's'} have no active push token (${noTokenExtensions.join(', ')}).`
-                : '';
+            const notes = [];
+            if (superseded) {
+                notes.push(`${superseded} older approval${superseded === 1 ? '' : 's'} for the same device hidden.`);
+            }
+            if (noToken.length) {
+                notes.push(`${noToken.length} approved device${noToken.length === 1 ? '' : 's'} have no active push token (${noTokenExtensions.join(', ')}).`);
+            }
+            refs.approvedTokenWarning.hidden = notes.length === 0;
+            refs.approvedTokenWarning.textContent = notes.join(' ');
         }
         refs.approvedRows.replaceChildren(...approved.flatMap((device) => {
             const title = deviceTitle(device);
             const pbx = device.pbxId ? pbxById.get(device.pbxId) : null;
-            return [
+            const open = openDiagnostics.has(device.id);
+            const rows = [
                 el('tr', {},
                     el('th', { scope: 'row', dataset: { label: 'Device' } },
                         title,
@@ -1982,17 +1999,31 @@
                     el('td', { dataset: { label: 'Extension' }, text: device.extension || '—' }),
                     el('td', { dataset: { label: 'Approved' }, text: formatTime(device.reviewedAt) }),
                     el('td', { dataset: { label: 'Actions' } },
-                        el('button', {
-                            class: 'btn btn-danger btn-sm',
-                            type: 'button',
-                            onclick: () => revokeDevice(device)
-                        }, 'Revoke'))
-                ),
-                // Keep diagnostics out of the narrow Device cell and give the
-                // grid the full width of the table on every viewport.
-                el('tr', { class: 'approved-diagnostics' },
-                    el('td', { colspan: '6' }, renderDeviceTelemetry(device)))
+                        el('div', { class: 'row-actions' },
+                            el('button', {
+                                class: 'btn btn-ghost btn-sm',
+                                type: 'button',
+                                'aria-expanded': open ? 'true' : 'false',
+                                onclick: () => {
+                                    if (open) openDiagnostics.delete(device.id);
+                                    else openDiagnostics.add(device.id);
+                                    renderApproved();
+                                }
+                            }, open ? 'Hide diagnostics' : 'Diagnostics'),
+                            el('button', {
+                                class: 'btn btn-danger btn-sm',
+                                type: 'button',
+                                onclick: () => revokeDevice(device)
+                            }, 'Revoke')))
+                )
             ];
+            // The diagnostics row exists only while that device is expanded, so
+            // the table shows exactly one row per device by default.
+            if (open) {
+                rows.push(el('tr', { class: 'approved-diagnostics' },
+                    el('td', { colspan: '6' }, renderDeviceTelemetry(device))));
+            }
+            return rows;
         }));
     }
 

@@ -1122,11 +1122,12 @@ tbody tr:hover td {
   background: color-mix(in srgb, var(--surface) 92%, var(--border));
 }
 
-.approved-diagnostics .device-telemetry {
-  margin-top: 0;
+.approved-diagnostics .device-telemetry-panel {
   padding: 0.7rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .approved-diagnostics .telemetry-grid {

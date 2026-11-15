@@ -989,6 +989,8 @@
     let liveCallsTickTimer = null;
     let liveCallsState = { calls: [], active: 0, ringing: 0 };
     let liveCallsInFlight = false;
+    let activeCallsStale = false;
+    let liveCallsStale = false;
     let metricsInterval = null;
     let firewallInterval = null;
 
@@ -1206,12 +1208,20 @@
         if (!refs.activeCallsList) return;
         try {
             const state = await api('/api/active-calls');
+            activeCallsStale = false;
             renderActiveCalls(state);
-        } catch (_) {}
+        } catch (error) {
+            activeCallsStale = true;
+            renderActiveCalls(lastActiveCalls);
+            if (error && error.status === 401) handleBackgroundError(error);
+        }
     }
+
+    let lastActiveCalls = { activeCalls: [], active: 0, ringing: 0 };
 
     function renderActiveCalls(state) {
         if (!refs.activeCallsList) return;
+        lastActiveCalls = state && typeof state === 'object' ? state : lastActiveCalls;
         const rows = Array.isArray(state && state.activeCalls) ? state.activeCalls : [];
         refs.activeCallsList.replaceChildren();
         for (const row of rows) {
@@ -1227,7 +1237,8 @@
         }
         if (refs.activeCallsTotal) {
             refs.activeCallsTotal.textContent =
-                `${Number(state && state.active) || 0} active · ${Number(state && state.ringing) || 0} ringing`;
+                `${Number(state && state.active) || 0} active · ${Number(state && state.ringing) || 0} ringing`
+                + (activeCallsStale ? ' · stale' : '');
         }
         if (refs.activeCallsEmpty) refs.activeCallsEmpty.hidden = rows.length > 0;
     }
@@ -1279,7 +1290,8 @@
         if (refs.liveCallsEmpty) refs.liveCallsEmpty.hidden = calls.length > 0;
         if (refs.liveCallsTotal) {
             refs.liveCallsTotal.textContent =
-                `${Number(state && state.active) || 0} active · ${Number(state && state.ringing) || 0} ringing`;
+                `${Number(state && state.active) || 0} active · ${Number(state && state.ringing) || 0} ringing`
+                + (liveCallsStale ? ' · stale' : '');
         }
     }
 
@@ -1287,10 +1299,14 @@
         if (!refs.liveCallsBody || liveCallsInFlight) return;
         liveCallsInFlight = true;
         try {
-            renderLiveCalls(await api('/api/calls/live'));
-        } catch (_) {
-            // The dashboard must keep working when the endpoint is transiently
-            // unavailable; the last snapshot stays on screen.
+            const state = await api('/api/calls/live');
+            liveCallsStale = false;
+            renderLiveCalls(state);
+        } catch (error) {
+            // Keep the last snapshot but say it is old; a 401 still signs out.
+            liveCallsStale = true;
+            renderLiveCalls(liveCallsState);
+            if (error && error.status === 401) handleBackgroundError(error);
         } finally {
             liveCallsInFlight = false;
         }
@@ -1301,13 +1317,33 @@
         renderLiveCalls(liveCallsState);
     }
 
+    let lastPollNoticeAt = 0;
+
+    /**
+     * A background refresh must never fail silently: an expired session has to
+     * reach the sign-in screen, and repeated failures get one quiet note rather
+     * than an error per poll.
+     */
+    function handleBackgroundError(error) {
+        if (error && error.status === 401) {
+            onUnauthenticated('Your session expired. Sign in again.');
+            return;
+        }
+        const now = Date.now();
+        if (now - lastPollNoticeAt < 30_000) return;
+        lastPollNoticeAt = now;
+        handleError(error);
+    }
+
     function startRealtimePolling() {
         if (pollInterval) return;
         pollInterval = setInterval(async () => {
             if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
                 try {
                     await refresh(true);
-                } catch (_) {}
+                } catch (error) {
+                    handleBackgroundError(error);
+                }
             }
         }, 3000);
         if (!activeCallsInterval) {
@@ -1774,15 +1810,28 @@
                 'aria-label': `PBX for ${title}`,
                 disabled: enabledPbx.length === 0
             }, enabledPbx.length
-                ? enabledPbx.map((record) => el('option', { value: record.id, text: record.name }))
+                ? [el('option', { value: '', text: 'Choose a PBX…' }),
+                   ...enabledPbx.map((record) => el('option', { value: record.id, text: record.name }))]
                 : el('option', { value: '', text: 'Enable a PBX first' }));
+            // Only a PBX the gateway itself suggested may be pre-selected. The
+            // operator must otherwise choose: approving into the wrong tenant is
+            // one click away when a list order picks for them.
             const preferred = enabledPbx.find((record) => record.id === device.suggestedPbxId);
             const chosen = enabledPbx.some((record) => record.id === draft.pbxId)
                 ? draft.pbxId
-                : (preferred ? preferred.id : (enabledPbx[0] ? enabledPbx[0].id : ''));
-            if (chosen) select.value = chosen;
-            if (!draft.pbxId || draft.pbxId !== select.value) draft.pbxId = select.value;
-            select.addEventListener('change', () => { draft.pbxId = select.value; });
+                : (preferred ? preferred.id : '');
+            select.value = chosen;
+            draft.pbxId = chosen;
+            const approve = el('button', {
+                class: 'btn btn-primary btn-sm',
+                type: 'button',
+                disabled: enabledPbx.length === 0 || !chosen,
+                onclick: (event) => approveDevice(device, select, extension, event.currentTarget)
+            }, 'Approve');
+            select.addEventListener('change', () => {
+                draft.pbxId = select.value;
+                approve.disabled = !select.value;
+            });
 
             const extension = el('input', {
                 type: 'text',
@@ -1794,13 +1843,6 @@
                 value: draft.extension
             });
             extension.addEventListener('input', () => { draft.extension = extension.value; });
-
-            const approve = el('button', {
-                class: 'btn btn-primary btn-sm',
-                type: 'button',
-                disabled: enabledPbx.length === 0,
-                onclick: () => approveDevice(device, select, extension)
-            }, 'Approve');
 
             return el('tr', { dataset: { deviceId: device.id } },
                 el('th', { scope: 'row', dataset: { label: 'Device' } },
@@ -1824,7 +1866,7 @@
                     el('button', {
                         class: 'btn btn-danger btn-sm',
                         type: 'button',
-                        onclick: () => rejectDevice(device)
+                        onclick: (event) => rejectDevice(device, event.currentTarget)
                     }, 'Reject'))
             );
         }));
@@ -2327,12 +2369,12 @@
 
     // ---------------------------------------------------------- device review
 
-    async function approveDevice(device, select, extensionInput) {
+    async function approveDevice(device, select, extensionInput, button) {
         clearMessages();
         const pbxId = select.value;
         const extension = extensionInput.value.trim();
         if (!pbxId) {
-            showError('Enable a PBX connection before approving devices.');
+            showError('Choose the PBX this device belongs to before approving.');
             return;
         }
         if (!extension) {
@@ -2340,6 +2382,7 @@
             extensionInput.focus();
             return;
         }
+        setBusy(button, true, 'Approving…');
         try {
             const result = await api(`/api/devices/${encodeURIComponent(device.id)}/approve`, {
                 method: 'POST',
@@ -2363,15 +2406,26 @@
             }
             await refresh();
         } catch (error) {
-            handleError(error);
+            // A double submit or a second operator already approved it: the
+            // row disappearing is the truth, not an error dialog.
+            if (error && error.code === 'invalid_device_state') {
+                pendingDrafts.delete(device.id);
+                showStatus('This device is already approved.');
+                await refresh();
+            } else {
+                handleError(error);
+            }
+        } finally {
+            setBusy(button, false);
         }
     }
 
-    async function rejectDevice(device) {
+    async function rejectDevice(device, button) {
         const confirmed = window.confirm(
             `Reject "${deviceTitle(device)}"? The device stays blocked and cannot reuse this enrollment.`
         );
         if (!confirmed) return;
+        setBusy(button, true, 'Rejecting…');
         try {
             await api(`/api/devices/${encodeURIComponent(device.id)}/reject`, {
                 method: 'POST',
@@ -2382,6 +2436,8 @@
             await refresh();
         } catch (error) {
             handleError(error);
+        } finally {
+            setBusy(button, false);
         }
     }
 

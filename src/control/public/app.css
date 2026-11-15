@@ -1100,7 +1100,7 @@ tbody tr:hover td {
 
 .telemetry-pair dt {
   font-weight: 600;
-  color: var(--fg);
+  color: var(--text);
 }
 
 .telemetry-pair dd {
@@ -1112,8 +1112,11 @@ tbody tr:hover td {
   .telemetry-grid { grid-template-columns: 1fr; }
 }
 
-.push-active {
-  color: var(--success);
+.cell-sub.push-active {
+  /* The theme names its success colour --ok; --success never existed, so this
+     line silently did nothing and the row stayed muted. */
+  color: var(--ok);
+  font-weight: 600;
 }
 
 .approved-diagnostics > td {

@@ -68,8 +68,16 @@ STATUS SCHEMA (schemaVersion 1)
   stage values: pending | ready | blocked | error | planned | skipped
   reasons:      not_configured | identity_mismatch | approval_required |
                 relay_failed | firewall_required | firewall_failed |
-                hook_required | hook_failed | ready | planned | stale |
-                worker_failed | configuration_invalid
+                hook_required | hook_failed | media_transport_legacy |
+                ready | planned | stale | worker_failed |
+                configuration_invalid
+
+  An enabled PBX whose enrollment registry row has no `mediaTransport` still
+  carries media over the legacy FRP TCP proxy. Such a tenant is provisioned as
+  usual (relay, firewall, hook) but is never reported ready: its entry is
+  `blocked` with reason `media_transport_legacy` until an operator converts it
+  with media-transport-transaction.py. Disabled or unenrolled PBXs are out of
+  scope, so a retired tenant can never block anything.
   capturedUpdatedAt lets a reader compare the record revision used for this run
   with the current dashboard record; updatedAt is refreshed on every run, even
   when sync and adapters were skipped.
@@ -86,7 +94,8 @@ USAGE
       --config /path/to/fixture.json
 
 EXIT CODES
-  0  no error state (ready/planned/blocked, including a safe global refusal)
+  0  no error state (ready/planned/blocked, including a safe global refusal and
+     a legacy-media tenant that is blocked but still provisioned)
   1  at least one PBX is in error state, or the worker itself failed
   2  global refusal before any change (configuration/identity/allocation gate)
 """
@@ -138,6 +147,12 @@ RELAY_SPAN = 100
 MAX_SLOTS = min(LISTENER_SLOTS, (65535 - RELAY_BASE + 1) // RELAY_SPAN)
 RESERVED_LISTENER_PORTS = {22, 80, 443, 3478, 8002, 8088, 8095, 9096, 9097}
 
+# Enrollment registry lives beside the worker config in the mounted /etc/sokrat
+# state. It is read only: this worker never rewrites identity or media state.
+ENROLLMENT_DIR = "tunnel-enrollment"
+ENROLLMENT_REGISTRY = "installations.json"
+ENROLLMENT_MAX_BYTES = 4 * 1024 * 1024
+
 SYNC_TIMEOUT = 300
 ADAPTER_TIMEOUT = 360
 SYSTEMCTL_TIMEOUT = 20
@@ -161,6 +176,7 @@ REASONS = frozenset({
     "firewall_failed",
     "hook_required",
     "hook_failed",
+    "media_transport_legacy",
     "ready",
     "planned",
     "stale",
@@ -861,6 +877,40 @@ def load_plan(config):
     return parsed
 
 
+def load_media_registry(config):
+    """Read enrolled media transports; this worker never writes this file.
+
+    A host without reverse enrollment has no registry, so no tenant has an FRP
+    media proxy and nothing can be legacy. Rows are trusted only for their
+    `pbxId` and `mediaTransport`; the media transport itself is validated by
+    the existing enrollment/upgrade/firewall helpers, never re-derived here.
+    """
+    path = Path(config["configFile"]).parent / ENROLLMENT_DIR / ENROLLMENT_REGISTRY
+    owners = trusted_owners(config["testMode"])
+    info = check_file(path, "enrollment registry", owners, private=True, must_exist=False)
+    if info is None:
+        return {}
+    if info.st_size > ENROLLMENT_MAX_BYTES:
+        refuse("configuration_invalid", "enrollment registry is unexpectedly large")
+    try:
+        data = json.loads(read_regular(path, "enrollment registry").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        refuse("configuration_invalid", "enrollment registry is not valid UTF-8 JSON")
+    if not isinstance(data, dict):
+        refuse("configuration_invalid", "enrollment registry must be a JSON object")
+    rows = {}
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            refuse("configuration_invalid", "enrollment registry contains an invalid installation")
+        pbx_id = entry.get("pbxId")
+        if not isinstance(pbx_id, str) or not PBX_ID_RE.match(pbx_id):
+            refuse("configuration_invalid", "enrollment registry contains an invalid PBX id")
+        if pbx_id in rows:
+            refuse("configuration_invalid", f"enrollment registry contains duplicate PBX id {pbx_id}")
+        rows[pbx_id] = entry
+    return rows
+
+
 def load_manifest(config):
     owners = trusted_owners(config["testMode"])
     if config["serviceUid"] is not None:
@@ -979,6 +1029,7 @@ def load_previous_status(config):
 def evaluate(config):
     records, control_digest = load_control(config)
     allocations = load_plan(config)
+    registry = load_media_registry(config)
     entries = {}
     ids = sorted(set(config["pbx"]) | set(records) | set(allocations))
     global_reason = None
@@ -990,6 +1041,13 @@ def evaluate(config):
         fingerprint = record_fingerprint(record) if record is not None else None
         if fingerprint is None and pin is not None:
             fingerprint = pin["fingerprint"]
+        # Legacy media is an enabled tenant whose enrolled registry row has no
+        # explicit mediaTransport: it still carries media over the FRP TCP
+        # proxy. Disabled (retired) rows and PBXs with no enrollment row are
+        # out of scope, so they never become a policy finding.
+        legacy_media = bool(record is not None and record["enabled"]
+                            and pbx_id in registry
+                            and registry[pbx_id].get("mediaTransport") is None)
 
         reason = None
         kind = "blocked"
@@ -1031,6 +1089,7 @@ def evaluate(config):
             "record": record,
             "allocation": allocation,
             "fingerprint": fingerprint,
+            "legacyMedia": legacy_media,
         }
     return {"config": config, "records": records, "allocations": allocations,
             "entries": entries, "globalReason": global_reason,
@@ -1096,6 +1155,15 @@ def planned_status(entries):
     for pbx_id in sorted(entries):
         entry = entries[pbx_id]
         if entry["kind"] == "eligible":
+            if entry["legacyMedia"]:
+                # The stages would still run, but readiness is withheld until
+                # the tenant leaves the legacy FRP TCP media path.
+                result[pbx_id] = status_entry(
+                    "blocked", "media_transport_legacy", relay="planned", firewall="planned",
+                    hook="planned", fingerprint=entry["fingerprint"],
+                    captured=captured_updated_at(entry),
+                )
+                continue
             result[pbx_id] = status_entry(
                 "planned", "planned", relay="planned", firewall="planned", hook="planned",
                 fingerprint=entry["fingerprint"], captured=captured_updated_at(entry),
@@ -1355,7 +1423,12 @@ def apply_run(state, previous):
             # Media and hook evidence expires every reconciliation; a running
             # coturn process alone is not proof that this reverse link works.
             return False
-        if not prior or prior.get("state") != "ready":
+        if not prior or prior.get("state") not in ("ready", "blocked"):
+            return False
+        # A settled legacy-media tenant is cached as `blocked` so that its
+        # readiness is never advertised; that is the only blocked state that
+        # may be reused instead of re-running both adapters every cycle.
+        if prior.get("state") == "blocked" and prior.get("reason") != "media_transport_legacy":
             return False
         if prior.get("fingerprint") != entry["fingerprint"]:
             return False
@@ -1363,6 +1436,17 @@ def apply_run(state, previous):
             return False
         return relay_verified(entry, state["allocations"], state["manifest"],
                               state["tokens"], config)
+
+    def ready_result(pbx_id, entry):
+        """Successful provisioning, without ever advertising legacy TCP media."""
+        fingerprint = entry["fingerprint"]
+        captured = captured_updated_at(entry)
+        if entry["legacyMedia"]:
+            return status_entry("blocked", "media_transport_legacy", relay="ready",
+                                firewall="ready", hook="ready",
+                                fingerprint=fingerprint, captured=captured)
+        return status_entry("ready", "ready", relay="ready", firewall="ready",
+                            hook="ready", fingerprint=fingerprint, captured=captured)
 
     need_sync = any(not skip_ready(pbx_id) for pbx_id in eligible)
     # Deleting the last PBX (or deleting one while the others stay ready) must
@@ -1414,8 +1498,7 @@ def apply_run(state, previous):
         captured = captured_updated_at(entry)
         guard()
         if skip_ready(pbx_id):
-            result[pbx_id] = status_entry("ready", "ready", relay="ready", firewall="ready",
-                                          hook="ready", fingerprint=fingerprint, captured=captured)
+            result[pbx_id] = ready_result(pbx_id, entry)
             continue
         if not relay_verified(entry, allocations, manifest, tokens, config):
             result[pbx_id] = status_entry("error", "relay_failed", relay="error",
@@ -1446,8 +1529,7 @@ def apply_run(state, previous):
                                           fingerprint=fingerprint, captured=captured)
             continue
         guard()
-        result[pbx_id] = status_entry("ready", "ready", relay="ready", firewall="ready",
-                                      hook="ready", fingerprint=fingerprint, captured=captured)
+        result[pbx_id] = ready_result(pbx_id, entry)
 
     for pbx_id in disabled + retired:
         # Disabled records are passed to sync as enabled=false (stop unit, remove
@@ -1591,6 +1673,32 @@ def emit(document):
     sys.stdout.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
 
 
+LEGACY_MEDIA_ACTION = (
+    "Convert each tenant explicitly with media-transport-transaction.py: prepare the gateway role, "
+    "prepare the PBX role from that gateway peer bundle, apply both, then verify the gateway role "
+    "of the same transaction."
+)
+
+
+def active_legacy_ids(state):
+    """Enabled tenants whose enrolled row has no explicit media transport."""
+    return sorted(
+        pbx_id for pbx_id, entry in state["entries"].items()
+        if entry["legacyMedia"] and entry["record"] is not None and entry["record"]["enabled"]
+    )
+
+
+def report_legacy_media(pbx_ids):
+    """Tell the operator, in the run output, why these tenants are not ready."""
+    if not pbx_ids:
+        return
+    sys.stderr.write(
+        "media policy: %d active tenant(s) still carry media over the legacy FRP TCP proxy and are "
+        "not UDP-ready: %s\n" % (len(pbx_ids), ", ".join(pbx_ids))
+    )
+    sys.stderr.write(LEGACY_MEDIA_ACTION + "\n")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1680,6 +1788,7 @@ def main(argv=None):
                     return 2
 
                 if not args.apply:
+                    report_legacy_media(active_legacy_ids(state))
                     document = status_document(planned_status(state["entries"]))
                     emit(document)
                     return 0
@@ -1689,6 +1798,7 @@ def main(argv=None):
                 # Last gate: never publish a ready result for a record whose
                 # provisioning identity changed while adapters were running.
                 ensure_control_unchanged(config, state["controlDigest"])
+                report_legacy_media(active_legacy_ids(state))
                 document = status_document(results)
                 write_status(config, document)
                 emit(document)

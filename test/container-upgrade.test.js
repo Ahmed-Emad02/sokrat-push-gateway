@@ -282,7 +282,7 @@ process.exit(0);
 `;
 
 const mediaDriver = `
-import contextlib, hashlib, importlib.util, json, os, stat, sys
+import contextlib, hashlib, importlib.util, io, json, os, stat, sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -401,18 +401,24 @@ def write_stale(pbx_id):
     path = media_root / pbx_id / 'media.conf'
     path.write_text(path.read_text().replace('proto tcp-client', 'proto udp'))
 
+def write_stale_generated(pbx_id):
+    path = media_root / pbx_id / 'media.conf'
+    path.write_text(path.read_text() + '# stale renderer\\n')
+
 def calls():
     return log.read_text().splitlines() if log.exists() else []
 
 def refresh():
+    return refresh_details()[0]
+
+def refresh_details():
     env = {'PATH': str(bin_dir) + os.pathsep + os.environ.get('PATH', ''),
            'MEDIA_CONTROL': str(control_path)}
-    with contextlib.redirect_stdout(sys.stderr):
+    with contextlib.redirect_stdout(sys.stderr), contextlib.redirect_stderr(sys.stderr):
         try:
-            upgrade.refresh_enrolled_media(env, etc_root=etc_root, unit_root=unit_root)
-            return None
+            return None, upgrade.refresh_enrolled_media(env, etc_root=etc_root, unit_root=unit_root)
         except upgrade.Refusal as error:
-            return str(error)
+            return str(error), None
 
 def stale_legacy():
     _plan, _material, record = provision('pbx_0123456789abcdef', 3)
@@ -449,6 +455,45 @@ def stopped():
     refusal = refresh()
     return {'refusal': refusal, 'before': before, 'after': digest(record['pbxId']),
             'succeeded': recovered(), 'calls': calls()}
+
+def active_legacy():
+    _plan, _material, legacy_row = provision('pbx_0123456789abcdef', 3)
+    _udp_plan, _udp_material, udp_row = provision('pbx_fedcba9876543210', 4,
+        {'mode': 'plain-udp', 'host': 'gateway.example.test', 'port': 26154})
+    save_registry([legacy_row, udp_row])
+    activate(unit_name(legacy_row['pbxId']), unit_name(udp_row['pbxId']))
+    write_stale(legacy_row['pbxId'])
+    write_stale_generated(udp_row['pbxId'])
+    registry_path = enrollment / 'installations.json'
+    registry_before = registry_path.read_bytes()
+    legacy_before = digest(legacy_row['pbxId'])
+    udp_before = digest(udp_row['pbxId'])
+    refusal, reported = refresh_details()
+    return {'refusal': refusal, 'reported': reported,
+            'legacy_before': legacy_before, 'legacy_after': digest(legacy_row['pbxId']),
+            'udp_before': udp_before, 'udp_after': digest(udp_row['pbxId']),
+            'registry_unchanged': registry_before == registry_path.read_bytes(),
+            'current': media_conf(legacy_row['pbxId']),
+            'succeeded': recovered(), 'calls': calls()}
+
+def retired_legacy():
+    _plan, _material, record = provision('pbx_0123456789abcdef', 3)
+    save_registry([record])
+    # A stopped link is the operator's choice (retired tenant), not a finding.
+    activate()
+    before = digest(record['pbxId'])
+    refusal, reported = refresh_details()
+    return {'refusal': refusal, 'reported': reported,
+            'before': before, 'after': digest(record['pbxId']), 'calls': calls()}
+
+def legacy_message():
+    buffer = io.StringIO()
+    with contextlib.redirect_stderr(buffer):
+        upgrade.report_legacy_media(['pbx_0123456789abcdef'])
+    empty = io.StringIO()
+    with contextlib.redirect_stderr(empty):
+        upgrade.report_legacy_media([])
+    return {'message': buffer.getvalue(), 'empty': empty.getvalue()}
 
 def unmanaged_active():
     _plan, _material, record = provision('pbx_0123456789abcdef', 3)
@@ -588,6 +633,9 @@ def rollback_persistent():
 
 cases = {
     'stale-legacy': stale_legacy,
+    'active-legacy': active_legacy,
+    'retired-legacy': retired_legacy,
+    'legacy-message': legacy_message,
     'plain-unchanged': plain_unchanged,
     'stopped': stopped,
     'unmanaged-active': unmanaged_active,
@@ -675,6 +723,45 @@ test('upgrade refresh converges a stale legacy media renderer to TCP with identi
     assert.deepEqual(out.other_before, out.other_after);
     // The shared provisioning lock is held while the link is changed.
     assert.deepEqual(out.lock_seen, ['held']);
+});
+
+test('upgrade reports active legacy TCP media rows without aborting UDP tenants', t => {
+    const root = mediaSetup(t);
+    const out = mediaRefresh(root, 'active-legacy');
+    assert.equal(out.refusal, null);
+    // The active registry row without an explicit transport is reported.
+    assert.deepEqual(out.reported, ['pbx_0123456789abcdef']);
+    // Legacy tenant keeps working on the promoted renderer (TCP unchanged).
+    assert.match(out.current, /proto tcp-client/);
+    assert.deepEqual(changedFiles(out.legacy_before, out.legacy_after), ['media.conf']);
+    // The stale plain-UDP tenant still converges: the finding never aborts it.
+    assert.deepEqual(changedFiles(out.udp_before, out.udp_after), ['media.conf']);
+    assert.deepEqual(restarts(out).sort(), [
+        'restart sokrat-media-pbx_0123456789abcdef.service',
+        'restart sokrat-media-pbx_fedcba9876543210.service',
+    ]);
+    // Nothing is stopped, deleted or rewritten besides generated renderers.
+    assert.deepEqual(unitActions(out, 'stop'), []);
+    assert.deepEqual(unitActions(out, 'disable'), []);
+    assert.equal(out.registry_unchanged, true);
+});
+
+test('upgrade ignores a retired legacy row and never starts it', t => {
+    const out = mediaRefresh(mediaSetup(t), 'retired-legacy');
+    assert.equal(out.refusal, null);
+    assert.deepEqual(out.reported, []);
+    assert.deepEqual(out.before, out.after);
+    assert.deepEqual(restarts(out), []);
+});
+
+test('legacy media report names the tenant and the exact conversion action', t => {
+    const out = mediaRefresh(mediaSetup(t), 'legacy-message');
+    assert.match(out.message, /pbx_0123456789abcdef/);
+    assert.match(out.message, /media-transport-transaction\.py/);
+    assert.match(out.message, /gateway role/);
+    assert.match(out.message, /PBX role/);
+    assert.match(out.message, /verify/);
+    assert.equal(out.empty, '');
 });
 
 test('upgrade media phase refuses a busy provisioning lock and releases its own', t => {

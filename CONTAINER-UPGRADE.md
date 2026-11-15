@@ -56,7 +56,15 @@ applies the endpoint before its media unit starts. The container image ships no
 host firewall helper, so the in-container tenant reconcile leaves host rules
 alone. New PBX enrollments after the upgrade default to authenticated plain UDP
 on their canonical slot endpoint; existing legacy registry rows stay legacy and
-are not migrated implicitly. On a fresh host use
+are not migrated implicitly. An `--apply` that finds an **active** legacy row
+still converges it to the promoted renderer, prints the tenant id and the
+conversion action, finishes every other phase, and then exits `2` instead of
+printing the completion line: an installation that still carries media over the
+FRP TCP proxy is not reported as UDP-ready. It never rewrites or deletes the
+registry row, media link, FRP proxy or firewall rule. Convert such a tenant
+explicitly with `media-transport-transaction.py`: prepare the gateway role,
+prepare the PBX role from that gateway peer bundle, apply both, then verify the
+gateway role of the same transaction. On a fresh host use
 `install.sh --media-udp-ports`; on an existing host after review run
 `sudo /usr/local/lib/sokrat-tenant-provisioning/media-udp-firewall.py --apply`.
 A gateway cutover to a new/different UDP port reconciles this additive manifest

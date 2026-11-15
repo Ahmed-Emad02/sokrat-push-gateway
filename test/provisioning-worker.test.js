@@ -281,6 +281,10 @@ function makeFixture(t, options = {}) {
         writeJson(path.join(state, 'tenant-plan.json'), { schemaVersion: 1, allocations: options.plan });
     }
 
+    if (options.registry) {
+        writeJson(path.join(dir, 'tunnel-enrollment', 'installations.json'), options.registry);
+    }
+
     const pins = {};
     for (const record of records) {
         if (options.omitPins && options.omitPins.includes(record.id)) continue;
@@ -421,6 +425,77 @@ test('apply reaches ready with 0640 status, pinned manifest and both adapters', 
     assert.equal(statusText.includes(hook[0].token), false);
     assert.equal(result.stdout.includes(hook[0].token), false);
     assert.equal(result.stderr.includes(hook[0].token), false);
+});
+
+// --- Legacy FRP TCP media policy -------------------------------------------
+// The enrollment registry beside the worker config records each installation's
+// persisted mediaTransport. A row without one still carries media over the FRP
+// TCP proxy; that must be visible in the status document and never `ready`.
+
+function registryRow(pbxId, installationId, transport) {
+    const row = { pbxId, installationId };
+    if (transport !== undefined) row.mediaTransport = transport;
+    return { [installationId]: row };
+}
+
+test('an active legacy FRP TCP media row is reported and never ready', (t) => {
+    const fixture = makeFixture(t, {
+        registry: registryRow('pbx_alpha', 'a'.repeat(32)),
+    });
+
+    const dry = fixture.run(['--dry-run']);
+    assert.ok(dry.status === 0, dry.stderr + dry.stdout);
+    const planned = JSON.parse(dry.stdout).pbx.pbx_alpha;
+    assert.equal(planned.state, 'blocked');
+    assert.equal(planned.reason, 'media_transport_legacy');
+    assert.match(dry.stderr, /pbx_alpha/);
+    assert.match(dry.stderr, /media-transport-transaction\.py/);
+
+    const result = fixture.run(['--apply']);
+    assert.ok(result.status === 0, result.stderr + result.stdout);
+    const entry = fixture.readStatus().pbx.pbx_alpha;
+    assert.equal(entry.state, 'blocked');
+    assert.equal(entry.reason, 'media_transport_legacy');
+    // Relay, firewall and hook still work; only UDP readiness is withheld.
+    assert.deepEqual(entry.stages, { relay: 'ready', firewall: 'ready', hook: 'ready' });
+    assert.equal(result.stderr.includes('pbx_alpha'), true);
+    assert.match(result.stderr, /media-transport-transaction\.py/);
+    assert.equal(fixture.requests('firewall-adapter').length, 1);
+    assert.equal(fixture.requests('hook-adapter').length, 1);
+
+    // A settled legacy result is reused, not re-driven every cycle.
+    assert.equal(fixture.run(['--apply']).status, 0);
+    assert.equal(fixture.readStatus().pbx.pbx_alpha.reason, 'media_transport_legacy');
+    assert.equal(fixture.requests('firewall-adapter').length, 1);
+    assert.equal(fixture.requests('hook-adapter').length, 1);
+});
+
+test('an explicit UDP media row is not reported as legacy', (t) => {
+    const fixture = makeFixture(t, {
+        registry: registryRow('pbx_alpha', 'b'.repeat(32), {
+            mode: 'plain-udp', host: 'gw.example.test', port: 26001,
+        }),
+    });
+    const result = fixture.run(['--apply']);
+    assert.ok(result.status === 0, result.stderr + result.stdout);
+    const entry = fixture.readStatus().pbx.pbx_alpha;
+    assert.equal(entry.state, 'ready');
+    assert.equal(entry.reason, 'ready');
+    assert.equal(result.stderr.includes('media-transport-transaction.py'), false);
+});
+
+test('a retired legacy media row is ignored', (t) => {
+    const fixture = makeFixture(t, {
+        records: [defaultRecord({ enabled: false })],
+        registry: registryRow('pbx_alpha', 'c'.repeat(32)),
+    });
+    const result = fixture.run(['--apply']);
+    assert.ok(result.status === 0, result.stderr + result.stdout);
+    const entry = fixture.readStatus().pbx.pbx_alpha;
+    assert.equal(entry.state, 'blocked');
+    assert.equal(entry.reason, 'not_configured');
+    assert.equal(result.stderr.includes('media_transport_legacy'), false);
+    assert.equal(result.stderr.includes('media-transport-transaction.py'), false);
 });
 
 test('second run is idempotent: no sync, no adapters, fresh updatedAt', async (t) => {

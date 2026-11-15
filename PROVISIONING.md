@@ -248,6 +248,23 @@ and this worker does not claim to deallocate cloud rules for a disabled PBX.
 Unpinned existing allocations are never revoked: they trigger the global refusal
 above.
 
+### Legacy media transport
+
+New enrollments select an explicit authenticated plain-UDP `mediaTransport`.
+An **enabled** PBX whose enrollment registry row
+(`/etc/sokrat/tunnel-enrollment/installations.json`) has no `mediaTransport` still
+carries media over the legacy FRP TCP proxy. The worker keeps provisioning it
+(relay, cloud firewall, hook) but reports it `blocked` with reason
+`media_transport_legacy`; stages may stay `ready`, because calls and push still
+work while the installation does not meet the UDP media policy. It is never
+reported `ready` and it does not cause a global refusal, so every other PBX
+reconciles normally. The worker never rewrites the registry, the FRP proxy or a
+firewall rule: an operator converts the tenant explicitly with
+`media-transport-transaction.py` (prepare the gateway role, prepare the PBX role
+from that peer bundle, apply both, then verify the gateway role of the same
+transaction). A disabled record or a PBX without a registry row is out of scope,
+so a retired tenant cannot block anything.
+
 ---
 
 ## 5. One reconcile run
@@ -358,8 +375,17 @@ Request keys:
 * stage values: `pending` | `ready` | `blocked` | `error` | `planned` | `skipped`.
 * `reason` (allowlist): `not_configured`, `identity_mismatch`,
   `approval_required`, `relay_failed`, `firewall_required`, `firewall_failed`,
-  `hook_required`, `hook_failed`, `ready`, `planned`, `stale`, `worker_failed`,
-  `configuration_invalid`.
+  `hook_required`, `hook_failed`, `media_transport_legacy`, `ready`, `planned`,
+  `stale`, `worker_failed`, `configuration_invalid`.
+* `media_transport_legacy` marks an enabled tenant whose enrollment registry row
+  has no `mediaTransport`: its media still travels through the legacy FRP TCP
+  proxy. Relay, firewall and hook stages can all be `ready` while the tenant is
+  `blocked`, because call setup and push work but the installation does not meet
+  the UDP media policy. Convert it explicitly with
+  `media-transport-transaction.py` (prepare the gateway role, prepare the PBX
+  role from that peer bundle, apply both, then verify the gateway role); the
+  worker never rewrites the registry, proxy or firewall rule itself. Disabled or
+  unenrolled PBXs are out of scope.
 * `fingerprint`: SHA-256 of the dashboard routing identity
   (`wsURL`/`apiURL`/`mediaIps`/approval), or the pinned value when the record is
   unavailable; `null` only when neither exists.

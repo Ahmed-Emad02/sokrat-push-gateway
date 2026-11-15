@@ -89,6 +89,22 @@ with tempfile.TemporaryDirectory() as temporary:
         assert 'ExecStart=' + sys.executable + ' ' + str(daemon) + ' --config ' + \\
                str(plain_directory / 'media.conf') in unit_text
         assert 'openvpn' not in unit_text
+        import hashlib
+        assert '# renderer-sha256=' + hashlib.sha256(daemon.read_bytes()).hexdigest() in unit_text
+        # An unchanged renderer keeps the link untouched.
+        commands.clear()
+        installer.install({'plan': plain_plan, 'transport': transport,
+                           'material': material.for_role(plain, 'gateway')}, 'gateway', True)
+        assert commands[-1] == ['systemctl', 'start', plain_unit.name]
+        assert not any(item[:2] == ['systemctl', 'restart'] for item in commands)
+        # Replacing only the renderer changes generated state, so the running
+        # link is restarted instead of keeping stale code.
+        daemon.write_text('#!/usr/bin/python3\\n# upgraded renderer\\n'); os.chmod(daemon, 0o755)
+        commands.clear()
+        installer.install({'plan': plain_plan, 'transport': transport,
+                           'material': material.for_role(plain, 'gateway')}, 'gateway', True)
+        assert commands[-1] == ['systemctl', 'restart', plain_unit.name]
+        assert '# renderer-sha256=' + hashlib.sha256(daemon.read_bytes()).hexdigest() in plain_unit.read_text()
 print('ok')
 `], { cwd: path.join(__dirname, '../scripts'), encoding: 'utf8', timeout: 30000 });
     assert.equal(output.trim(), 'ok');

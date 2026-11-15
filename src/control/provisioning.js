@@ -98,6 +98,7 @@ const REASONS = new Set([
     'firewall_failed',
     'hook_required',
     'hook_failed',
+    'media_transport_legacy',
     'ready',
     'planned',
     'stale',

@@ -28,6 +28,12 @@ MEDIA_ID = re.compile(r'pbx_[a-f0-9]{16}')
 GENERATED_MEDIA_FILES = ('media.conf', 'plan.json', 'transport.json', 'link-up', 'link-down')
 NEW_TLS_DEFAULTS = {'GATEWAY_TLS_ENABLED': 'auto', 'GATEWAY_HTTPS_PORT': '443',
                     'GATEWAY_WSS_PORT': '8089'}
+# The one reviewed way to move a tenant off the legacy FRP TCP media proxy.
+LEGACY_MEDIA_ACTION = (
+    'Convert each tenant explicitly with media-transport-transaction.py: prepare the gateway role, '
+    'prepare the PBX role from that gateway peer bundle, apply both, then verify the gateway role '
+    'of the same transaction.'
+)
 
 
 class Refusal(Exception):
@@ -143,6 +149,19 @@ def load_media_installer(media_root, unit_root):
     installer.ROOT = media_root
     installer.UNIT_ROOT = unit_root
     return installer, material
+
+
+def report_legacy_media(pbx_ids):
+    """Name the active tenants that keep the legacy FRP TCP media proxy.
+
+    Nothing is changed or deleted here: this is the explicit policy finding the
+    upgrade refuses to hide behind a green "completed" line.
+    """
+    if not pbx_ids:
+        return
+    print('%d active tenant(s) still carry media over the legacy FRP TCP proxy and are not UDP-ready: %s'
+          % (len(pbx_ids), ', '.join(pbx_ids)), file=sys.stderr, flush=True)
+    print(LEGACY_MEDIA_ACTION, file=sys.stderr, flush=True)
 
 
 def provisioning_lock(installer, etc_root, timeout=60):
@@ -372,6 +391,11 @@ def refresh_enrolled_media(env, etc_root=ETC_ROOT, unit_root=UNIT_ROOT):
     when the installer rewrote one of its generated files; a failure restores
     the affected generated files (unless a concurrent writer already replaced
     them) and the previous service where that is possible, then aborts.
+
+    Active registry rows without an explicit transport still use the legacy FRP
+    TCP media proxy. They are converged and left running (legacy tenants keep
+    working, nothing is deleted), reported to the operator, and returned so the
+    upgrade does not claim success while they are not UDP-ready.
     """
     enrollment_root = etc_root / 'tunnel-enrollment'
     registry_path = enrollment_root / 'installations.json'
@@ -410,15 +434,25 @@ def refresh_enrolled_media(env, etc_root=ETC_ROOT, unit_root=UNIT_ROOT):
             if not content.startswith(installer.MARKER):
                 raise Refusal('active media unit is not managed by Sokrat for ' + pbx_id)
             selected.append((pbx_id, record))
-        links = [validate_enrolled_media_link(installer, material_module, media_root,
-                                              enrollment_root, unit_root, pbx_id, record)
-                 for pbx_id, record in selected]
+        links = []
+        legacy = []
+        for pbx_id, record in selected:
+            link = validate_enrolled_media_link(installer, material_module, media_root,
+                                                enrollment_root, unit_root, pbx_id, record)
+            # The installer's own transport check returned None: this registry
+            # row has no explicit transport, so media still rides the FRP TCP
+            # proxy. It stays converged and untouched, but never UDP-ready.
+            if link[2]['transport'] is None:
+                legacy.append(pbx_id)
+            links.append(link)
+        report_legacy_media(legacy)
         converged = sum(converge_enrolled_media_link(installer, env, *link) for link in links)
     finally:
         lock.close()
     if converged:
         print('Refreshed %d active enrolled media link(s) to the promoted renderer.' % converged,
               flush=True)
+    return legacy
 
 
 def reassert_media_firewall(env):
@@ -583,6 +617,7 @@ def main():
         return
     # Reverse media runs on the host, not in a NET_ADMIN-enabled container.
     # Only opted-in reverse-TLS installations need these host packages.
+    legacy_media = None
     if host_enrollment:
         run(['bash', str(ROOT / 'scripts/install-reverse-tls-deps.sh')], env, capture=False)
     run(compose + ['build', SERVICE], env, capture=False)
@@ -604,7 +639,7 @@ def main():
         promote_host_bundle(env)
         # Persisted media configuration is owned by the promoted renderer;
         # converge active managed links before the firewall/tenant phases.
-        refresh_enrolled_media(env, etc_root=etc_source)
+        legacy_media = refresh_enrolled_media(env, etc_root=etc_source)
         reassert_media_firewall(env)
     # Tenant coturn processes are not managed by supervisor. A recreated
     # container must re-evaluate current authority and restart eligible relays,
@@ -612,12 +647,21 @@ def main():
     run(['docker', 'exec', SERVICE, '/bin/sh', '-ec',
          'if [ -f /etc/sokrat/gateway-provisioning.json ]; then '
          'exec /usr/bin/python3 /usr/local/lib/sokrat-tenant-provisioning/reconcile-tenant-provisioning.py --apply; fi'], env)
+    if legacy_media:
+        # The upgrade finished and already-UDP tenants are converged, but the
+        # legacy rows still carry media over FRP TCP: never report success for
+        # an installation that is not UDP-only. The operator instructions were
+        # printed by refresh_enrolled_media above.
+        print('Upgrade completed without deleting or rewriting legacy media state, but %d active '
+              'tenant(s) are still on the legacy FRP TCP media proxy; not reporting success.'
+              % len(legacy_media), file=sys.stderr, flush=True)
+        return 2
     print('Compose recreation and tenant reconciliation completed. Verify provider status and real PBX wake; no production acceptance is implied.')
 
 
 if __name__ == '__main__':
     try:
-        main()
+        sys.exit(main())
     except (Refusal, IndexError, KeyError, TypeError) as exc:
         print('Upgrade refused or failed: ' + (str(exc) if isinstance(exc, Refusal) else 'unexpected Docker inspection data'), file=sys.stderr)
         sys.exit(2)

@@ -787,6 +787,7 @@
         firewall_failed: 'Firewall permit failed',
         hook_required: 'PBX hook required',
         hook_failed: 'PBX hook failed',
+        media_transport_legacy: 'Legacy TCP media: UDP conversion required',
         wake_unverified: 'Push-to-wake call path not verified',
         ready: 'Ready',
         planned: 'Planned',

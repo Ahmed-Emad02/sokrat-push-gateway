@@ -238,6 +238,27 @@ test('the agreed worker stage vocabulary is accepted verbatim', async (t) => {
     assert.equal(result.pbx[0].effectiveState, 'blocked');
 });
 
+test('a legacy media policy block is surfaced instead of becoming unknown', async (t) => {
+    const dir = await workspace(t);
+    const store = await newStore(t, dir);
+    const pbx = await addPbx(store);
+    const filePath = await writeStatus(dir, documentFor(pbx.id, {
+        state: 'blocked',
+        stages: { relay: 'ready', firewall: 'ready', hook: 'ready' },
+        reason: 'media_transport_legacy',
+        capturedUpdatedAt: pbx.updatedAt
+    }, new Date(Date.now() + 1000).toISOString()));
+
+    const result = await getProvisioningStatus({
+        filePath,
+        ownerUids: [CURRENT_UID],
+        pbx: [{ id: pbx.id, updatedAt: pbx.updatedAt }]
+    });
+    assert.equal(result.pbx[0].state, 'blocked');
+    assert.equal(result.pbx[0].reason, 'media_transport_legacy');
+    assert.equal(result.pbx[0].reconciliation, 'current');
+});
+
 test('a non-object PBX entry is reported as configuration_invalid', async (t) => {
     const dir = await workspace(t);
     const store = await newStore(t, dir);

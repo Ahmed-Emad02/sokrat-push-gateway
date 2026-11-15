@@ -190,6 +190,26 @@ unanswered call cleared ringing/UI after caller cancellation. A new app PID
 and the matching PCMU call were observed. These results apply only to that
 installed APK/device/tenant, not the uninstalled 1.2.25/code 85 source changes.
 
+**Control-frame size band identified (2026-11-15).** Transaction
+`sales-udp-20261115-123535` moved the Sales tenant to verified plain UDP on its
+canonical `26002` endpoint. Earlier attempts authenticated and then went silent:
+captures on both WANs showed a handshake complete and every later datagram
+disappear in both directions, while a new source port worked immediately. A
+sweep of sustained one-packet-per-second echo flows isolated the cause to
+datagram size: 92-96-byte IP packets (64-68-byte UDP payload) stop after about
+nine packets, while 32, 60, 62, 80, 96, 112 and 116-byte payloads sustain at
+least sixty seconds. Every unpadded control frame sat exactly in that band.
+`udp-media-link.py` now pads control payloads to `CONTROL_PADDING` (48 bytes,
+112-byte datagrams) and keeps its original ten-second keepalive; the cadence was
+never the problem, and a one-second cadence added traffic without changing the
+outcome. A 70-second capture at ten seconds shows sixteen packets on one
+unchanged source port, and the readiness echo still passes 6/6 after 75 seconds
+of silence. The client also rebinds its socket after three unanswered
+keepalives. A 40-second
+post-change capture shows 81 packets from one unchanged source port. Audio on a
+real call has not yet been confirmed for this tenant, and no other tenant was
+changed.
+
 The legacy media link carries RTP/UDP inside OpenVPN over FRP's **TCP** connection;
 an FRP proxy labelled `udp` is not an end-to-end datagram transport. Direct
 mode bypasses FRP only for media. Gateway TLS-server/PBX TLS-client roles use

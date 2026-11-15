@@ -274,10 +274,12 @@ assert cl.active and cl.session == session and not cout
 session_b = b'K' * 16
 hello_b = m.pack_frame(m.mac_key(key, b'pbx'), m.HELLO, 0, session_b, b'')
 gw.handle_datagram(hello_b, PBX)
-first = m.parse_frame(m.mac_key(key, b'gateway'), gout.pop(0)[0])[3]
+first = m.unpad_control(
+    m.parse_frame(m.mac_key(key, b'gateway'), gout.pop(0)[0])[3], 16)
 other = ('198.51.100.10', 50000)
 gw.handle_datagram(hello_b, other)
-second = m.parse_frame(m.mac_key(key, b'gateway'), gout.pop(0)[0])[3]
+second = m.unpad_control(
+    m.parse_frame(m.mac_key(key, b'gateway'), gout.pop(0)[0])[3], 16)
 stale = m.pack_frame(m.mac_key(key, b'pbx'), m.RESPONSE, 0, session_b, first)
 gw.handle_datagram(stale, other)
 assert gw.active_address == PBX and gw.active_session == session
@@ -287,6 +289,7 @@ fresh_response = m.pack_frame(m.mac_key(key, b'pbx'), m.RESPONSE, 0,
 gw.handle_datagram(fresh_response, other)
 assert gw.active_address == other
 assert gw.active_session == m.session_id(key, session_b, second)
+assert gout.pop(0)[1] == other
 # An expired candidate is dropped, even for a matching response.
 now2, gw2, cl2, gout2, cout2, gtun2, ctun2 = make_links()
 cl2.start()
@@ -296,6 +299,11 @@ delayed = cout2.pop(0)[0]
 now2[0] += 5.01
 gw2.handle_datagram(delayed, PBX)
 assert gw2.active_address is None and not gout2
+# Control payloads may only carry zero padding; a non-zero tail is ignored.
+bad_tail = m.pack_frame(m.mac_key(key, b'pbx'), m.HELLO, 0, b'M' * 16,
+                        b'\\x00' * (m.CONTROL_PADDING - 1) + b'\\x01')
+gw.handle_datagram(bad_tail, PBX)
+assert not gout
 print('ok')
 `).trim(), 'ok');
 });
@@ -352,16 +360,18 @@ keepalive = cout.pop(0)[0]
 frame_type, sequence, session, payload = m.parse_frame(
     m.mac_key(key, b'pbx'), keepalive)
 assert frame_type == m.KEEPALIVE and sequence == 1
-assert session == old_session and payload == b''
+assert session == old_session and payload.strip(b'\\x00') == b''
+assert len(payload) == m.CONTROL_PADDING
 gw.handle_datagram(keepalive, PBX)
 reply = gout.pop(0)[0]
 frame_type, sequence, session, payload = m.parse_frame(
     m.mac_key(key, b'gateway'), reply)
 assert frame_type == m.KEEPALIVE and sequence == 1
-assert session == old_session and payload == b''
+assert session == old_session and payload.strip(b'\\x00') == b''
+assert len(payload) == m.CONTROL_PADDING
 cl.handle_datagram(reply, GATEWAY)
 assert cl.active and cl.last_received == now[0]
-now[0] += 1.0
+now[0] += m.KEEPALIVE_INTERVAL / 2
 cl.poll()
 assert not cout
 # Data with a stale session or from the wrong source is dropped.
@@ -559,6 +569,140 @@ oversized = inner(plan['pbxIp'], plan['gatewayIp'], b'z' * 1388)
 wire = oversized[:12] + oversized[20:]
 gw.handle_datagram(m.pack_frame(m.mac_key(key, b'pbx'), m.DATA, 2, cl.session, wire), PBX)
 assert gtun == [packet] and not cl.send_data(oversized)
+print('ok')
+`).trim(), 'ok');
+});
+
+test('a stalled client tuple is replaced by a fresh local port that recovers DATA', () => {
+    assert.equal(python(common + `
+import errno
+
+
+def pump(sock, handler):
+    while True:
+        try:
+            data, address = sock.recvfrom(4096)
+        except socket.error as error:
+            if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+            return
+        handler(data, address)
+
+
+plan = tm.allocation('pbx_0123456789abcdef', 3, '10.253.0.0/22')
+gateway_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+gateway_socket.bind(('127.0.0.1', 0))
+gateway_socket.setblocking(False)
+gateway_address = gateway_socket.getsockname()
+gtun = []
+gw = m.GatewayLink(key, plan)
+gw.tun_write = gtun.append
+gw.emit = lambda data, address: gateway_socket.sendto(data, address)
+
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+client_socket.bind(('', 0))
+client_socket.setblocking(False)
+stalled_port = client_socket.getsockname()[1]
+ctun = []
+cl = m.ClientLink(key, plan, gateway_address)
+cl.tun_write = ctun.append
+cl.emit = lambda data, address: client_socket.sendto(data, address)
+
+# Complete the handshake over real loopback sockets, then exchange DATA.
+cl.start()
+pump(gateway_socket, gw.handle_datagram)
+pump(client_socket, cl.handle_datagram)
+pump(gateway_socket, gw.handle_datagram)
+pump(client_socket, cl.handle_datagram)
+assert cl.active and gw.active_address == ('127.0.0.1', stalled_port)
+first = inner(plan['pbxIp'], plan['gatewayIp'], b'before-stall')
+assert cl.send_data(first)
+pump(gateway_socket, gw.handle_datagram)
+assert gtun == [first]
+
+# The path blackholes this tuple: no authenticated frame ever arrives again.
+replacement = m.rebind_client_socket(client_socket)
+assert client_socket.fileno() == -1
+assert replacement.gettimeout() == 0.0
+fresh_port = replacement.getsockname()[1]
+assert fresh_port != stalled_port
+client_socket = replacement
+cl.start()
+
+pump(gateway_socket, gw.handle_datagram)
+pump(client_socket, cl.handle_datagram)
+pump(gateway_socket, gw.handle_datagram)
+pump(client_socket, cl.handle_datagram)
+assert cl.active and gw.active_address == ('127.0.0.1', fresh_port)
+assert cl.session == gw.active_session
+
+second = inner(plan['pbxIp'], plan['gatewayIp'], b'after-rebind')
+assert cl.send_data(second)
+pump(gateway_socket, gw.handle_datagram)
+assert gtun == [first, second]
+downlink = inner(plan['gatewayIp'], plan['pbxIp'], b'gateway-reply')
+assert gw.send_data(downlink)
+pump(client_socket, cl.handle_datagram)
+assert ctun == [downlink]
+client_socket.close()
+gateway_socket.close()
+print('ok')
+`).trim(), 'ok');
+});
+
+test('a healthy session never reaches the rebind deadline', () => {
+    assert.equal(python(common + `
+now, gw, cl, gout, cout, gtun, ctun = make_links()
+handshake(gw, cl, gout, cout)
+created = now[0]
+assert cl.last_received == created
+
+# Three keepalive intervals of silence from creation would otherwise rebind.
+now[0] += m.CLIENT_REBIND_TIMEOUT - 0.1
+assert not m.client_rebind_due(now[0], created, 0.0)
+
+keepalive = m.pack_frame(m.mac_key(key, b'gateway'), m.KEEPALIVE, 1,
+                         cl.session, b'')
+cl.handle_datagram(keepalive, GATEWAY)
+assert cl.last_received == now[0]
+now[0] += m.CLIENT_REBIND_TIMEOUT - 0.1
+assert not m.client_rebind_due(now[0], created, cl.last_received)
+now[0] += 0.1
+assert m.client_rebind_due(now[0], created, cl.last_received)
+assert cl.active
+print('ok')
+`).trim(), 'ok');
+});
+
+test('unauthenticated or replayed reception cannot postpone client recovery', () => {
+    assert.equal(python(common + `
+now, gw, cl, gout, cout, gtun, ctun = make_links()
+handshake(gw, cl, gout, cout)
+created = now[0]
+now[0] += 45.0
+assert m.client_rebind_due(now[0], created, cl.last_received)
+baseline = cl.last_received
+
+forged = m.pack_frame(m.mac_key(key, b'pbx'), m.KEEPALIVE, 9, cl.session, b'')
+cl.handle_datagram(forged, GATEWAY)
+tampered = bytearray(m.pack_frame(m.mac_key(key, b'gateway'), m.KEEPALIVE, 10,
+                                  cl.session, b''))
+tampered[-1] ^= 1
+cl.handle_datagram(bytes(tampered), GATEWAY)
+cl.handle_datagram(m.pack_frame(m.mac_key(key, b'gateway'), m.DATA, 11,
+                                cl.session, b'x' * 8), ('192.0.2.99', 26003))
+assert cl.last_received == baseline
+assert m.client_rebind_due(now[0], created, cl.last_received)
+
+# A replayed or old authenticated frame passes neither replay nor the clock.
+accepted = m.pack_frame(m.mac_key(key, b'gateway'), m.KEEPALIVE, 12,
+                        cl.session, b'')
+cl.handle_datagram(accepted, GATEWAY)
+assert cl.last_received == now[0]
+now[0] += 40.0
+cl.handle_datagram(accepted, GATEWAY)
+assert cl.last_received != now[0]
+assert m.client_rebind_due(now[0], created, cl.last_received)
 print('ok')
 `).trim(), 'ok');
 });

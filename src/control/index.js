@@ -76,6 +76,7 @@ function createControl(options = {}) {
         loginFailureDelayMs: options.loginFailureDelayMs,
         getActiveCalls: options.getActiveCalls,
         getActiveCallDetail: options.getActiveCallDetail,
+        getMediaTransport: options.getMediaTransport,
         getMetrics: options.getMetrics,
         getHostFirewall: options.getHostFirewall,
         getLegacyPushRows: options.getLegacyPushRows,

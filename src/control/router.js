@@ -479,6 +479,19 @@ function createControlRouter(options = {}) {
             live = [];
         }
         const names = new Map(store.listPbx().map((pbx) => [String(pbx.id), pbx.name || pbx.id]));
+        const mediaFor = (pbxId) => {
+            try {
+                const value = typeof options.getMediaTransport === 'function'
+                    ? options.getMediaTransport(pbxId) : null;
+                if (!value || typeof value !== 'object') return { media: 'unknown', port: null };
+                return {
+                    media: value.media === 'udp' ? 'udp' : (value.media === 'tcp' ? 'tcp' : 'unknown'),
+                    port: Number.isInteger(value.port) ? value.port : null,
+                };
+            } catch (_) {
+                return { media: 'unknown', port: null };
+            }
+        };
         const calls = (Array.isArray(live) ? live : []).map((call) => ({
             pbxId: call && call.pbxId ? String(call.pbxId) : null,
             pbxName: names.get(String(call && call.pbxId)) || (call && call.pbxId) || 'Unknown PBX',
@@ -489,6 +502,7 @@ function createControlRouter(options = {}) {
             answeredAt: call && call.answeredAt ? call.answeredAt : null,
             durationMs: Number.isFinite(call && call.durationMs) ? Math.max(0, call.durationMs) : 0,
             talkMs: Number.isFinite(call && call.talkMs) ? Math.max(0, call.talkMs) : 0,
+            ...mediaFor(call && call.pbxId),
         })).filter((call) => call.pbxId);
         res.set('Cache-Control', 'no-store');
         res.json({

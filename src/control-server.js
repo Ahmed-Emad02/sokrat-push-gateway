@@ -3,7 +3,12 @@ require('dotenv').config();
 const express = require('express');
 const { createControl } = require('./control');
 const { readHostFirewall } = require('./control/host-firewall');
+const { createMediaTransportReader } = require('./control/media-transport');
 const { createSystemMetrics } = require('./system-metrics');
+
+// One mtime-cached reader for the process; the registry is read only when it
+// changes on disk.
+const mediaTransport = createMediaTransportReader();
 
 
 function createLegacyPushLookup() {
@@ -54,6 +59,7 @@ async function start() {
         allowPublic: isPublic,
         getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
         getActiveCallDetail: () => tenant?.runtime?.getActiveCallDetail?.() || [],
+        getMediaTransport: (pbxId) => mediaTransport.lookup(pbxId),
         getMetrics: () => metrics?.snapshot?.() || null,
         getHostFirewall: () => readHostFirewall(),
         getLegacyPushRows: createLegacyPushLookup(),

@@ -1262,6 +1262,14 @@
                     class: call.state === 'active' ? 'pill pill-on' : 'pill',
                     text: call.state === 'active' ? 'In call' : 'Ringing'
                 })),
+            el('td', { dataset: { label: 'Media' } },
+                el('span', {
+                    class: call.media === 'udp' ? 'pill pill-on' : 'pill',
+                    text: call.media === 'udp' ? 'UDP' : (call.media === 'tcp' ? 'TCP' : '—')
+                }),
+                call.media === 'udp' && call.port
+                    ? el('span', { class: 'cell-sub', text: String(call.port) })
+                    : (call.media === 'tcp' ? el('span', { class: 'cell-sub', text: 'FRP proxy' }) : null)),
             el('td', { dataset: { label: 'Duration' }, text: liveCallDuration(call) }),
             el('td', {
                 dataset: { label: 'Started' },
@@ -1736,8 +1744,14 @@
         );
         const enabledPbx = (snapshot.pbx || []).filter((record) => record.enabled);
 
-        // A 3-second poll must not replace the select/input under the operator.
-        if (pendingHasFocus()) {
+        // A 3-second poll must not replace the select/input under the operator,
+        // but a row whose device is no longer pending must disappear even while
+        // its button still holds focus — otherwise an approval looks ignored
+        // until the operator clicks somewhere else.
+        const focusedRow = refs.pendingRows.contains(document.activeElement)
+            ? document.activeElement.closest('tr') : null;
+        const focusedId = focusedRow ? focusedRow.dataset.deviceId : null;
+        if (pendingHasFocus() && (!focusedId || allPending.some((device) => device.id === focusedId))) {
             pendingRenderDeferred = true;
             return;
         }
@@ -1788,7 +1802,7 @@
                 onclick: () => approveDevice(device, select, extension)
             }, 'Approve');
 
-            return el('tr', {},
+            return el('tr', { dataset: { deviceId: device.id } },
                 el('th', { scope: 'row', dataset: { label: 'Device' } },
                     title,
                     el('span', { class: 'cell-sub', text: deviceSubtitle(device) })),

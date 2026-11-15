@@ -251,8 +251,12 @@ test('host firewall status is authenticated and sanitized', async (t) => {
 
 test('live call detail is authenticated, sanitized and never writes', async (t) => {
     let detailCalls = [];
+    let media = { media: 'udp', port: 26002, mode: 'plain-udp' };
     const harness = await createHarness({
-        routerOptions: { getActiveCallDetail: () => detailCalls }
+        routerOptions: {
+            getActiveCallDetail: () => detailCalls,
+            getMediaTransport: () => media
+        }
     });
     t.after(() => harness.close());
 
@@ -280,6 +284,12 @@ test('live call detail is authenticated, sanitized and never writes', async (t) 
         [['151', 'active'], ['102', 'ringing']]
     );
     assert.equal(response.body.calls[0].pbxName, PBX_BODY.name);
+    assert.equal(response.body.calls[0].media, 'udp');
+    assert.equal(response.body.calls[0].port, 26002);
+    media = { media: 'tcp', port: null, mode: 'legacy-tcp' };
+    const legacy = await harness.client.request('/control/api/calls/live');
+    assert.equal(legacy.body.calls[0].media, 'tcp');
+    media = { media: 'udp', port: 26002, mode: 'plain-udp' };
     assert.equal(JSON.stringify(response.body).includes('dev_must_not_leak'), false);
     assert.equal(harness.store.listPbx().length, before, 'reading live calls must not mutate PBXs');
 });

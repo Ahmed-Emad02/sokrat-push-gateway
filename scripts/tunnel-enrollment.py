@@ -96,6 +96,24 @@ def save_json(path, data):
     load_installer().write(path, json.dumps(data, indent=2, sort_keys=True) + '\n', 0o600)
 
 
+def publish_registry(rows):
+    """Save the registry and let the dashboard's service user read it.
+
+    The control dashboard runs as ``sokrat-push`` and shows each tenant's media
+    transport; without group read it can only report "unknown". The rows carry
+    installation hashes and plans, so the group is exact and the mode stays
+    non-world-readable. Group chown is best effort: a host without that account
+    keeps the original 0600 behaviour.
+    """
+    save_json(REGISTRY, rows)
+    try:
+        import grp
+        os.chown(str(REGISTRY), 0, grp.getgrnam('sokrat-push').gr_gid)
+        os.chmod(str(REGISTRY), 0o640)
+    except (KeyError, OSError):
+        pass
+
+
 def trusted_state(config):
     directory = Path(config['trustedStateDir'])
     load_installer().private_directory(directory)
@@ -301,7 +319,7 @@ def reserve(config, installations, body):
         'relayMinPort':50000 + slot * 100, 'relayMaxPort':50099 + slot * 100, 'peerIps':[]}
     save_json(plan_path, plan)
     installations[identifier] = entry
-    save_json(REGISTRY, installations)
+    publish_registry(installations)
     # Retry can repair a failed install using the same persisted identity/keys.
     # Never start an unrecorded service or hand its slot to another tenant.
     return entry
@@ -342,10 +360,10 @@ def register(config, body):
                     or result.get('approvalStatus') != 'approved'):
                 raise ValueError('PBX is disabled or pending review')
             if entry.pop('migrationExpected',None):
-                save_json(REGISTRY,installations)
+                publish_registry(installations)
             if not entry.get('controlRegistered'):
                 entry['controlRegistered'] = True
-                save_json(REGISTRY,installations)
+                publish_registry(installations)
             pin(entry)
             material = read_json(ROOT / entry['pbxId'] / 'material.json')
             # Approval is checked before any service start. A disabled tenant's
@@ -403,7 +421,7 @@ def stage_migration(body):
         rows[body['installationId']] = {'pbxId':pbx_id,'installationId':body['installationId'],
             'secretHash':hash_secret(body['installationSecret']),'ports':proxy_ports(slot),
             'plan':media,'migrationExpected':body['expectedDigest']}
-        save_json(REGISTRY,rows)
+        publish_registry(rows)
     print('Staged explicit installation adoption; control routing is unchanged until enrollment')
 
 

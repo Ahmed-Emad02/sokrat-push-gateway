@@ -62,6 +62,22 @@ def save_json(path, value):
     installer().write(path, json.dumps(value, sort_keys=True) + '\n', 0o600)
 
 
+def publish_registry(path, registry):
+    """Save the registry, readable by the dashboard's service group.
+
+    ``installations.json`` carries hashes and plans, so it stays root-owned and
+    non-world-readable; the dashboard service only needs group read to show each
+    tenant's media transport.
+    """
+    save_json(path, registry)
+    try:
+        import grp
+        os.chown(str(path), 0, grp.getgrnam('sokrat-push').gr_gid)
+        os.chmod(str(path), 0o640)
+    except (KeyError, OSError):
+        pass
+
+
 def selected_entry(registry, pbx_id):
     matches = [(key, value) for key, value in registry.items() if value.get('pbxId') == pbx_id]
     if len(matches) != 1:
@@ -274,7 +290,7 @@ def rollback(state, destination):
     run(['systemctl', 'stop', unit.name])
     restore_files(state, destination)
     if state['role'] == 'gateway':
-        save_json(ENROLLMENT / 'installations.json', replace_entry(registry, state['pbxId'], current, state['oldEntry']))
+        publish_registry(ENROLLMENT / 'installations.json', replace_entry(registry, state['pbxId'], current, state['oldEntry']))
         save_json(ENROLLMENT / state['pbxId'] / 'material.json', state['oldMaterial'])
     else:
         save_json(SETTINGS, state['oldSettings'])
@@ -313,7 +329,7 @@ def apply(state, destination):
             # The tenant's own listener is gone now; the target port must be
             # proven free before any registry/key commit or media start.
             check_gateway_endpoint(registry, state['pbxId'], state['document']['transport'])
-            save_json(ENROLLMENT / 'installations.json', registry)
+            publish_registry(ENROLLMENT / 'installations.json', registry)
             save_json(ENROLLMENT / state['pbxId'] / 'material.json', state['newMaterial'])
         else:
             save_json(SETTINGS, dict(state['oldSettings'], mediaTransport=state['document']['transport']))

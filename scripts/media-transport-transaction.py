@@ -63,19 +63,29 @@ def save_json(path, value):
 
 
 def publish_registry(path, registry):
-    """Save the registry, readable by the dashboard's service group.
+    """Save the registry and publish a non-secret media summary.
 
-    ``installations.json`` carries hashes and plans, so it stays root-owned and
-    non-world-readable; the dashboard service only needs group read to show each
-    tenant's media transport.
+    The registry stays 0600 root:root because the enrollment broker rejects a
+    looser file (and a group-readable one took the FRP tunnels down). Only the
+    dashboard needs the media mode/port, so those are written separately.
     """
     save_json(path, registry)
+    projection = {}
+    for row in registry.values():
+        transport = row.get('mediaTransport') or {}
+        port = transport.get('port')
+        projection[row.get('pbxId')] = {
+            'mode': transport.get('mode'),
+            'port': port if isinstance(port, int) else None,
+        }
     try:
-        import grp
-        os.chown(str(path), 0, grp.getgrnam('sokrat-push').gr_gid)
-        os.chmod(str(path), 0o640)
-    except (KeyError, OSError):
-        pass
+        target = Path('/var/lib/sokrat-gateway/media-transport.json')
+        temporary = target.with_name('.media-transport.json.tmp')
+        temporary.write_text(json.dumps(projection, indent=2, sort_keys=True) + '\n')
+        os.chmod(str(temporary), 0o644)
+        os.replace(str(temporary), str(target))
+    except (OSError, TypeError):
+        pass  # Never fail a media transaction because the dashboard is absent.
 
 
 def selected_entry(registry, pbx_id):

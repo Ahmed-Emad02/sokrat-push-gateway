@@ -1,16 +1,39 @@
 'use strict';
 
 /**
- * Read-only view of each tenant's persisted media transport.
+ * Read-only view of each tenant's media transport for the dashboard.
  *
- * The enrollment registry is the authority: a row with a `plain-udp` or
- * `direct-udp` transport carries call media as datagrams straight from the
- * PBX, while a row without a transport still relays media over the legacy FRP
- * TCP proxy. The file is small, so it is cached by mtime and never written.
+ * The enrollment registry is the authority but stays 0600 root:root — the
+ * enrollment broker refuses a looser file, so the dashboard (which runs as
+ * `sokrat-push`) cannot read it. Root-side enrollment code therefore publishes
+ * this non-secret projection: pbxId -> { mode, port }. The registry remains a
+ * fallback for privileged callers and tests.
  */
 
+const PROJECTION_FILE = process.env.MEDIA_TRANSPORT_PROJECTION
+    || '/var/lib/sokrat-gateway/media-transport.json';
 const REGISTRY_FILE = process.env.TUNNEL_ENROLLMENT_REGISTRY
     || '/etc/sokrat/tunnel-enrollment/installations.json';
+
+function describe(mode, port) {
+    const udp = mode === 'plain-udp' || mode === 'direct-udp';
+    return {
+        media: udp ? 'udp' : 'tcp',
+        port: Number.isInteger(port) ? port : null,
+        mode: mode || null
+    };
+}
+
+/** pbxId -> { mode, port } as written by the root-side enrollment scripts. */
+function parseProjection(text) {
+    const rows = JSON.parse(text);
+    const byPbx = new Map();
+    for (const [pbxId, value] of Object.entries(rows || {})) {
+        if (!value || typeof value !== 'object') continue;
+        byPbx.set(pbxId, describe(value.mode, value.port));
+    }
+    return byPbx;
+}
 
 function parseRegistry(text) {
     const rows = JSON.parse(text);
@@ -22,45 +45,50 @@ function parseRegistry(text) {
             byPbx.set(row.pbxId, { media: 'tcp', port: null, mode: 'legacy-tcp' });
             continue;
         }
-        const mode = String(transport.mode || '');
-        const udp = mode === 'plain-udp' || mode === 'direct-udp';
-        byPbx.set(row.pbxId, {
-            media: udp ? 'udp' : 'tcp',
-            port: Number.isInteger(transport.port) ? transport.port : null,
-            mode: mode || null
-        });
+        byPbx.set(row.pbxId, describe(transport.mode, transport.port));
     }
     return byPbx;
 }
 
-function createMediaTransportReader({ file = REGISTRY_FILE, statSync, readFileSync } = {}) {
-    const stat = statSync || require('node:fs').statSync;
-    const read = readFileSync || require('node:fs').readFileSync;
-    let cache = { mtimeMs: -1, byPbx: new Map() };
-
-    function load() {
+function readCached(file, parse, stat, read) {
+    let cache = { mtimeMs: -1, byPbx: null };
+    return function load() {
         let info;
         try {
             info = stat(file);
         } catch {
-            return new Map();
+            return cache.byPbx || new Map();
         }
-        if (info.mtimeMs === cache.mtimeMs) return cache.byPbx;
-        let byPbx;
+        if (info.mtimeMs === cache.mtimeMs && cache.byPbx) return cache.byPbx;
         try {
-            byPbx = parseRegistry(read(file, 'utf8'));
+            cache = { mtimeMs: info.mtimeMs, byPbx: parse(read(file, 'utf8')) };
         } catch {
-            return cache.byPbx;
+            // Keep the last good projection rather than flapping to unknown.
         }
-        cache = { mtimeMs: info.mtimeMs, byPbx };
-        return byPbx;
-    }
+        return cache.byPbx || new Map();
+    };
+}
+
+function createMediaTransportReader(options = {}) {
+    const stat = options.statSync || require('node:fs').statSync;
+    const read = options.readFileSync || require('node:fs').readFileSync;
+    const loadProjection = readCached(options.file || PROJECTION_FILE, parseProjection, stat, read);
+    const loadRegistry = readCached(options.fallbackFile || REGISTRY_FILE, parseRegistry, stat, read);
 
     return {
         lookup(pbxId) {
-            return load().get(String(pbxId)) || { media: 'unknown', port: null, mode: null };
+            const projection = loadProjection();
+            if (projection.has(String(pbxId))) return projection.get(String(pbxId));
+            const registry = loadRegistry();
+            return registry.get(String(pbxId)) || { media: 'unknown', port: null, mode: null };
         }
     };
 }
 
-module.exports = { createMediaTransportReader, parseRegistry, REGISTRY_FILE };
+module.exports = {
+    createMediaTransportReader,
+    parseProjection,
+    parseRegistry,
+    PROJECTION_FILE,
+    REGISTRY_FILE
+};

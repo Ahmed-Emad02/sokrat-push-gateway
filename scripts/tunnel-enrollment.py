@@ -97,21 +97,30 @@ def save_json(path, data):
 
 
 def publish_registry(rows):
-    """Save the registry and let the dashboard's service user read it.
+    """Save the registry and publish a non-secret media summary.
 
-    The control dashboard runs as ``sokrat-push`` and shows each tenant's media
-    transport; without group read it can only report "unknown". The rows carry
-    installation hashes and plans, so the group is exact and the mode stays
-    non-world-readable. Group chown is best effort: a host without that account
-    keeps the original 0600 behaviour.
+    The registry itself stays 0600 root:root: the enrollment broker refuses to
+    read anything less strict, and loosening it took the FRP tunnels down. The
+    dashboard only needs each tenant's media mode and port, so those go to a
+    separate world-readable file with no hashes or plans in it.
     """
     save_json(REGISTRY, rows)
+    projection = {}
+    for row in rows.values():
+        transport = row.get('mediaTransport') or {}
+        port = transport.get('port')
+        projection[row.get('pbxId')] = {
+            'mode': transport.get('mode'),
+            'port': port if isinstance(port, int) else None,
+        }
     try:
-        import grp
-        os.chown(str(REGISTRY), 0, grp.getgrnam('sokrat-push').gr_gid)
-        os.chmod(str(REGISTRY), 0o640)
-    except (KeyError, OSError):
-        pass
+        target = Path('/var/lib/sokrat-gateway/media-transport.json')
+        temporary = target.with_name('.media-transport.json.tmp')
+        temporary.write_text(json.dumps(projection, indent=2, sort_keys=True) + '\n')
+        os.chmod(str(temporary), 0o644)
+        os.replace(str(temporary), str(target))
+    except (OSError, TypeError):
+        pass  # A missing dashboard directory must never fail an enrollment.
 
 
 def trusted_state(config):

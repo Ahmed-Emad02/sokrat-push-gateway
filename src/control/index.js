@@ -75,6 +75,7 @@ function createControl(options = {}) {
         cookieSecure: options.cookieSecure,
         loginFailureDelayMs: options.loginFailureDelayMs,
         getActiveCalls: options.getActiveCalls,
+        getActiveCallDetail: options.getActiveCallDetail,
         getMetrics: options.getMetrics,
         getHostFirewall: options.getHostFirewall,
         getLegacyPushRows: options.getLegacyPushRows,

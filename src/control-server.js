@@ -53,6 +53,7 @@ async function start() {
         maxEnabledPbx: Number(process.env.CONTROL_MAX_ENABLED_PBX) || 10,
         allowPublic: isPublic,
         getActiveCalls: () => tenant?.runtime?.getActiveCalls?.() || [],
+        getActiveCallDetail: () => tenant?.runtime?.getActiveCallDetail?.() || [],
         getMetrics: () => metrics?.snapshot?.() || null,
         getHostFirewall: () => readHostFirewall(),
         getLegacyPushRows: createLegacyPushLookup(),

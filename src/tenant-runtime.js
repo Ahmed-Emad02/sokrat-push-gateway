@@ -222,6 +222,7 @@ function createTenantRuntime({ control, pushFile, getRelay, authorizePbx, sendTo
     return {
         router, assignment, authorize, pushStore, heartbeat, chatProxy,
         getActiveCalls: () => attachedProxy?.getActiveCalls?.() || [],
+        getActiveCallDetail: () => attachedProxy?.getActiveCallDetail?.() || [],
         getNetworkStats: () => attachedProxy?.getNetworkStats?.() || { inBytes: 0, outBytes: 0, byPbx: [] },
         start() {
             heartbeat.start();

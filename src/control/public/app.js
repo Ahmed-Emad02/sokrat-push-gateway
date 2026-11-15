@@ -49,6 +49,9 @@
         activeCallsList: document.getElementById('active-calls-list'),
         activeCallsTotal: document.getElementById('active-calls-total'),
         activeCallsEmpty: document.getElementById('active-calls-empty'),
+        liveCallsBody: document.getElementById('live-calls-body'),
+        liveCallsTotal: document.getElementById('live-calls-total'),
+        liveCallsEmpty: document.getElementById('live-calls-empty'),
         loadCpu: document.getElementById('load-cpu'),
         loadMemory: document.getElementById('load-memory'),
         loadNetwork: document.getElementById('load-network'),
@@ -982,6 +985,10 @@
 
     let pollInterval = null;
     let activeCallsInterval = null;
+    let liveCallsInterval = null;
+    let liveCallsTickTimer = null;
+    let liveCallsState = { calls: [], active: 0, ringing: 0 };
+    let liveCallsInFlight = false;
     let metricsInterval = null;
     let firewallInterval = null;
 
@@ -1225,6 +1232,67 @@
         if (refs.activeCallsEmpty) refs.activeCallsEmpty.hidden = rows.length > 0;
     }
 
+    function formatDuration(ms) {
+        const total = Math.max(0, Math.floor(Number(ms) / 1000));
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const seconds = total % 60;
+        const pad = (value) => String(value).padStart(2, '0');
+        return hours ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
+    }
+
+    function liveCallDuration(call) {
+        const started = Date.parse(call && call.startedAt ? call.startedAt : '');
+        return formatDuration(Number.isFinite(started) ? Date.now() - started : (call && call.durationMs) || 0);
+    }
+
+    function renderLiveCalls(state) {
+        if (!refs.liveCallsBody) return;
+        liveCallsState = state && typeof state === 'object'
+            ? state
+            : { calls: [], active: 0, ringing: 0 };
+        const calls = Array.isArray(liveCallsState.calls) ? liveCallsState.calls : [];
+        refs.liveCallsBody.replaceChildren(...calls.map((call) => el('tr', {},
+            el('th', { scope: 'row', dataset: { label: 'Extension' } },
+                call.extension || '—',
+                call.callId ? el('span', { class: 'cell-sub', text: call.callId }) : null),
+            el('td', { dataset: { label: 'PBX' }, text: call.pbxName || '—' }),
+            el('td', { dataset: { label: 'State' } },
+                el('span', {
+                    class: call.state === 'active' ? 'pill pill-on' : 'pill',
+                    text: call.state === 'active' ? 'In call' : 'Ringing'
+                })),
+            el('td', { dataset: { label: 'Duration' }, text: liveCallDuration(call) }),
+            el('td', {
+                dataset: { label: 'Started' },
+                text: call.startedAt ? new Date(call.startedAt).toLocaleTimeString() : '—'
+            })
+        )));
+        if (refs.liveCallsEmpty) refs.liveCallsEmpty.hidden = calls.length > 0;
+        if (refs.liveCallsTotal) {
+            refs.liveCallsTotal.textContent =
+                `${Number(state && state.active) || 0} active · ${Number(state && state.ringing) || 0} ringing`;
+        }
+    }
+
+    async function refreshLiveCalls() {
+        if (!refs.liveCallsBody || liveCallsInFlight) return;
+        liveCallsInFlight = true;
+        try {
+            renderLiveCalls(await api('/api/calls/live'));
+        } catch (_) {
+            // The dashboard must keep working when the endpoint is transiently
+            // unavailable; the last snapshot stays on screen.
+        } finally {
+            liveCallsInFlight = false;
+        }
+    }
+
+    function tickLiveCalls() {
+        if (!refs.liveCallsBody || !Array.isArray(liveCallsState.calls) || !liveCallsState.calls.length) return;
+        renderLiveCalls(liveCallsState);
+    }
+
     function startRealtimePolling() {
         if (pollInterval) return;
         pollInterval = setInterval(async () => {
@@ -1239,6 +1307,22 @@
             activeCallsInterval = setInterval(() => {
                 if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
                     void refreshActiveCalls();
+                }
+            }, 1000);
+        }
+        // Live calls: one authenticated read every two seconds plus a local
+        // one-second tick that only redraws durations from the last snapshot.
+        // Strictly read-only w.r.t. the SIP proxy and never overlapping.
+        if (!liveCallsInterval) {
+            void refreshLiveCalls();
+            liveCallsInterval = setInterval(() => {
+                if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                    void refreshLiveCalls();
+                }
+            }, 2000);
+            liveCallsTickTimer = setInterval(() => {
+                if (document.visibilityState === 'visible' && refs.dashboard && !refs.dashboard.hidden) {
+                    tickLiveCalls();
                 }
             }, 1000);
         }
@@ -1268,6 +1352,14 @@
         if (activeCallsInterval) {
             clearInterval(activeCallsInterval);
             activeCallsInterval = null;
+        }
+        if (liveCallsInterval) {
+            clearInterval(liveCallsInterval);
+            liveCallsInterval = null;
+        }
+        if (liveCallsTickTimer) {
+            clearInterval(liveCallsTickTimer);
+            liveCallsTickTimer = null;
         }
         if (metricsInterval) {
             clearInterval(metricsInterval);

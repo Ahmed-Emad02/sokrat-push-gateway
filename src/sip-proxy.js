@@ -263,6 +263,7 @@ function attachSipProxy(server, { authorize, isAuthorized, consumeTicket, scopeI
     }
     return {
         getActiveCalls: () => callTracker.snapshot(),
+        getActiveCallDetail: () => callTracker.detail(),
         hasLiveSession,
         getNetworkStats: () => ({
             inBytes: network.inBytes,

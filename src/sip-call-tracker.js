@@ -51,6 +51,10 @@ function createCallTracker({ now = Date.now } = {}) {
                     state: 'ringing',
                     startedAt: now(),
                     session,
+                    // Who is calling: present on production sessions, absent in
+                    // unit fixtures. Never a credential.
+                    extension: session?.route?.extension || null,
+                    device: session?.device || null,
                 });
                 remember(session, key);
             }
@@ -108,7 +112,25 @@ function createCallTracker({ now = Date.now } = {}) {
         return [...byPbx.values()].sort((a, b) => a.pbxId.localeCompare(b.pbxId));
     }
 
-    return { observe, removeSession, prune, snapshot };
+    /** Per-call rows for the live dashboard; counts above stay unchanged. */
+    function detail() {
+        const timestamp = now();
+        return [...calls.values()]
+            .map((call) => ({
+                pbxId: call.pbxId,
+                callId: call.callId,
+                state: call.state,
+                extension: call.extension,
+                device: call.device,
+                startedAt: new Date(call.startedAt).toISOString(),
+                answeredAt: call.answeredAt ? new Date(call.answeredAt).toISOString() : null,
+                durationMs: Math.max(0, timestamp - call.startedAt),
+                talkMs: call.answeredAt ? Math.max(0, timestamp - call.answeredAt) : 0,
+            }))
+            .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    }
+
+    return { observe, removeSession, prune, snapshot, detail };
 }
 
 module.exports = { createCallTracker, readMessage, RINGING_TTL_MS, ACTIVE_TTL_MS };

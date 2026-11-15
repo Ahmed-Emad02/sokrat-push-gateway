@@ -131,6 +131,29 @@
       <p id="active-calls-empty" class="hint" hidden>No active calls through the gateway.</p>
     </section>
 
+    <section class="card" aria-labelledby="live-calls-title">
+      <div class="card-head">
+        <h2 id="live-calls-title">Live calls</h2>
+        <span id="live-calls-total" class="hint">0 active · 0 ringing</span>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <caption id="live-calls-caption" class="visually-hidden">Calls currently in progress through the gateway</caption>
+          <thead>
+            <tr>
+              <th scope="col">Extension</th>
+              <th scope="col">PBX</th>
+              <th scope="col">State</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Started</th>
+            </tr>
+          </thead>
+          <tbody id="live-calls-body"></tbody>
+        </table>
+      </div>
+      <p id="live-calls-empty" class="hint" hidden>No calls in progress.</p>
+    </section>
+
     <section class="card" aria-labelledby="load-title">
       <div class="card-head">
         <h2 id="load-title">Gateway load</h2>

@@ -466,6 +466,41 @@ function createControlRouter(options = {}) {
         });
     });
 
+    /**
+     * Per-call rows for the live dashboard. Read-only: it reads an in-memory
+     * snapshot that the SIP proxy already keeps, never writes to the store and
+     * never touches a signaling session. `requireSession` keeps it private.
+     */
+    router.get('/api/calls/live', requireSession, (req, res) => {
+        let live = [];
+        try {
+            live = typeof options.getActiveCallDetail === 'function' ? options.getActiveCallDetail() : [];
+        } catch (_) {
+            live = [];
+        }
+        const names = new Map(store.listPbx().map((pbx) => [String(pbx.id), pbx.name || pbx.id]));
+        const calls = (Array.isArray(live) ? live : []).map((call) => ({
+            pbxId: call && call.pbxId ? String(call.pbxId) : null,
+            pbxName: names.get(String(call && call.pbxId)) || (call && call.pbxId) || 'Unknown PBX',
+            extension: call && typeof call.extension === 'string' ? call.extension : null,
+            state: call && call.state === 'active' ? 'active' : 'ringing',
+            callId: call && typeof call.callId === 'string' ? call.callId.slice(0, 64) : null,
+            startedAt: call && call.startedAt ? call.startedAt : null,
+            answeredAt: call && call.answeredAt ? call.answeredAt : null,
+            durationMs: Number.isFinite(call && call.durationMs) ? Math.max(0, call.durationMs) : 0,
+            talkMs: Number.isFinite(call && call.talkMs) ? Math.max(0, call.talkMs) : 0,
+        })).filter((call) => call.pbxId);
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            success: true,
+            calls,
+            active: calls.filter((call) => call.state === 'active').length,
+            ringing: calls.filter((call) => call.state === 'ringing').length,
+            total: calls.length,
+            timestamp: new Date().toISOString()
+        });
+    });
+
     router.get('/api/metrics', requireSession, (req, res) => {
         let metrics = null;
         try { metrics = typeof options.getMetrics === 'function' ? options.getMetrics() : null; }

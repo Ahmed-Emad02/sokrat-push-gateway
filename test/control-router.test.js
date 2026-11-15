@@ -249,6 +249,41 @@ test('host firewall status is authenticated and sanitized', async (t) => {
     assert.deepEqual(response.body.firewall, firewall);
 });
 
+test('live call detail is authenticated, sanitized and never writes', async (t) => {
+    let detailCalls = [];
+    const harness = await createHarness({
+        routerOptions: { getActiveCallDetail: () => detailCalls }
+    });
+    t.after(() => harness.close());
+
+    const pbx = await harness.store.addPbx(PBX_BODY, { actor: 'test' });
+    detailCalls = [
+        { pbxId: pbx.id, callId: 'call-abc-123', state: 'active', extension: '151',
+          device: 'dev_must_not_leak', startedAt: '2026-11-15T10:00:00.000Z',
+          answeredAt: '2026-11-15T10:00:04.000Z', durationMs: 9000, talkMs: 5000 },
+        { pbxId: pbx.id, callId: 'call-def', state: 'ringing', extension: '102',
+          startedAt: '2026-11-15T10:00:30.000Z', answeredAt: null, durationMs: 2000, talkMs: 0 }
+    ];
+
+    const anonymous = await harness.anonymous.request('/control/api/calls/live');
+    assert.equal(anonymous.status, 401);
+
+    await harness.login();
+    const before = harness.store.listPbx().length;
+    const response = await harness.client.request('/control/api/calls/live');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 2);
+    assert.equal(response.body.active, 1);
+    assert.equal(response.body.ringing, 1);
+    assert.deepEqual(
+        response.body.calls.map((call) => [call.extension, call.state]),
+        [['151', 'active'], ['102', 'ringing']]
+    );
+    assert.equal(response.body.calls[0].pbxName, PBX_BODY.name);
+    assert.equal(JSON.stringify(response.body).includes('dev_must_not_leak'), false);
+    assert.equal(harness.store.listPbx().length, before, 'reading live calls must not mutate PBXs');
+});
+
 test('push credential status is authenticated and does not expose secrets', async (t) => {
     const harness = await createHarness();
     t.after(() => harness.close());

@@ -322,9 +322,17 @@ a working tunnel or source test is not evidence that audible choppiness is fixed
   tenant reconciliation after an explicit recreation. When root enrollment is
   mounted, it also promotes the reviewed host bundle with the existing
   provisioning installer after the new container is running; preflight refuses
-  an incomplete bundle before build. Media PKI, credentials and
-  `sokrat-media-*` units are not regenerated or restarted. A successful command
-  is not proof of delivered push or employee-call acceptance.
+  an incomplete bundle before build. Under the shared provisioning lock it
+  validates enrolled active managed links against their persisted plan,
+  transport and credential material, then regenerates their non-secret media
+  configuration using the promoted installer. PKI, credentials and transport
+  selection are preserved. Unchanged links are not restarted; stopped links
+  remain stopped, and unmanaged active units or identity drift refuse the
+  refresh. Use an idle maintenance window: changed active links are restarted.
+  Refresh/restart failure restores only generated files still matching this
+  refresh's writes and attempts to recover the previous service configuration;
+  incomplete recovery is a fatal error, not readiness. A successful upgrade is
+  not proof of a passing media nonce, delivered push or employee-call acceptance.
 - `scripts/deploy-public-certificate.sh` is installed as
   `/usr/local/bin/sokrat-public-certificate-deploy`. Set that path as the Certbot
   deploy hook. Certbot supplies `RENEWED_LINEAGE`; the hook checks expiry and

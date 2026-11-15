@@ -24,7 +24,7 @@ for kind,port in record['ports'].items():
   d=dict(c);d[field]=value
   assert not m.authorize_plugin('NewProxy',d,rows)
  d=dict(c);d['proxy_type']='udp'
- assert m.authorize_plugin('NewProxy',d,rows) == (kind=='media')
+ assert not m.authorize_plugin('NewProxy',d,rows)
 assert not m.authorize_plugin('Login',{'user':pbx,'metas':{'installationSecret':'wrong'}},rows)
 assert not m.authorize_plugin('Login',{'user':'other','metas':{'installationSecret':secret}},rows)
 assert not m.authorize_plugin('CloseProxy',{},rows)
@@ -37,6 +37,59 @@ for url in ['/handler?op=NewProxy','/handler?op=','/handler?op=Login&op=NewProxy
  except ValueError:pass
 print('ok')`], { cwd: path.join(__dirname, '../scripts'), encoding: 'utf8' });
     assert.equal(result.trim(), 'ok');
+});
+
+test('FRP media proxy authorization requires legacy TCP and forbids explicit UDP transports', () => {
+    const output = execFileSync('python3', ['-B', '-c', `
+import importlib.util
+s=importlib.util.spec_from_file_location('enrollment','tunnel-enrollment.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+secret='d'*43
+def record(slot,transport='absent'):
+ plan=m.allocation('pbx_0123456789abcdef',slot,'10.253.0.0/22')
+ row={'pbxId':plan['pbxId'],'plan':plan,'ports':m.proxy_ports(slot),'secretHash':m.hash_secret(secret)}
+ if transport!='absent':row['mediaTransport']=transport
+ return row
+def check(row,kind,scope,port):
+ content={'user':{'user':row['pbxId'],'metas':{'installationSecret':secret}},
+          'proxy_type':kind,'proxy_name':row['pbxId']+'.'+scope,'remote_port':port}
+ return m.authorize_plugin('NewProxy',content,{row['pbxId']:row})
+def login(row):
+ return m.authorize_plugin('Login',{'user':row['pbxId'],'metas':{'installationSecret':secret}},
+                           {row['pbxId']:row})
+# A legacy record has no mediaTransport: its media proxy carries TCP only.
+for transport in ('absent',None):
+ row=record(0,transport); media=row['ports']['media']
+ assert login(row),transport
+ assert check(row,'tcp','media',media),transport
+ assert not check(row,'udp','media',media),transport
+ assert check(row,'tcp','ws',row['ports']['ws']) and check(row,'tcp','api',row['ports']['api'])
+ assert not check(row,'udp','ws',row['ports']['ws'])
+ assert not check(row,'udp','api',row['ports']['api'])
+# An explicit plain/direct UDP tenant owns its media path: no FRP media proxy.
+for slot,mode in ((1,'direct-udp'),(2,'plain-udp')):
+ row=record(slot)
+ transport=m.validate_transport({'mode':mode,'host':'gateway.example.test','port':26000+slot},row['plan'])
+ row['mediaTransport']=transport
+ media=row['ports']['media']
+ assert login(row),mode
+ assert not check(row,'tcp','media',media),mode
+ assert not check(row,'udp','media',media),mode
+ assert not check(row,'udp','media',transport['port']),mode
+ assert check(row,'tcp','ws',row['ports']['ws']) and check(row,'tcp','api',row['ports']['api'])
+ assert not check(row,'udp','ws',row['ports']['ws'])
+ assert not check(row,'udp','api',row['ports']['api'])
+# Unknown persisted transport values fail closed for every media protocol.
+row=record(3,'udp')
+assert not check(row,'tcp','media',row['ports']['media'])
+assert not check(row,'udp','media',row['ports']['media'])
+assert check(row,'tcp','ws',row['ports']['ws'])
+# WireGuard stays canonical UDP-only.
+row=record(4)
+assert check(row,'udp','wireguard',24004)
+assert not check(row,'tcp','wireguard',24004)
+print('ok')`], { cwd: path.join(__dirname, '../scripts'), encoding: 'utf8', timeout: 15000 });
+    assert.equal(output.trim(), 'ok');
 });
 
 test('explicit migration preserves the PBX id and cannot reapprove a changed or disabled record', async () => {
@@ -243,7 +296,7 @@ assert not check(row,'udp','pbx_fedcba9876543210.wireguard',24000)
 assert check(dict(row,ports=dict(row['ports'],wireguard=25000)),'udp',pbx+'.wireguard',24000)
 assert not check(dict(row,ports=dict(row['ports'],wireguard=25000)),'udp',pbx+'.wireguard',25000)
 assert not check(row,'udp',pbx+'.wireguard',25000)
-assert check(row,'udp',pbx+'.media',row['ports']['media'])
+assert not check(row,'udp',pbx+'.media',row['ports']['media'])
 assert check(row,'tcp',pbx+'.media',row['ports']['media'])
 assert check(row,'tcp',pbx+'.ws',row['ports']['ws'])
 assert not check(row,'udp',pbx+'.ws',row['ports']['ws'])

@@ -170,15 +170,16 @@ def authorize_plugin(operation, content, installations):
                 or type(content.get('remote_port')) is not int
                 or allowed[proxy_name] != content['remote_port']):
             return False
-        # Control/WS/API stay TCP. Only the exact media proxy may use UDP,
-        # which avoids TCP head-of-line blocking for RTP. WireGuard is also
-        # UDP-only and must never be selected over TCP.
-        if proxy_type == 'udp':
-            if not (proxy_name.endswith('.media') or proxy_name.endswith('.wireguard')):
-                return False
-        elif proxy_name.endswith('.wireguard'):
-            return False
-        return True
+        # Control/WS/API stay TCP. A legacy record (no mediaTransport) carries
+        # media over the FRP proxy as TCP. An explicit direct/plain UDP
+        # transport owns its media path itself, so an FRP media proxy could
+        # silently register for a transport that is not FRP-managed. WireGuard
+        # is UDP-only and must never be selected over TCP.
+        if proxy_name.endswith('.wireguard'):
+            return proxy_type == 'udp'
+        if proxy_name.endswith('.media'):
+            return proxy_type == 'tcp' and record.get('mediaTransport') is None
+        return proxy_type == 'tcp'
     return True
 
 

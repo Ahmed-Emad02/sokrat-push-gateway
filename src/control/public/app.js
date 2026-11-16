@@ -147,6 +147,41 @@
 
     if (!refs.main || !refs.loginForm || !refs.pbxRows || !refs.extForm || !refs.extRows) return;
 
+    // Persistent, dashboard-wide notice for devices waiting on an operator.
+    // Created from script so the page shell stays cacheable and no restart is
+    // needed when this changes.
+    const baseTitle = document.title;
+    const pendingAlert = el('div', {
+        class: 'pending-alert',
+        role: 'button',
+        tabindex: '0',
+        hidden: true,
+        onclick: () => {
+            activateWorkspaceTab('pending');
+            const panel = refs.pendingRows ? refs.pendingRows.closest('[data-workspace-panel]') : null;
+            if (panel) panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }
+    },
+        el('span', { class: 'pending-alert-text' }),
+        el('span', { class: 'pending-alert-action', text: 'Review →' })
+    );
+    pendingAlert.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            pendingAlert.click();
+        }
+    });
+    if (refs.dashboard) refs.dashboard.prepend(pendingAlert);
+
+    function updatePendingAlert(count) {
+        const pending = Number(count) || 0;
+        pendingAlert.hidden = pending === 0;
+        pendingAlert.querySelector('.pending-alert-text').textContent = pending === 1
+            ? '1 device is waiting for approval'
+            : `${pending} devices are waiting for approval`;
+        document.title = pending ? `(${pending}) ${baseTitle}` : baseTitle;
+    }
+
     const workspaceTabs = [...document.querySelectorAll('[data-workspace-tab]')];
     const workspacePanels = [...document.querySelectorAll('[data-workspace-panel]')];
 
@@ -1772,6 +1807,7 @@
 
     function renderPending() {
         const allPending = (snapshot.devices || []).filter((device) => device.status === 'pending');
+        updatePendingAlert(allPending.length);
         const pbxById = new Map((snapshot.pbx || []).map((record) => [record.id, record]));
         const pending = filterRecords(
             'pending',

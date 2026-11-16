@@ -743,7 +743,7 @@ select:user-invalid ~ .error-msg {
 .table-wrapper {
   overflow: auto;
   max-inline-size: 100%;
-  max-block-size: 26rem;
+  max-block-size: 44rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   container-type: inline-size;
@@ -1360,4 +1360,40 @@ tbody tr:hover td {
   .workspace-panel {
     padding: 0.75rem;
   }
+}
+
+/* Dashboard-wide notice for devices waiting on an operator. Created from
+   script so the page shell stays cacheable. */
+.pending-alert {
+  position: sticky;
+  inset-block-start: 0.5rem;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  margin-block-end: 0.9rem;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 650;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+
+.pending-alert[hidden] {
+  display: none;
+}
+
+.pending-alert:focus-visible {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+}
+
+.pending-alert-action {
+  font-weight: 700;
+  text-decoration: underline;
+  white-space: nowrap;
 }

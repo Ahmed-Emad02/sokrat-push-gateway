@@ -969,17 +969,39 @@ tbody tr:hover td {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 0.4rem;
-  max-block-size: 18rem;
+  gap: 0.3rem;
+  max-block-size: 48rem;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
-.activity li {
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  padding: 0.4rem 0.55rem;
+/* Day separator: sticky so the date stays visible while scrolling a long log. */
+.activity .activity-day {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  display: block;
+  padding: 0.45rem 0.55rem 0.3rem;
+  margin-block-start: 0.2rem;
+  border: 0;
+  border-block-end: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activity .activity-row {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(7rem, 15rem) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.35rem 0.7rem;
+  padding: 0.42rem 0.6rem;
   border: 1px solid var(--border);
+  border-inline-start-width: 3px;
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   font-size: 0.82rem;
@@ -988,16 +1010,50 @@ tbody tr:hover td {
 .activity time {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  flex: none;
+  font-size: 0.76rem;
 }
 
 .activity .event {
-  font-weight: 600;
+  font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .activity .detail {
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+.activity .actor {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+/* Outcome colours: the left rule and the action label share one hue. */
+.activity-row.tone-good { border-inline-start-color: var(--ok); }
+.activity-row.tone-good .event { color: var(--ok); }
+.activity-row.tone-bad { border-inline-start-color: var(--danger); background: var(--danger-soft); }
+.activity-row.tone-bad .event { color: var(--danger); }
+.activity-row.tone-info { border-inline-start-color: var(--accent); }
+.activity-row.tone-info .event { color: var(--accent); }
+.activity-row.tone-warn { border-inline-start-color: var(--warn); background: var(--warn-soft); }
+.activity-row.tone-warn .event { color: var(--warn); }
+.activity-row.tone-neutral { border-inline-start-color: var(--border-strong); }
+
+@media (max-width: 52rem) {
+  .activity .activity-row {
+    grid-template-columns: 5.2rem minmax(0, 1fr);
+  }
+
+  .activity .detail,
+  .activity .actor {
+    grid-column: 1 / -1;
+  }
+
+  .activity .actor {
+    text-align: start;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

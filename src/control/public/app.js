@@ -2063,18 +2063,60 @@
         }));
     }
 
+    /** Colour class for one audit action: outcome first, then subject. */
+    function activityTone(action) {
+        const value = String(action || '').toLowerCase();
+        if (/(revoked|rejected|failed|removed|blocked)/.test(value)) return 'tone-bad';
+        if (/(approved|redeemed|added|ready|enrolled)/.test(value)) return 'tone-good';
+        if (/(requested|reapproval|pending|claim)/.test(value)) return 'tone-info';
+        if (/(settings|firewall|disabled|warn)/.test(value)) return 'tone-warn';
+        return 'tone-neutral';
+    }
+
+    function activityDay(iso) {
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) return 'Unknown date';
+        const today = new Date();
+        const yesterday = new Date(today.getTime() - 86400000);
+        const same = (a, b) => a.toDateString() === b.toDateString();
+        if (same(date, today)) return 'Today';
+        if (same(date, yesterday)) return 'Yesterday';
+        return date.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    function activityClock(iso) {
+        const date = new Date(iso);
+        return Number.isNaN(date.getTime())
+            ? '—'
+            : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
     function renderActivity() {
+        const panel = refs.activityList.closest('[data-workspace-panel]');
+        const hint = panel ? panel.querySelector('.card-head .hint') : null;
+        if (hint) hint.textContent = 'Newest first, grouped by day · up to 200 audited events.';
         const entries = (snapshot.audit || []).slice().reverse();
         refs.activityEmpty.hidden = entries.length > 0;
-        refs.activityList.replaceChildren(...entries.map((entry) => el('li', {},
-            el('time', { datetime: entry.at, text: formatTime(entry.at) }),
-            el('span', { class: 'event', text: entry.action }),
-            el('span', {
-                class: 'detail',
-                text: [entry.target ? shortId(entry.target) : '', entry.detail || ''].filter(Boolean).join(' · ')
-            }),
-            el('span', { class: 'detail', text: entry.actor || '' })
-        )));
+        const nodes = [];
+        let day = null;
+        for (const entry of entries) {
+            const label = activityDay(entry.at);
+            if (label !== day) {
+                day = label;
+                nodes.push(el('li', { class: 'activity-day' }, el('span', { text: label })));
+            }
+            nodes.push(el('li', { class: `activity-row ${activityTone(entry.action)}` },
+                el('time', { datetime: entry.at, title: formatTime(entry.at), text: activityClock(entry.at) }),
+                el('span', { class: 'event', text: entry.action }),
+                el('span', {
+                    class: 'detail',
+                    text: [entry.detail || '', entry.target ? shortId(entry.target) : '']
+                        .filter(Boolean).join(' · ')
+                }),
+                el('span', { class: 'actor', text: entry.actor || '' })
+            ));
+        }
+        refs.activityList.replaceChildren(...nodes);
     }
 
     function renderInvitePbxOptions() {
